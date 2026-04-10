@@ -48,7 +48,24 @@ structlog.configure(
 log = structlog.get_logger("engine")
 
 # ── Universe ──────────────────────────────────────────────────────────────────
-SYMBOLS = ["ETH/USD", "BTC/USD", "SOL/USD", "DOGE/USD", "AVAX/USD", "LINK/USD", "SHIB/USD"]
+SYMBOLS = [
+    # ── Blue-chip L1 / infrastructure ────────────────────────────────────────
+    "BTC/USD",  "ETH/USD",  "SOL/USD",  "AVAX/USD", "ADA/USD",  "DOT/USD",
+    "LTC/USD",  "BCH/USD",  "XRP/USD",  "XTZ/USD",
+    # ── DeFi blue chips ───────────────────────────────────────────────────────
+    "LINK/USD", "AAVE/USD", "UNI/USD",  "CRV/USD",  "SUSHI/USD","LDO/USD",
+    "GRT/USD",  "YFI/USD",
+    # ── Layer-2 / infra tokens ────────────────────────────────────────────────
+    "ARB/USD",  "POL/USD",  "FIL/USD",  "RENDER/USD",
+    # ── Liquid large-cap alts ─────────────────────────────────────────────────
+    "DOGE/USD", "SHIB/USD", "BONK/USD", "PEPE/USD",
+    # ── DeFi utility ─────────────────────────────────────────────────────────
+    "BAT/USD",
+    # ── Precious metals (crypto-native) ───────────────────────────────────────
+    "PAXG/USD",   # gold-backed token — natural hedge, mean-reverts around spot gold
+]
+# Excluded (illiquid / political meme): TRUMP/USD, WIF/USD, HYPE/USD, SKY/USD, ONDO/USD
+# Excluded (stablecoins):               USDC/USD, USDT/USD, USDG/USD
 
 
 # ── Token bucket (rate limiter) ───────────────────────────────────────────────

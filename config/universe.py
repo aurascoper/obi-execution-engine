@@ -157,6 +157,19 @@ SECTOR_MAP: dict[str, str] = {
     # ── Communication Services ────────────────────────────────────────────────
     "NFLX":  "Communication Services",
     "LYV":   "Communication Services",
+    # ── Precious Metals (commodity ETFs) ──────────────────────────────────────
+    # PPLT/PALL/CPER/URNM excluded — fail MIN_ADV=1M filter
+    "GLD":   "Precious Metals",   # SPDR Gold Shares (~$438, ADV ~7M)
+    "SLV":   "Precious Metals",   # iShares Silver Trust (~$68, ADV ~16M)
+    # ── Energy Commodities ────────────────────────────────────────────────────
+    # ⚠️  MACRO OVERRIDE — Iran war risk (2026-04): crude oil is a long-side
+    # geopolitical hedge. Cap=1; do NOT raise while Iran tensions elevated.
+    # UNG excluded (price ~$11, fails $20 floor).
+    "USO":   "Energy ETF",        # United States Oil Fund (~$127, ADV ~5M)
+    # ── Nuclear Energy ────────────────────────────────────────────────────────
+    # ⚠️  MACRO OVERRIDE — Iran nuclear program makes uranium politically
+    # sensitive. Cap=1. URNM excluded (ADV ~300K fails filter).
+    "URA":   "Nuclear Energy",    # Global X Uranium ETF (~$51, ADV ~1.5M)
     # ── Russell 3000 additions ────────────────────────────────────────────────
     "BKNG":  "Consumer Discretionary",
     "AXON":  "Industrials",
@@ -195,6 +208,9 @@ SECTOR_CAPS: dict[str, int] = {
     "Healthcare":             3,
     "Defense":                1,   # MACRO OVERRIDE — geopolitical headline risk
     "Energy":                 1,   # MACRO OVERRIDE — oil supply shock exposure
+    "Energy ETF":             1,   # MACRO OVERRIDE — Iran war / crude oil spike risk
+    "Nuclear Energy":         1,   # MACRO OVERRIDE — Iran nuclear program sensitivity
+    "Precious Metals":        2,   # GLD + SLV; safe-haven inflow during geopolitical stress
     "Financials":             3,
     "Real Estate":            3,
     "Materials":              3,

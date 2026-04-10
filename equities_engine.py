@@ -95,6 +95,20 @@ SYMBOLS = [
     # ── Russell 3000 — quality shorts (z > +1.25σ, price > $20, ADV > 1M) ────
     "CAR",  "PVH",  "FLEX", "SNX",  "BK",   "C",
     "BURL", "CROX", "HOG",
+    # ── Precious metals (commodity ETFs, price > $20, ADV > 1M) ──────────────
+    # PPLT/PALL/CPER/URNM excluded — fail 1M ADV filter (illiquid for our size)
+    "GLD",  "SLV",
+    # ── Energy commodities ────────────────────────────────────────────────────
+    # UNG excluded — price ~$11, fails $20 floor
+    # ⚠️  MACRO WARNING (2026-04): Iran war risk → crude oil is a long-side hedge.
+    # USO is capped at 1 (sector "Energy ETF"). Do NOT raise cap while Iran
+    # tensions are elevated — a short squeeze on oil can be violent and rapid.
+    "USO",
+    # ── Nuclear / uranium ─────────────────────────────────────────────────────
+    # URNM excluded — ADV ~300K fails filter
+    # ⚠️  MACRO WARNING: Iran nuclear program makes uranium geopolitically
+    # sensitive. URA capped at 1 ("Nuclear Energy" sector).
+    "URA",
 ]
 
 # ── Strategy parameters ────────────────────────────────────────────────────────
