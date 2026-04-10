@@ -226,7 +226,7 @@ New file: `risk/macro_calendar.py` — `MacroCalendar` class with 6-hour cache T
 Current execution crosses the spread (taker):
 
 $$
-\text{limit\_px} = P_{\text{ref}} \times (1 + \delta_{\text{slip}}), \quad \delta_{\text{slip}} = 0.10\%
+P_{\mathrm{lim}} = P_{\text{ref}} \times (1 + \delta_{\text{slip}}), \quad \delta_{\text{slip}} = 0.10\%
 $$
 
 The whitepaper (§3) cites Cartea et al.'s finding that OBI-aware execution — posting
@@ -239,15 +239,15 @@ Phase 3 synthesizes the OBI signal (already live) into the execution layer:
 **Maker pivot:**
 
 $$
-\text{LONG entry}: \quad \text{limit\_px} = P^b_t \quad \text{(join bid queue)}
+\text{LONG entry}: \quad P_{\mathrm{lim}} = P^b_t \quad \text{(join bid queue)}
 $$
 
 $$
-\text{SHORT entry}: \quad \text{limit\_px} = P^a_t \quad \text{(join ask queue)}
+\text{SHORT entry}: \quad P_{\mathrm{lim}} = P^a_t \quad \text{(join ask queue)}
 $$
 
 $$
-\text{All exits}: \quad \text{limit\_px} = P_{\text{ref}} \times (1 \pm \delta_{\text{slip}}) \quad \text{(taker — urgency)}
+\text{All exits}: \quad P_{\mathrm{lim}} = P_{\text{ref}} \times (1 \pm \delta_{\text{slip}}) \quad \text{(taker, urgency)}
 $$
 
 **Adverse selection guard** (new `risk/order_tracker.py`):
@@ -256,7 +256,7 @@ Because passive orders can be stranded when price moves adversely, an async canc
 loop walks the order with the market:
 
 $$
-\text{replace if } \frac{|P^{b/a}_t - \text{limit\_px}|}{\text{limit\_px}} > 0.1\%, \quad \Delta t_{\text{replace}} \geq 2\,\text{s}
+\text{replace if } \frac{|P^{b/a}_t - P_{\mathrm{lim}}|}{P_{\mathrm{lim}}} > 0.1\%, \quad \Delta t_{\text{replace}} \geq 2\,\text{s}
 $$
 
 Replacement uses Alpaca's atomic `replace_order_by_id()` — no cancel-race window.
