@@ -47,7 +47,11 @@ log = structlog.get_logger(__name__)
 
 # ── Strategy Parameters ────────────────────────────────────────────────────────
 SYMBOLS             = ["ETH/USD", "BTC/USD"]
-WINDOW              = 60       # rolling bars for z-score (Avellaneda & Lee: 60-day)
+WINDOW              = 60       # rolling bars for z-score
+                               # Crypto engine:   60 one-minute bars = 60-min micro-structure window
+                               #                  (24/7 stream; no historical pre-seed; warmup ~60 min)
+                               # Equities engine: 60 daily bars = ~3-month macro window
+                               #                  (pre-seeded from IEX history at startup; warm on bar 1)
 Z_ENTRY             = -1.25   # enter long when z < Z_ENTRY (oversold)
 Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
