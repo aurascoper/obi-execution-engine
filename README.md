@@ -1,10 +1,18 @@
 # OBI + Mean-Reversion Execution Engine
-### Dual-Engine | Equities (Bidirectional) + Crypto (Long-Only) | Async Python | Apple Silicon M4
+### Dual-Engine | HF Directional Mean Reversion (Crypto) + Statistical Arbitrage (Equities) | Async Python | Apple Silicon M4
 
-A production-grade algorithmic trading system implementing the quantitative strategies surveyed in
-[`whitepaper.pdf`](whitepaper.pdf) across two parallel paper-trading engines. The mathematical
-core — an **Ornstein–Uhlenbeck z-score** gated by **Order-Book Imbalance** — is identical in
-both engines; the timeframe, directionality, and universe are engine-specific.
+A production-grade algorithmic trading system implementing two architecturally distinct
+quantitative strategies across parallel paper-trading engines, grounded in the survey of
+[`whitepaper.pdf`](whitepaper.pdf).
+
+| Engine | Strategy Paradigm | Session | Directionality |
+|--------|-------------------|---------|----------------|
+| `live_engine.py` (Crypto) | **High-Frequency Directional Mean Reversion** | 24/7 continuous tick loop | Long-only (spot market, broker-constrained) |
+| `equities_engine.py` (Equities) | **Statistical Arbitrage & Mean Reversion** | US RTH 09:30–16:00 ET strictly | Fully bidirectional (long + short, margin) |
+
+Both engines share the same mathematical primitive — an **Ornstein–Uhlenbeck z-score** gated
+by **Order-Book Imbalance** — but differ fundamentally in their execution regime, hedging
+structure, and alpha source.
 
 ---
 
@@ -138,14 +146,21 @@ sectors (see §1 stationarity discussion and Phase 3 §§ below).
 
 ## Engine Architectures
 
-### Engine 1 — Crypto (`live_engine.py`)
+### Engine 1 — Crypto (`live_engine.py`) — High-Frequency Directional Mean Reversion
+
+Unhedged directional entries on extreme negative Z-score deviations, gated by real-time L2
+Order-Book Imbalance. Operates on a 24/7 continuous tick loop with no session boundaries.
+Long-only — Alpaca's spot crypto API does not support short selling.
 
 | Property | Value |
 |----------|-------|
+| Strategy | High-Frequency Directional Mean Reversion (unhedged, spot-only) |
 | Universe | 28 crypto/USD pairs (see table below) |
+| Session | **24/7** continuous — no market-hours gate |
 | Timeframe | 1-minute bars (24/7 WebSocket stream) |
 | Z-score window | $W = 60$ bars = **60-minute** rolling window |
-| Directionality | **Long-only** (Alpaca does not support crypto shorts) |
+| Directionality | **Long-only** — broker API limitation (spot market, no crypto shorts) |
+| Entry signal | $s_t < -1.25\sigma$ (extreme negative deviation) **AND** $\rho_t > 0$ (OBI buy pressure) |
 | Pre-seed | None — live warmup, ~60 min to first signal |
 | OBI source | L2 orderbook via `CryptoDataStream` v1beta3 |
 | Notional/trade | \$15 |
@@ -163,21 +178,29 @@ sectors (see §1 stationarity discussion and Phase 3 §§ below).
 
 *Excluded: TRUMP, WIF, HYPE, SKY, ONDO (illiquid/political meme); USDC, USDT, USDG (stablecoins).*
 
-### Engine 2 — Equities (`equities_engine.py`)
+### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
+
+Hedged, sector-capped statistical arbitrage exploiting ±1.25σ deviations across a 138-symbol
+curated universe. Operates strictly within US Regular Trading Hours; no positions are opened
+or held outside 09:30–16:00 ET. Fully bidirectional — broker margin enables both long and
+short entries, creating a naturally hedged book.
 
 | Property | Value |
 |----------|-------|
-| Universe | 142 equity symbols (see below) |
-| Timeframe | Daily bars, RTH 09:30–16:00 ET |
+| Strategy | Statistical Arbitrage & Mean Reversion (hedged, sector-capped) |
+| Universe | 138 equity symbols, curated (see below) |
+| Session | **US RTH only** — 09:30–16:00 ET, strict boundary enforcement |
+| Timeframe | Daily bars |
 | Z-score window | $W = 60$ bars = **60 trading days** (~3 months) |
-| Directionality | **Bidirectional** — long ($s < -1.25\sigma$) and short ($s > +1.25\sigma$) |
+| Directionality | **Fully bidirectional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$), margin-funded |
+| Entry signal | Z-score gate ±1.25σ **AND** OBI confirmation; sector cap must not be breached |
 | Pre-seed | 60 daily IEX closes fetched at startup — warm on bar 1 |
 | OBI source | NBBO quotes synthesized to single-level OBI via `StockDataStream` |
 | Notional/trade | \$15 |
 | Sector caps | Defense=1, Energy=1, Energy ETF=1, Nuclear=1, Semis=2, others=3 |
 | Logs | `logs/equities_engine.jsonl` |
 
-**Universe (142 symbols) — screened 2026-04-09:**
+**Universe (138 symbols, curated) — screened 2026-04-09:**
 
 *Quality filters: price > \$20, 30-day ADV > 1,000,000 shares.*
 
