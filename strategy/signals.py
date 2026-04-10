@@ -244,7 +244,10 @@ class SignalEngine:
         ref_px   = close
         if not np.isnan(st.best_ask) and st.best_ask > 0:
             ref_px = max(close, st.best_ask)
-        limit_px = round(ref_px * (1.0 + LIMIT_SLIPPAGE), 2)
+        # Dynamic decimal places: enough digits so sub-penny assets (e.g. SHIB at
+        # ~$0.000006) don't round to 0.00 — Alpaca rejects limit_px == 0.
+        _price_decimals = max(2, -int(math.floor(math.log10(ref_px))) + 2) if ref_px > 0 else 2
+        limit_px = round(ref_px * (1.0 + LIMIT_SLIPPAGE), _price_decimals)
 
         log.info(
             "entry_signal",
