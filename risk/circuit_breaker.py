@@ -2,6 +2,7 @@
 risk/circuit_breaker.py — Independent circuit breaker watchdog.
 No imports from strategy/ — intentional isolation.
 """
+import asyncio
 import structlog
 from alpaca.trading.client import TradingClient
 from config.risk_params import (
@@ -31,7 +32,7 @@ class CircuitBreaker:
         log.critical("CIRCUIT_BREAKER_TRIPPED", reason=reason)
 
     async def initialize_baseline(self) -> None:
-        acct = self._client.get_account()
+        acct = await asyncio.to_thread(self._client.get_account)
         self._equity_open = float(acct.equity)
         log.info(
             "baseline_equity",
@@ -42,7 +43,18 @@ class CircuitBreaker:
     async def check_drawdown(self) -> bool:
         if self._halted:
             return False
-        acct         = self._client.get_account()
+        try:
+            acct = await asyncio.to_thread(self._client.get_account)
+        except Exception as exc:
+            # Transient network error (e.g. OSError EADDRNOTAVAIL, ConnectionError).
+            # Log and return True so the watchdog loop continues — a single failed
+            # poll should not halt the engine.
+            log.warning(
+                "drawdown_check_network_error",
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:120],
+            )
+            return True
         equity_now   = float(acct.equity)
         daily_pnl    = equity_now - (self._equity_open or equity_now)
         drawdown_pct = daily_pnl / self._equity_open if self._equity_open else 0.0
