@@ -162,7 +162,9 @@ class LiveFeed:
         delay = 60
         while True:
             try:
-                await self._stream._run_forever()
+                # Call _start_ws directly — _run_forever swallows all exceptions
+                # internally and never propagates them, making backoff impossible.
+                await self._stream._start_ws()
                 return  # clean stop via self.stop()
             except asyncio.CancelledError:
                 raise  # always propagate cancellation
