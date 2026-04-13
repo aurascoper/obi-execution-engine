@@ -46,9 +46,12 @@ class LiveFeed:
         self._msg_counts: dict[str, int] = {"bar": 0, "orderbook": 0, "quote": 0}
         self._count_window_start: float  = time.monotonic()
 
+        # Use paper credentials for the data stream — crypto market data is
+        # identical for paper/live, and this preserves the live key's single
+        # free-tier WebSocket connection slot for order submission only.
         self._stream  = CryptoDataStream(
-            api_key    = cfg.api_key,
-            secret_key = cfg.api_secret,
+            api_key    = cfg.data_key or cfg.api_key,
+            secret_key = cfg.data_secret or cfg.api_secret,
         )
 
         # Register handlers — SDK calls these as async callbacks.

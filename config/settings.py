@@ -42,6 +42,10 @@ class Settings:
     stream_url:     str
     paper:          bool           # True → paper endpoint; False → live endpoint
     execution_mode: ExecutionMode  # SHADOW | PAPER | LIVE
+    # Crypto data feed always uses paper credentials — same data, avoids burning
+    # the live key's single free-tier WebSocket connection slot.
+    data_key:       str = ""
+    data_secret:    str = ""
     log_dir:        str = "logs"
 
 
@@ -66,11 +70,18 @@ def load() -> Settings:
             "Set both explicitly to prevent accidental live trading."
         )
 
+    # Data feed always uses paper credentials — crypto market data is identical
+    # for paper and live, and this preserves the live key's connection slot.
+    data_key    = os.environ.get("ALPACA_API_KEY_ID",       key)
+    data_secret = os.environ.get("ALPACA_API_SECRET_KEY", secret)
+
     return Settings(
         api_key        = key,
         api_secret     = secret,
         base_url       = os.environ.get(
-            "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
+            "ALPACA_BASE_URL",
+            "https://api.alpaca.markets" if trading_mode == "live"
+            else "https://paper-api.alpaca.markets",
         ),
         data_url       = os.environ.get(
             "ALPACA_DATA_URL", "wss://stream.data.alpaca.markets/v2"
@@ -80,4 +91,6 @@ def load() -> Settings:
         ),
         paper          = paper,
         execution_mode = exec_mode,
+        data_key       = data_key,
+        data_secret    = data_secret,
     )
