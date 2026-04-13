@@ -39,7 +39,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide
+from alpaca.trading.enums import OrderSide, TimeInForce
 
 from config.settings import ExecutionMode, load as load_settings
 from config.risk_params import MAX_ORDERS_PER_MINUTE, MAX_ORDER_NOTIONAL, SYMBOL_CAPS
@@ -584,7 +584,8 @@ class Engine:
                 sym    = signal.get("symbol", "")
 
                 await self._bucket.acquire()
-                result = await self._orders.submit_limit(**signal)
+                # Alpaca requires DAY (not GTC) for fractional equity orders
+                result = await self._orders.submit_limit(**signal, tif=TimeInForce.DAY)
 
                 if result:
                     log.info("equities_order_result", action=action, **result)
