@@ -19,8 +19,8 @@ MAX_SHARES_PER_ORDER     = 500     # Equities: max shares per order
 
 # --- Options Engine Caps ---
 # Budget per opening trade (total debit = premium × 100 × qty).
-# At $345 equity: $50 = ~14% of account per trade — already aggressive.
-MAX_OPTIONS_BUDGET       =  50.00 if _is_live() else 500.00
+# At $445 equity: $75 = ~17% of account per trade — aggressive but opens HPE/WDC.
+MAX_OPTIONS_BUDGET       =  75.00 if _is_live() else 750.00
 MAX_OPTIONS_POSITIONS    =   3     # max concurrent open options positions
 MAX_CONTRACTS_PER_TRADE  =   1     # single contract per signal (small account)
 
