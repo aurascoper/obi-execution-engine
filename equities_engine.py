@@ -73,6 +73,8 @@ SYMBOLS = [
     # ── Long zone  z < -1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ──────
     # Trimmed to highest-conviction names; defensive/staples longs dropped to
     # stay within IEX free-tier 100-symbol WebSocket cap.
+    # CMCSA added 2026-04-13 (screener: z=-1.39σ, $27.94, 1.6M ADV, Communication)
+    "CMCSA",
     "NKE",  "TSLA", "NOW",  "PODD", "VRSK", "ZS",   "NTAP", "CRM",
     "DLTR", "DG",   "DDOG", "WDAY", "CTAS", "INTU", "SMCI", "ISRG",
     "PLTR", "GPN",  "GD",   "TTD",  "ULTA", "FICO", "ORCL", "TEAM",
