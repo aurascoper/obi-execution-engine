@@ -22,6 +22,8 @@ import signal
 from pathlib import Path
 
 import structlog
+from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus
 
 from config.settings import load as load_settings
 from data.feed import LiveFeed
@@ -42,6 +44,23 @@ structlog.configure(
     ),
 )
 log = structlog.get_logger("launch")
+
+
+async def _reconcile(taker: "Engine", maker: "MakerEngine", client) -> None:
+    """Seed both engines with any positions Alpaca already holds."""
+    import asyncio
+    positions = await asyncio.to_thread(client.get_all_positions)
+    if not positions:
+        log.info("reconcile_complete", open_positions=0)
+        return
+
+    orders = await asyncio.to_thread(
+        client.get_orders,
+        GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100),
+    )
+    taker._signals.reconcile_positions(positions, orders)
+    maker._signals.reconcile_positions(positions, orders)
+    log.info("reconcile_complete", open_positions=len(positions))
 
 
 async def main() -> None:
@@ -82,6 +101,10 @@ async def main() -> None:
     # Initialize both breakers before starting tasks.
     await taker._breaker.initialize_baseline()
     await maker._breaker.initialize_baseline()
+
+    # Reconcile open positions from Alpaca so engines don't re-enter existing
+    # holdings after a restart (Bug 2 + Bug 4).
+    await _reconcile(taker, maker, taker._client)
 
     async with asyncio.TaskGroup() as tg:
         # Shared feed — single WebSocket connection.

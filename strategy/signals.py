@@ -72,7 +72,7 @@ Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
 OBI_LEVELS          = 5       # top N order-book levels to aggregate depth
 LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 15.0    # $ per trade — Alpaca $10 minimum; $15 gives headroom
+NOTIONAL_PER_TRADE  = 1_500.0  # paper sizing ($200k account); revert to $15 for live
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
@@ -459,6 +459,81 @@ class SignalEngine:
                         reason="order_blocked_or_failed")
             st.positions[tag]    = 0.0
             st.entry_prices[tag] = float("nan")
+
+    def reconcile_positions(
+        self,
+        alpaca_positions: list,
+        alpaca_orders:    list,
+    ) -> None:
+        """
+        Seed position state from Alpaca's open positions on engine startup.
+        Prevents re-entry into positions opened by a previous engine instance.
+
+        Bug 2: engines start with empty state after restart → would re-enter
+               symbols already held, doubling exposure.
+        Bug 4: pre-Phase-3 orders have UUID client_order_ids (no tag prefix) →
+               reconcile defaults them to self.strategy_tag.
+
+        alpaca_positions : list of Alpaca Position objects (client.get_all_positions())
+        alpaca_orders    : list of recent filled orders    (status=CLOSED, limit=100)
+                           used to look up client_order_id per symbol.
+        """
+        # Build: normalized_symbol → most-recent tagged client_order_id
+        # Alpaca orders use "BTC/USD" format; normalize to "BTCUSD" for matching.
+        cid_by_sym: dict[str, str] = {}
+        for order in alpaca_orders:
+            sym_norm = (getattr(order, "symbol", "") or "").replace("/", "")
+            cid      = getattr(order, "client_order_id", "") or ""
+            side_raw = getattr(order, "side", "")
+            side     = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
+            status_raw = getattr(order, "status", "")
+            status   = status_raw.value if hasattr(status_raw, "value") else str(status_raw)
+            if "buy" in side.lower() and "filled" in status.lower():
+                if sym_norm not in cid_by_sym:   # most-recent first
+                    cid_by_sym[sym_norm] = cid
+
+        # Build reverse map: "BTCUSD" → "BTC/USD" for our state keys
+        norm_to_state = {s.replace("/", ""): s for s in self._state}
+
+        for pos in alpaca_positions:
+            alpaca_sym = getattr(pos, "symbol", "")         # e.g. "BTCUSD"
+            state_sym  = norm_to_state.get(alpaca_sym)
+            if state_sym is None:
+                continue                                     # not in our universe
+
+            qty       = float(getattr(pos, "qty",             0) or 0)
+            avg_entry = float(getattr(pos, "avg_entry_price", 0) or 0)
+            if qty <= 0:
+                continue
+
+            cid   = cid_by_sym.get(alpaca_sym, "")
+            parts = cid.split("_", 1)
+            cid_tag = parts[0] if (len(parts) > 1 and parts[0] in ("taker", "maker")) \
+                               else None
+
+            if cid_tag is not None and cid_tag != self.strategy_tag:
+                # Position belongs to the other engine — skip.
+                continue
+
+            # UUID (pre-Phase-3) orders are treated as "taker" regardless of
+            # which engine is reconciling — the original engine crossed the spread.
+            tag = cid_tag if cid_tag is not None else "taker"
+
+            # Only seed positions this engine owns.
+            if tag != self.strategy_tag:
+                continue
+
+            st = self._state[state_sym]
+            st.positions[tag]    = qty
+            st.entry_prices[tag] = avg_entry
+            log.info(
+                "position_reconciled",
+                symbol=state_sym,
+                tag=tag,
+                qty=qty,
+                avg_entry_px=avg_entry,
+                client_order_id=cid or "uuid_pre_phase3",
+            )
 
     def rollback_exit(self, symbol: str) -> None:
         """

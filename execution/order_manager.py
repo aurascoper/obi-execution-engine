@@ -101,7 +101,9 @@ class OrderManager:
 
         async def _on_trade_update(data) -> None:
             try:
-                event = data.event
+                # event may be a string or TradeEvent enum
+                event_raw = data.event
+                event = event_raw.value if hasattr(event_raw, "value") else str(event_raw)
                 if event not in ("fill", "partial_fill"):
                     return
 
@@ -109,11 +111,36 @@ class OrderManager:
                 cid    = getattr(order, "client_order_id", "") or ""
                 symbol = getattr(order, "symbol", "")
                 qty    = float(getattr(order, "filled_qty", 0) or 0)
-                side   = str(getattr(order, "side", "")).lower()
+
+                # Bug 1 fix: order.side is an OrderSide enum, not a plain string.
+                # Use .value ("buy"/"sell") when available; fall back to str().
+                side_raw = getattr(order, "side", "")
+                side     = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
+                side     = side.lower()
 
                 # Only handle fills that belong to this tag
                 if not cid.startswith(f"{self.strategy_tag}_"):
                     return
+
+                # Bug 3: detect paper-sim ghost fills — maker limit filled at a
+                # price that crossed our limit (impossible in real markets).
+                fill_px  = float(getattr(order, "filled_avg_price", 0) or 0)
+                limit_px = float(getattr(order, "limit_price",      0) or 0)
+                if limit_px > 0 and fill_px > 0:
+                    if side == "buy"  and fill_px > limit_px * 1.001:
+                        log.warning(
+                            "paper_sim_fill_suspected",
+                            symbol=symbol, side=side,
+                            fill_px=fill_px, limit_px=limit_px,
+                            note="fill above buy limit — would not fill in live market",
+                        )
+                    elif side == "sell" and fill_px < limit_px * 0.999:
+                        log.warning(
+                            "paper_sim_fill_suspected",
+                            symbol=symbol, side=side,
+                            fill_px=fill_px, limit_px=limit_px,
+                            note="fill below sell limit — would not fill in live market",
+                        )
 
                 log.info(
                     "trade_update",
@@ -121,6 +148,7 @@ class OrderManager:
                     client_order_id=cid,
                     symbol=symbol,
                     qty=qty,
+                    fill_px=fill_px,
                     side=side,
                     tag=self.strategy_tag,
                 )

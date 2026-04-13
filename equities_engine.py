@@ -111,7 +111,7 @@ Z_SHORT_EXIT       =  0.50   # short exit (cover): mean-reversion back toward me
 OBI_THETA          = -0.001  # slightly negative: OBI=0.0 (no quote data) passes
                              # the gate, so z-score alone fires for symbols outside
                              # the QUOTE_PRIORITY set in stock_feed.py.
-EQUITY_NOTIONAL    = 15.00   # $ per trade (bounded by MAX_ORDER_NOTIONAL = $15)
+EQUITY_NOTIONAL    = 1_500.00  # paper sizing ($200k account); revert to $15 for live
 
 _ET        = zoneinfo.ZoneInfo("America/New_York")
 _RTH_OPEN  = dtime(9, 30)
@@ -444,11 +444,65 @@ class Engine:
 
         await self._breaker.initialize_baseline()
         await self._preseed_from_history()
+        await self._reconcile_positions()
 
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self._feed.run(),       name="stock_feed")
             tg.create_task(self._strategy_loop(),  name="equities_strategy")
             tg.create_task(self._drawdown_watch(), name="equities_drawdown")
+
+    # ── Startup position reconciliation ───────────────────────────────────────
+    async def _reconcile_positions(self) -> None:
+        """
+        Seed signal state from Alpaca's open positions on startup.
+        Handles both Phase-3-tagged orders and pre-Phase-3 UUID orders (Bug 4).
+
+        For equities, also seeds _long_qty / _short / _short_qty / _short_px
+        so the strategy loop knows to exit rather than re-enter.
+        """
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+
+        positions = await asyncio.to_thread(self._client.get_all_positions)
+        if not positions:
+            log.info("equities_reconcile_complete", open_positions=0)
+            return
+
+        orders = await asyncio.to_thread(
+            self._client.get_orders,
+            GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=100),
+        )
+
+        # Seed parent SignalEngine state (positions / entry_prices dicts)
+        self._signals.reconcile_positions(positions, orders)
+
+        # Also seed equities-specific long/short tracking dicts
+        norm_to_sym = {s.replace("/", "").replace("-", ""): s
+                       for s in self._signals._state}
+
+        for pos in positions:
+            alpaca_sym = getattr(pos, "symbol", "")
+            state_sym  = norm_to_sym.get(alpaca_sym)
+            if state_sym is None:
+                continue
+
+            qty       = float(getattr(pos, "qty", 0) or 0)
+            avg_entry = float(getattr(pos, "avg_entry_price", 0) or 0)
+
+            if qty > 0:
+                # Long position
+                self._signals._long_qty[state_sym] = qty
+                log.info("equities_long_reconciled",
+                         symbol=state_sym, qty=qty, avg_entry=avg_entry)
+            elif qty < 0:
+                # Short position
+                self._signals._short[state_sym]     = True
+                self._signals._short_qty[state_sym] = abs(qty)
+                self._signals._short_px[state_sym]  = avg_entry
+                log.info("equities_short_reconciled",
+                         symbol=state_sym, qty=abs(qty), avg_entry=avg_entry)
+
+        log.info("equities_reconcile_complete", open_positions=len(positions))
 
     # ── Pre-seed: bulk-load 60 historical daily closes ─────────────────────────
     async def _preseed_from_history(self) -> None:
