@@ -49,31 +49,12 @@ class LiveFeed:
         # Use paper credentials for the data stream — crypto market data is
         # identical for paper/live, and this preserves the live key's single
         # free-tier WebSocket connection slot for order submission only.
+        self._data_key    = cfg.data_key or cfg.api_key
+        self._data_secret = cfg.data_secret or cfg.api_secret
         self._stream  = CryptoDataStream(
-            api_key    = cfg.data_key or cfg.api_key,
-            secret_key = cfg.data_secret or cfg.api_secret,
+            api_key    = self._data_key,
+            secret_key = self._data_secret,
         )
-
-        # Patch _start_ws to add backoff on "connection limit exceeded".
-        # The SDK's _run_forever retries immediately on any error, hammering
-        # Alpaca's server and accumulating zombie connections. A 60s sleep
-        # gives the server time to clean them up before the next attempt.
-        _orig_start_ws = self._stream._start_ws
-
-        async def _backoff_start_ws() -> None:
-            try:
-                await _orig_start_ws()
-            except Exception as e:
-                if "connection limit" in str(e).lower():
-                    log.warning(
-                        "feed_connection_limit_backoff",
-                        sleep_s=60,
-                        note="waiting for Alpaca server to clear stale connections",
-                    )
-                    await asyncio.sleep(60)
-                raise
-
-        self._stream._start_ws = _backoff_start_ws
 
         # Register handlers — SDK calls these as async callbacks.
         # Quotes subscription removed: orderbook snapshots already deliver L2
@@ -173,11 +154,39 @@ class LiveFeed:
 
     async def run(self) -> None:
         """
-        Awaitable coroutine — run inside asyncio.TaskGroup in live_engine.py.
-        _run_forever() is the SDK's internal async loop; it handles reconnection.
+        Reconnect loop with exponential backoff on connection-limit errors.
+        Never propagates exceptions — isolated from the TaskGroup so a feed
+        hiccup cannot cancel the engine tasks.
         """
         log.info("feed_starting")
-        await self._stream._run_forever()
+        delay = 60
+        while True:
+            try:
+                await self._stream._run_forever()
+                return  # clean stop via self.stop()
+            except asyncio.CancelledError:
+                raise  # always propagate cancellation
+            except Exception as e:
+                msg = str(e).lower()
+                if "connection limit" in msg or "429" in msg:
+                    log.warning(
+                        "feed_connection_limit_backoff",
+                        sleep_s=delay,
+                        note="waiting for Alpaca server to drain stale connections",
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 300)
+                else:
+                    log.warning("feed_reconnect", error=str(e), sleep_s=5)
+                    await asyncio.sleep(5)
+                    delay = 60  # reset on non-limit error
+                # Recreate stream so we get a fresh WebSocket object on retry.
+                self._stream = CryptoDataStream(
+                    api_key    = self._data_key,
+                    secret_key = self._data_secret,
+                )
+                self._stream.subscribe_bars(self._on_bar, *self._symbols)
+                self._stream.subscribe_orderbooks(self._on_orderbook, *self._symbols)
 
     def stop(self) -> None:
         log.info("feed_stopping")
