@@ -69,13 +69,25 @@ class LiveStockFeed:
             secret_key = cfg.api_secret,
             feed       = DataFeed.IEX,
         )
+        # IEX free tier: 1 WebSocket connection, ~100 symbol-channel subscriptions.
+        # Subscribe bars for the full universe; quotes only for a small priority
+        # subset so the combined count stays well under the cap.
+        # OBI_THETA in equities_engine.py is set to -0.001 so symbols without
+        # fresh quote data (OBI defaults to 0.0) still clear the gate.
+        QUOTE_PRIORITY = {
+            "NKE", "INTC", "NFLX", "HPE", "SLB", "CSX",
+        }
+        quote_syms = [s for s in symbols if s in QUOTE_PRIORITY]
+
         self._stream.subscribe_bars(self._on_bar, *symbols)
-        self._stream.subscribe_quotes(self._on_quote, *symbols)
+        if quote_syms:
+            self._stream.subscribe_quotes(self._on_quote, *quote_syms)
 
         log.info(
             "stock_feed_subscribed",
             n_symbols=len(symbols),
-            channels=["bars", "quotes"],
+            n_quote_syms=len(quote_syms),
+            channels=["bars", "quotes(priority)"],
             endpoint="wss://stream.data.alpaca.markets/v2/iex",
         )
 

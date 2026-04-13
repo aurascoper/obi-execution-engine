@@ -20,9 +20,24 @@ Long-Only Crypto  |  ~$150 account  |  No shorting  |  No equities (PDT)
 ║    → mean-reversion has completed sufficiently                   ║
 ╚══════════════════════════════════════════════════════════════════╝
 
+Phase 3 — Tag-aware inventory
+  _SymbolState.positions     : dict[str, float]  tag → open qty (0.0 = flat)
+  _SymbolState.entry_prices  : dict[str, float]  tag → entry price
+  SignalEngine.strategy_tag  : str               "taker" | "maker"
+
+  Each engine instance owns one tag.  evaluate() checks/writes only its
+  own tag so taker and maker can share the same Alpaca account without
+  reading each other's inventory.
+
+  Backward compatibility for EquitiesSignalEngine:
+    _SymbolState.in_position  →  @property  (any tag has qty > 0)
+    _SymbolState.entry_px     →  @property  (first entry price found)
+    Both have setters that map to the new dicts for legacy write paths.
+
 Two public update paths (called by the event loop):
   signals.evaluate(bar)        → per bar; may return order dict or None
   signals.update_orderbook(ob) → per L2 snapshot; updates OBI state only
+  signals.on_fill(...)         → called by OrderManager trade-update stream
 
 Output dict format (required by order_manager.py):
   {
@@ -126,24 +141,79 @@ class _RollingBuffer:
 
 # ── Per-Symbol Runtime State ───────────────────────────────────────────────────
 class _SymbolState:
-    """All mutable state for one symbol; no heap allocation after __init__."""
+    """
+    All mutable state for one symbol; no heap allocation after __init__.
+
+    Phase 3 — tag-aware inventory replaces the flat bool/float pair:
+      positions    : dict[str, float]  — tag → open qty (0.0 = flat)
+      entry_prices : dict[str, float]  — tag → entry price
+      best_bid     : float             — cached for maker limit placement
+
+    Backward-compat @property descriptors expose the old names so
+    EquitiesSignalEngine (which inherits SignalEngine's evaluate path) keeps
+    working without modification.
+    """
 
     __slots__ = (
         "symbol",
-        "price_buf",     # _RollingBuffer of close prices
-        "obi",           # latest ρ_t scalar (updated by update_orderbook)
-        "best_ask",      # latest best ask (for precise limit price)
-        "in_position",   # bool: True if a long is currently open
-        "entry_px",      # price at which the current trade was entered
+        "price_buf",      # _RollingBuffer of close prices
+        "obi",            # latest ρ_t scalar (updated by update_orderbook)
+        "best_ask",       # latest best ask (taker aggressive limit)
+        "best_bid",       # latest best bid (maker passive limit)
+        "positions",      # dict[str, float]  tag → open qty
+        "entry_prices",   # dict[str, float]  tag → entry price
+        "pending_exits",  # dict[str, bool]   tag → sell order submitted, awaiting fill
     )
 
     def __init__(self, symbol: str, window: int) -> None:
-        self.symbol       = symbol
-        self.price_buf    = _RollingBuffer(window)
-        self.obi          = 0.0
-        self.best_ask     = float("nan")
-        self.in_position  = False
-        self.entry_px     = float("nan")
+        self.symbol         = symbol
+        self.price_buf      = _RollingBuffer(window)
+        self.obi            = 0.0
+        self.best_ask       = float("nan")
+        self.best_bid       = float("nan")
+        self.positions      : dict[str, float] = {}
+        self.entry_prices   : dict[str, float] = {}
+        self.pending_exits  : dict[str, bool]  = {}
+
+    # ── Tag-aware helpers ──────────────────────────────────────────────────────
+
+    def is_open(self, tag: str) -> bool:
+        """True if this tag currently holds a non-zero position."""
+        return self.positions.get(tag, 0.0) != 0.0
+
+    def open_qty(self, tag: str) -> float:
+        return self.positions.get(tag, 0.0)
+
+    def best_prices(self) -> tuple[float, float]:
+        """Returns (best_bid, best_ask) — either may be nan if not yet cached."""
+        return self.best_bid, self.best_ask
+
+    # ── Backward-compat properties (used by EquitiesSignalEngine path) ─────────
+
+    @property
+    def in_position(self) -> bool:
+        """True if any tag holds a non-zero position."""
+        return any(q != 0.0 for q in self.positions.values())
+
+    @in_position.setter
+    def in_position(self, val: bool) -> None:
+        """Legacy write path — maps to the 'taker' tag."""
+        if not val:
+            self.positions["taker"] = 0.0
+        # True writes are handled through the tag-aware path; ignore here.
+
+    @property
+    def entry_px(self) -> float:
+        """First non-nan entry price found across all tags."""
+        for px in self.entry_prices.values():
+            if not math.isnan(px):
+                return px
+        return float("nan")
+
+    @entry_px.setter
+    def entry_px(self, val: float) -> None:
+        """Legacy write path — maps to the 'taker' tag."""
+        self.entry_prices["taker"] = val
 
 
 # ── Signal Engine ──────────────────────────────────────────────────────────────
@@ -168,12 +238,14 @@ class SignalEngine:
         obi_theta:          float     = OBI_THETA,
         obi_levels:         int       = OBI_LEVELS,
         notional_per_trade: float     = NOTIONAL_PER_TRADE,
+        strategy_tag:       str       = "taker",
     ) -> None:
         self._z_entry            = z_entry
         self._z_exit             = z_exit
         self._obi_theta          = obi_theta
         self._obi_levels         = obi_levels
         self._notional_per_trade = notional_per_trade
+        self.strategy_tag        = strategy_tag
 
         self._state: dict[str, _SymbolState] = {
             s: _SymbolState(s, window) for s in symbols
@@ -204,32 +276,52 @@ class SignalEngine:
         if z is None:
             return None
 
+        tag = self.strategy_tag
         log.debug(
             "signal_tick",
             symbol=sym,
             z=round(z, 4),
             obi=round(st.obi, 4),
-            in_position=st.in_position,
+            tag=tag,
+            in_position=st.is_open(tag),
         )
 
         # 3. Exit path — check before considering a new entry
-        if st.in_position:
+        if st.is_open(tag):
+            # Sell order already submitted; waiting for on_fill() to clear state.
+            if st.pending_exits.get(tag, False):
+                return None
+
             if z > self._z_exit:
-                # Price has reverted: z crossed back above exit threshold.
-                # Emit log; the order_manager monitors open positions separately
-                # and should receive a complementary SELL signal here in a full
-                # implementation.  For now we update state and log for audit.
+                qty_to_sell = st.open_qty(tag)
+                sell_px     = self._limit_px(st, close, OrderSide.SELL)
+                notional    = round(qty_to_sell * close, 2)
+                entry_px    = st.entry_prices.get(tag, float("nan"))
+                pnl_est     = (
+                    round((close - entry_px) / entry_px * 100, 3)
+                    if not math.isnan(entry_px) else float("nan")
+                )
                 log.info(
                     "exit_signal",
                     symbol=sym,
                     z=round(z, 4),
-                    entry_px=st.entry_px,
+                    tag=tag,
+                    entry_px=entry_px,
                     close=close,
-                    pnl_est=round((close - st.entry_px) / st.entry_px * 100, 3),
+                    sell_px=sell_px,
+                    qty=qty_to_sell,
+                    pnl_est=pnl_est,
                 )
-                st.in_position = False
-                st.entry_px    = float("nan")
-            return None     # never open a second position while one is live
+                st.pending_exits[tag] = True
+                return {
+                    "symbol":   sym,
+                    "side":     OrderSide.SELL,
+                    "qty":      qty_to_sell,
+                    "limit_px": sell_px,
+                    "notional": notional,
+                }
+
+            return None     # still in position, mean-reversion incomplete
 
         # 4. Entry path — BOTH conditions must hold
         oversold     = z < self._z_entry                  # condition 1: z-score
@@ -243,27 +335,21 @@ class SignalEngine:
             log.warning("sizing_returned_zero", symbol=sym, close=close)
             return None
 
-        # 6. Set aggressive limit: max(close, best_ask) × (1 + slippage)
-        #    Guarantees limit_px ≥ close even when cached orderbook is stale.
-        ref_px   = close
-        if not np.isnan(st.best_ask) and st.best_ask > 0:
-            ref_px = max(close, st.best_ask)
-        # Dynamic decimal places: enough digits so sub-penny assets (e.g. SHIB at
-        # ~$0.000006) don't round to 0.00 — Alpaca rejects limit_px == 0.
-        _price_decimals = max(2, -int(math.floor(math.log10(ref_px))) + 2) if ref_px > 0 else 2
-        limit_px = round(ref_px * (1.0 + LIMIT_SLIPPAGE), _price_decimals)
+        # 6. Compute limit price (strategy-aware via _limit_px)
+        limit_px = self._limit_px(st, close, OrderSide.BUY)
 
         log.info(
             "entry_signal",
             symbol=sym,
             z=round(z, 4),
             obi=round(st.obi, 4),
+            tag=tag,
             qty=qty,
             limit_px=limit_px,
             notional=notional,
         )
-        st.in_position = True
-        st.entry_px    = close
+        st.positions[tag]    = qty
+        st.entry_prices[tag] = close
 
         return {
             "symbol":   sym,
@@ -315,23 +401,124 @@ class SignalEngine:
         st      = self._state[sym]
         st.obi  = float(rho)
 
-        # Cache best ask for limit price precision
+        # Cache best ask (taker limit) and best bid (maker limit)
         if asks:
             st.best_ask = float(asks[0][0])
+        if bids:
+            st.best_bid = float(bids[0][0])
+
+    # ── Fill handler (called by OrderManager TradingStream) ──────────────────
+    def on_fill(
+        self,
+        client_order_id: str,
+        symbol:          str,
+        qty:             float,
+        side:            str,
+    ) -> None:
+        """
+        Called by OrderManager when a fill arrives on the TradingStream.
+
+        Parses the client_order_id prefix to identify the owning tag and
+        updates positions accordingly.  Ignores fills belonging to a
+        different tag (e.g. maker fills arriving on a taker engine).
+
+        client_order_id format: "{tag}_{sym_no_slash}_{epoch_s}"
+          e.g. "taker_ETHUSD_1744566000"
+        """
+        st = self._state.get(symbol)
+        if st is None:
+            return
+
+        # Extract tag from prefix — robust to any suffix format
+        parts = client_order_id.split("_", 1)
+        fill_tag = parts[0] if parts else ""
+
+        if fill_tag != self.strategy_tag:
+            return   # fill belongs to a different engine instance
+
+        if side.lower() in ("buy", "b"):
+            st.positions[fill_tag] = qty
+            log.info("fill_recorded", symbol=symbol, tag=fill_tag, qty=qty, side="buy")
+        else:
+            st.positions[fill_tag]     = 0.0
+            st.entry_prices[fill_tag]  = float("nan")
+            st.pending_exits[fill_tag] = False
+            log.info("fill_recorded", symbol=symbol, tag=fill_tag, qty=0.0, side="sell")
 
     # ── Position state rollback ───────────────────────────────────────────────
     def rollback_entry(self, symbol: str) -> None:
         """
-        Called by the engine loop when an order is blocked or fails after
-        evaluate() has already set in_position=True.  Resets state so the
+        Called by the engine loop when a BUY order is blocked or fails after
+        evaluate() has already written to positions.  Resets state so the
         engine can retry on the next qualifying bar.
         """
-        st = self._state.get(symbol)
-        if st and st.in_position:
-            log.warning("entry_rollback", symbol=symbol,
+        tag = self.strategy_tag
+        st  = self._state.get(symbol)
+        if st and st.is_open(tag):
+            log.warning("entry_rollback", symbol=symbol, tag=tag,
                         reason="order_blocked_or_failed")
-            st.in_position = False
-            st.entry_px    = float("nan")
+            st.positions[tag]    = 0.0
+            st.entry_prices[tag] = float("nan")
+
+    def rollback_exit(self, symbol: str) -> None:
+        """
+        Called by the engine loop when a SELL order is blocked or fails after
+        evaluate() set pending_exits[tag]=True.  Clears the pending flag so
+        the exit will be retried on the next qualifying bar.
+        Position and entry_price are intentionally preserved — we still hold
+        the asset.
+        """
+        tag = self.strategy_tag
+        st  = self._state.get(symbol)
+        if st and st.pending_exits.get(tag, False):
+            log.warning("exit_rollback", symbol=symbol, tag=tag,
+                        reason="sell_blocked_or_failed")
+            st.pending_exits[tag] = False
+
+    # ── Private: Limit Price ──────────────────────────────────────────────────
+    @staticmethod
+    def _price_decimals(ref: float) -> int:
+        """Dynamic decimal places so sub-penny assets never round to 0.00."""
+        return max(2, -int(math.floor(math.log10(ref))) + 2) if ref > 0 else 2
+
+    def _limit_px(
+        self, st: _SymbolState, close: float, side: OrderSide
+    ) -> float:
+        """
+        Compute the limit price for an order based on strategy tag and side.
+
+        Taker (cross-spread, guaranteed fill):
+          BUY  → max(close, best_ask) × (1 + LIMIT_SLIPPAGE)
+          SELL → min(close, best_bid) × (1 − LIMIT_SLIPPAGE)
+
+        Maker (post-at-book, earn spread):
+          BUY  → best_bid  (join the bid; no slippage markup)
+          SELL → best_ask  (join the ask; no slippage discount)
+          Falls back to close ± LIMIT_SLIPPAGE when book is stale.
+        """
+        if self.strategy_tag == "maker":
+            if side == OrderSide.BUY:
+                ref = st.best_bid if not math.isnan(st.best_bid) and st.best_bid > 0 else close
+                # No spread-crossing adjustment for maker orders
+                dec = self._price_decimals(ref)
+                return round(ref, dec)
+            else:
+                ref = st.best_ask if not math.isnan(st.best_ask) and st.best_ask > 0 else close
+                dec = self._price_decimals(ref)
+                return round(ref, dec)
+        else:  # taker
+            if side == OrderSide.BUY:
+                ref = close
+                if not math.isnan(st.best_ask) and st.best_ask > 0:
+                    ref = max(close, st.best_ask)
+                dec = self._price_decimals(ref)
+                return round(ref * (1.0 + LIMIT_SLIPPAGE), dec)
+            else:
+                ref = close
+                if not math.isnan(st.best_bid) and st.best_bid > 0:
+                    ref = min(close, st.best_bid)
+                dec = self._price_decimals(ref)
+                return round(ref * (1.0 - LIMIT_SLIPPAGE), dec)
 
     # ── Private: Position Sizing ───────────────────────────────────────────────
     def _size_order(self, symbol: str, price: float) -> tuple[float, float]:

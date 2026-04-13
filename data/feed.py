@@ -32,12 +32,15 @@ log = structlog.get_logger(__name__)
 class LiveFeed:
     def __init__(
         self,
-        cfg:       Settings,
-        symbols:   list[str],
-        msg_queue: asyncio.Queue,
+        cfg:        Settings,
+        symbols:    list[str],
+        msg_queues: asyncio.Queue | list[asyncio.Queue],
     ):
         self._symbols = symbols
-        self._queue   = msg_queue
+        # Normalise to list so callbacks can fan-out to N consumers.
+        self._queues: list[asyncio.Queue] = (
+            msg_queues if isinstance(msg_queues, list) else [msg_queues]
+        )
 
         # ── Per-type message counters (reset every 60 s) ──────────────────────
         self._msg_counts: dict[str, int] = {"bar": 0, "orderbook": 0, "quote": 0}
@@ -48,13 +51,15 @@ class LiveFeed:
             secret_key = cfg.api_secret,
         )
 
-        # Register handlers — SDK calls these as async callbacks
+        # Register handlers — SDK calls these as async callbacks.
+        # Quotes subscription removed: orderbook snapshots already deliver L2
+        # bid/ask depth for OBI.  28 bars + 28 orderbooks = 56 subscriptions,
+        # within Alpaca's crypto free-tier per-connection limit.
         self._stream.subscribe_bars(self._on_bar, *symbols)
         self._stream.subscribe_orderbooks(self._on_orderbook, *symbols)
-        self._stream.subscribe_quotes(self._on_quote, *symbols)
 
         log.info("feed_subscribed", symbols=symbols,
-                 channels=["bars", "orderbooks", "quotes"],
+                 channels=["bars", "orderbooks"],
                  endpoint="wss://stream.data.alpaca.markets/v1beta3/crypto/us")
 
     # ── Internal: debug counter ────────────────────────────────────────────────
@@ -75,11 +80,18 @@ class LiveFeed:
             self._msg_counts        = {"bar": 0, "orderbook": 0, "quote": 0}
             self._count_window_start = now
 
+    # ── Internal: fan-out put ─────────────────────────────────────────────────
+
+    async def _put(self, msg: dict) -> None:
+        """Deliver one message to every registered consumer queue."""
+        for q in self._queues:
+            await q.put(msg)
+
     # ── SDK callbacks ─────────────────────────────────────────────────────────
 
     async def _on_bar(self, bar: Bar) -> None:
         self._tick_count("bar")
-        await self._queue.put({
+        await self._put({
             "type":      "bar",
             "symbol":    bar.symbol,
             "open":      float(bar.open),
@@ -98,7 +110,7 @@ class LiveFeed:
         Converted to [[price, size], ...] to match SignalEngine.update_orderbook() contract.
         """
         self._tick_count("orderbook")
-        await self._queue.put({
+        await self._put({
             "type":      "orderbook",
             "symbol":    ob.symbol,
             "bids":      [[float(q.price), float(q.size)] for q in ob.bids],
@@ -124,7 +136,7 @@ class LiveFeed:
             return
         if bp <= 0 or ap <= 0:
             return
-        await self._queue.put({
+        await self._put({
             "type":      "orderbook",
             "symbol":    q.symbol,
             "bids":      [[bp, bs]],

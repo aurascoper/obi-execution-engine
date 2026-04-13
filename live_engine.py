@@ -23,6 +23,7 @@ from pathlib import Path
 
 import structlog
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide
 
 from config.settings import ExecutionMode, load as load_settings
 from config.risk_params import MAX_ORDERS_PER_MINUTE
@@ -48,24 +49,24 @@ structlog.configure(
 log = structlog.get_logger("engine")
 
 # ── Universe ──────────────────────────────────────────────────────────────────
+# Trimmed to 10 highest-liquidity assets: 10 bars + 10 orderbooks = 20 total
+# subscriptions — well under Alpaca's crypto free-tier per-connection limit.
+# Expand once on a paid tier or Hyperliquid (Phase 4).
 SYMBOLS = [
-    # ── Blue-chip L1 / infrastructure ────────────────────────────────────────
-    "BTC/USD",  "ETH/USD",  "SOL/USD",  "AVAX/USD", "ADA/USD",  "DOT/USD",
-    "LTC/USD",  "BCH/USD",  "XRP/USD",  "XTZ/USD",
-    # ── DeFi blue chips ───────────────────────────────────────────────────────
-    "LINK/USD", "AAVE/USD", "UNI/USD",  "CRV/USD",  "SUSHI/USD","LDO/USD",
-    "GRT/USD",  "YFI/USD",
-    # ── Layer-2 / infra tokens ────────────────────────────────────────────────
-    "ARB/USD",  "POL/USD",  "FIL/USD",  "RENDER/USD",
-    # ── Liquid large-cap alts ─────────────────────────────────────────────────
-    "DOGE/USD", "SHIB/USD", "BONK/USD", "PEPE/USD",
-    # ── DeFi utility ─────────────────────────────────────────────────────────
-    "BAT/USD",
-    # ── Precious metals (crypto-native) ───────────────────────────────────────
-    "PAXG/USD",   # gold-backed token — natural hedge, mean-reverts around spot gold
+    "BTC/USD",   # highest liquidity, tight spreads
+    "ETH/USD",   # second deepest book
+    "SOL/USD",   # high-beta L1, strong mean-reversion
+    "AVAX/USD",  # correlated L1 alt
+    "DOGE/USD",  # high retail volume, mean-reverts well
+    "LINK/USD",  # DeFi blue-chip, OBI signal reliable
+    "ADA/USD",   # liquid L1
+    "XRP/USD",   # high volume, tight spread
+    "LTC/USD",   # BTC proxy, deep book
+    "BCH/USD",   # BTC fork, predictable correlation
 ]
-# Excluded (illiquid / political meme): TRUMP/USD, WIF/USD, HYPE/USD, SKY/USD, ONDO/USD
-# Excluded (stablecoins):               USDC/USD, USDT/USD, USDG/USD
+# Excluded (subscription limit): DOT, XTZ, AAVE, UNI, CRV, SUSHI, LDO, GRT,
+#   YFI, ARB, POL, FIL, RENDER, SHIB, BONK, PEPE, BAT, PAXG
+# Expand to full universe on Alpaca paid tier or Phase 4 Hyperliquid pivot.
 
 
 # ── Token bucket (rate limiter) ───────────────────────────────────────────────
@@ -89,7 +90,7 @@ class _TokenBucket:
 
 # ── Engine ────────────────────────────────────────────────────────────────────
 class Engine:
-    def __init__(self):
+    def __init__(self, msg_queue: asyncio.Queue | None = None):
         self._cfg     = load_settings()
         self._client  = TradingClient(
             self._cfg.api_key,
@@ -97,12 +98,19 @@ class Engine:
             paper=self._cfg.paper,
         )
         self._breaker = CircuitBreaker(self._client)
-        self._orders  = OrderManager(self._client, self._breaker, self._cfg)
-        self._signals = SignalEngine(symbols=SYMBOLS)
+        self._orders  = OrderManager(self._client, self._breaker, self._cfg,
+                                     strategy_tag="taker")
+        self._signals = SignalEngine(symbols=SYMBOLS, strategy_tag="taker")
         self._bucket  = _TokenBucket(MAX_ORDERS_PER_MINUTE)
-        self._msg_q   = asyncio.Queue(maxsize=2000)
-        self._feed    = LiveFeed(self._cfg, SYMBOLS, self._msg_q)
         self._running = True
+
+        if msg_queue is not None:
+            # Shared feed injected by launch.py — don't create our own.
+            self._msg_q = msg_queue
+            self._feed  = None
+        else:
+            self._msg_q = asyncio.Queue(maxsize=2000)
+            self._feed  = LiveFeed(self._cfg, SYMBOLS, self._msg_q)
 
     async def run(self) -> None:
         mode = self._cfg.execution_mode.value
@@ -116,7 +124,8 @@ class Engine:
         await self._breaker.initialize_baseline()
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._feed.run(),       name="feed")
+            if self._feed is not None:
+                tg.create_task(self._feed.run(),   name="feed")
             tg.create_task(self._strategy_loop(),  name="strategy")
             tg.create_task(self._drawdown_watch(), name="drawdown")
 
@@ -146,8 +155,11 @@ class Engine:
                     log.info("order_result", **result)
                 else:
                     # Order was blocked (circuit breaker, notional cap, etc.).
-                    # Rollback in_position so the engine can retry next bar.
-                    self._signals.rollback_entry(signal["symbol"])
+                    # Roll back the correct side so the engine can retry next bar.
+                    if signal["side"] == OrderSide.BUY:
+                        self._signals.rollback_entry(signal["symbol"])
+                    else:
+                        self._signals.rollback_exit(signal["symbol"])
 
     # ── Drawdown watchdog — independent of strategy ───────────────────────────
     async def _drawdown_watch(self) -> None:

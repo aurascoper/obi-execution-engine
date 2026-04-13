@@ -71,41 +71,32 @@ log = structlog.get_logger("equities_engine")
 # Add/remove symbols here; pre-seed and circuit breaker adapt automatically.
 SYMBOLS = [
     # ── Long zone  z < -1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ──────
-    "HRL",  "NKE",  "TSLA", "NOW",  "SJM",  "EXE",  "PTC",  "PODD",
-    "VRSK", "ZS",   "GEN",  "NTAP", "CRM",  "DLTR", "DG",   "DDOG",
-    "WDAY", "LDOS", "CTAS", "INTU", "CPB",  "SMCI", "ISRG", "MKC",
-    "GIS",  "PLTR", "EL",   "COR",  "GPN",  "PAYX", "PM",   "CSGP",
-    "GD",   "TTD",  "LEN",  "MOS",  "SYY",  "JKHY", "ULTA", "FICO",
-    "TSCO", "ORCL", "TEAM", "CPRT", "J",    "SNOW", "CRWD",
+    # Trimmed to highest-conviction names; defensive/staples longs dropped to
+    # stay within IEX free-tier 100-symbol WebSocket cap.
+    "NKE",  "TSLA", "NOW",  "PODD", "VRSK", "ZS",   "NTAP", "CRM",
+    "DLTR", "DG",   "DDOG", "WDAY", "CTAS", "INTU", "SMCI", "ISRG",
+    "PLTR", "GPN",  "GD",   "TTD",  "ULTA", "FICO", "ORCL", "TEAM",
+    "CPRT", "SNOW", "CRWD",
     # ── Short zone  z > +1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ─────
-    "INTC", "MRVL", "KLAC", "MPWR", "JBL",  "LRCX", "STT",  "STX",
-    "FAST", "SNDK", "SBAC", "ETR",  "WDC",  "TJX",  "ETN",  "COST",
-    "PPL",  "HUBB", "RL",   "GLW",  "TER",  "Q",    "HLT",  "WAB",
-    "ROST", "FIX",  "GEV",  "VRSN", "NI",   "LITE", "HPE",  "DELL",
-    "SRE",  "DLR",  "TGT",  "GL",   "KEYS", "CMI",  "CMS",  "COHR",
-    "NFLX", "FTV",  "PNW",  "ODFL", "WEC",  "MAR",  "LNT",  "NTRS",
-    "GRMN", "EME",  "VRT",  "EQIX", "CTVA", "GWW",  "FE",   "EVRG",
+    # 20 low-signal names dropped to stay under IEX 80-symbol bars+quotes cap.
+    # Kept: all 5 currently active short signals + highest-conviction names.
+    "INTC", "MRVL", "KLAC", "MPWR", "LRCX", "WDC",  "ETN",  "COST",
+    "HUBB", "RL",   "GLW",  "TER",  "Q",    "HLT",  "WAB",
+    "LITE", "HPE",  "DELL", "SRE",  "DLR",  "TGT",  "KEYS", "CMI",
+    "NFLX", "ODFL", "WEC",  "MAR",  "NTRS",
+    "EME",  "VRT",  "EQIX", "GWW",  "FE",
     "LYV",  "SLB",  "CSCO", "DTE",  "STZ",  "FCX",  "EIX",  "ED",
-    "TSN",  "CNP",  "CSX",  "DUK",
+    "TSN",  "CSX",  "DUK",
     # ── Dow additions ──────────────────────────────────────────────────────────
     "CAT",
-    # ── Russell 3000 — quality longs (z < -1.25σ, price > $20, ADV > 1M) ─────
-    "BKNG", "AXON", "VEEV", "ADBE", "HUBS", "ADSK", "BSX",
-    "MDB",  "ABT",  "ADP",  "NTNX", "GWRE", "MANH",
-    # ── Russell 3000 — quality shorts (z > +1.25σ, price > $20, ADV > 1M) ────
-    "CAR",  "PVH",  "FLEX", "SNX",  "BK",   "C",
-    "BURL", "CROX", "HOG",
     # ── Precious metals (commodity ETFs, price > $20, ADV > 1M) ──────────────
-    # PPLT/PALL/CPER/URNM excluded — fail 1M ADV filter (illiquid for our size)
     "GLD",  "SLV",
     # ── Energy commodities ────────────────────────────────────────────────────
-    # UNG excluded — price ~$11, fails $20 floor
     # ⚠️  MACRO WARNING (2026-04): Iran war risk → crude oil is a long-side hedge.
     # USO is capped at 1 (sector "Energy ETF"). Do NOT raise cap while Iran
     # tensions are elevated — a short squeeze on oil can be violent and rapid.
     "USO",
     # ── Nuclear / uranium ─────────────────────────────────────────────────────
-    # URNM excluded — ADV ~300K fails filter
     # ⚠️  MACRO WARNING: Iran nuclear program makes uranium geopolitically
     # sensitive. URA capped at 1 ("Nuclear Energy" sector).
     "URA",
@@ -117,7 +108,9 @@ Z_LONG_ENTRY       = -1.25   # long entry: price 1.25σ below rolling mean
 Z_LONG_EXIT        = -0.50   # long exit:  mean-reversion mostly complete
 Z_SHORT_ENTRY      =  1.25   # short entry: price 1.25σ above rolling mean
 Z_SHORT_EXIT       =  0.50   # short exit (cover): mean-reversion back toward mean
-OBI_THETA          =  0.00   # any net buy/sell pressure confirms entry
+OBI_THETA          = -0.001  # slightly negative: OBI=0.0 (no quote data) passes
+                             # the gate, so z-score alone fires for symbols outside
+                             # the QUOTE_PRIORITY set in stock_feed.py.
 EQUITY_NOTIONAL    = 15.00   # $ per trade (bounded by MAX_ORDER_NOTIONAL = $15)
 
 _ET        = zoneinfo.ZoneInfo("America/New_York")
@@ -200,6 +193,19 @@ class EquitiesSignalEngine(SignalEngine):
 
         # --- Parent handles: buffer push, z-score, long entry/exit ---
         long_signal = super().evaluate(bar)
+
+        # Phase 3 compat: parent now returns SELL dicts on exit instead of
+        # silently clearing in_position.  EquitiesSignalEngine builds its own
+        # exit order (with action= metadata and equities-specific _sell_limit),
+        # so suppress the parent's SELL and restore the pre-Phase-3 contract:
+        # zero parent state immediately so block 2's detection still works.
+        # (Equities does not use TradingStream fills for position clearing.)
+        if long_signal is not None and long_signal.get("side") == OrderSide.SELL:
+            tag = self.strategy_tag
+            st.pending_exits[tag]  = False
+            st.positions[tag]      = 0.0
+            st.entry_prices[tag]   = float("nan")
+            long_signal            = None
 
         # 1. Long entry fired — check sector cap before committing
         if long_signal is not None:

@@ -5,14 +5,31 @@ Execution mode routing:
   SHADOW → log mock fill, return synthetic dict, never call the API
   PAPER  → submit to Alpaca paper endpoint
   LIVE   → submit to Alpaca live endpoint
+
+Phase 3 — Client Order ID tagging:
+  Every order carries a client_order_id of the form:
+    "{strategy_tag}_{symbol_no_slash}_{epoch_s}"
+    e.g. "taker_ETHUSD_1744566000"  (≤ 40 chars, well under Alpaca's 48-char limit)
+
+  TradingStream fill listener:
+    start_trade_updates() subscribes to the Alpaca trade-update WebSocket.
+    On each fill event the client_order_id is parsed and routed to any
+    registered handler (typically SignalEngine.on_fill).
+
+  Usage:
+    om = OrderManager(client, breaker, cfg, strategy_tag="taker")
+    om.register_fill_handler(signals.on_fill)
+    asyncio.create_task(om.start_trade_updates())
 """
 
 import asyncio
 import time
+from typing import Callable
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from alpaca.trading.client import TradingClient
+from alpaca.trading.stream import TradingStream
 from alpaca.trading.requests import LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
@@ -30,13 +47,93 @@ log = structlog.get_logger(__name__)
 class OrderManager:
     def __init__(
         self,
-        client:  TradingClient,
-        breaker: CircuitBreaker,
-        cfg:     Settings,
+        client:       TradingClient,
+        breaker:      CircuitBreaker,
+        cfg:          Settings,
+        strategy_tag: str = "taker",
     ):
-        self._client  = client
-        self._breaker = breaker
-        self._mode    = cfg.execution_mode
+        self._client       = client
+        self._breaker      = breaker
+        self._mode         = cfg.execution_mode
+        self._cfg          = cfg
+        self.strategy_tag  = strategy_tag
+        self._fill_handler: Callable | None = None
+
+    # ── Client Order ID ───────────────────────────────────────────────────────
+
+    def _make_client_id(self, symbol: str) -> str:
+        """
+        Format: "{tag}_{sym_no_slash}_{epoch_s}"
+        Max 40 chars — safe under Alpaca's 48-char client_order_id limit.
+
+        Example: "taker_ETHUSD_1744566000"
+        """
+        sym_clean = symbol.replace("/", "").replace("-", "")
+        epoch     = int(time.time())
+        return f"{self.strategy_tag}_{sym_clean}_{epoch}"
+
+    # ── Fill handler registration ─────────────────────────────────────────────
+
+    def register_fill_handler(self, handler: Callable) -> None:
+        """
+        Register a callback invoked on each fill from TradingStream.
+
+        Expected signature:
+          handler(client_order_id: str, symbol: str, qty: float, side: str) -> None
+        """
+        self._fill_handler = handler
+
+    # ── TradingStream trade-update listener ───────────────────────────────────
+
+    async def start_trade_updates(self) -> None:
+        """
+        Subscribe to Alpaca's TradingStream and route fill events to the
+        registered fill handler.  Runs until cancelled.
+
+        Only processes events whose client_order_id prefix matches this
+        engine's strategy_tag, so taker/maker streams don't cross-fire.
+        """
+        stream = TradingStream(
+            api_key    = self._cfg.api_key,
+            secret_key = self._cfg.api_secret,
+            paper      = (self._mode != ExecutionMode.LIVE),
+        )
+
+        async def _on_trade_update(data) -> None:
+            try:
+                event = data.event
+                if event not in ("fill", "partial_fill"):
+                    return
+
+                order  = data.order
+                cid    = getattr(order, "client_order_id", "") or ""
+                symbol = getattr(order, "symbol", "")
+                qty    = float(getattr(order, "filled_qty", 0) or 0)
+                side   = str(getattr(order, "side", "")).lower()
+
+                # Only handle fills that belong to this tag
+                if not cid.startswith(f"{self.strategy_tag}_"):
+                    return
+
+                log.info(
+                    "trade_update",
+                    event=event,
+                    client_order_id=cid,
+                    symbol=symbol,
+                    qty=qty,
+                    side=side,
+                    tag=self.strategy_tag,
+                )
+
+                if self._fill_handler is not None:
+                    self._fill_handler(cid, symbol, qty, side)
+
+            except Exception:
+                log.exception("trade_update_parse_error", raw=str(data))
+
+        stream.subscribe_trade_updates(_on_trade_update)
+        log.info("trade_updates_starting", tag=self.strategy_tag)
+        await stream._run_forever()
 
     # ── Public ────────────────────────────────────────────────────────────────
     async def submit_limit(
@@ -55,11 +152,13 @@ class OrderManager:
         if not self._breaker.validate_order(symbol, qty, notional):
             return None
 
+        cid = self._make_client_id(symbol)
+
         if self._mode == ExecutionMode.SHADOW:
-            return self._shadow_fill(symbol, side, qty, limit_px, notional)
+            return self._shadow_fill(symbol, side, qty, limit_px, notional, cid)
 
         # PAPER or LIVE — hit the actual API
-        return await self._submit_to_api(symbol, side, qty, limit_px, notional, tif)
+        return await self._submit_to_api(symbol, side, qty, limit_px, notional, tif, cid)
 
     def log_slippage(self, symbol: str, expected_px: float, fill_px: float) -> None:
         slip  = abs(fill_px - expected_px) / expected_px
@@ -75,18 +174,18 @@ class OrderManager:
     # ── Shadow mode ───────────────────────────────────────────────────────────
     def _shadow_fill(
         self,
-        symbol:   str,
-        side:     OrderSide,
-        qty:      float,
-        limit_px: float,
-        notional: float,
+        symbol:          str,
+        side:            OrderSide,
+        qty:             float,
+        limit_px:        float,
+        notional:        float,
+        client_order_id: str = "",
     ) -> dict:
         """
         Simulate a fill without touching the brokerage API.
         The log line is deliberately high-visibility (WARNING level) so it
         cannot be missed in production log streams.
         """
-        mock_id = f"shadow-{symbol.replace('/', '')}-{int(time.time())}"
         log.warning(
             "[SHADOW EXECUTION] Mock fill",
             symbol=symbol,
@@ -94,18 +193,20 @@ class OrderManager:
             qty=qty,
             limit_px=limit_px,
             notional=notional,
-            mock_order_id=mock_id,
+            client_order_id=client_order_id,
+            tag=self.strategy_tag,
         )
         return {
-            "id":          mock_id,
-            "status":      "shadow_filled",
-            "symbol":      symbol,
-            "side":        side.value,
-            "qty":         qty,
-            "limit_px":    limit_px,
-            "notional":    notional,
-            "latency_ms":  0.0,
-            "mode":        "SHADOW",
+            "id":               client_order_id,
+            "status":           "shadow_filled",
+            "symbol":           symbol,
+            "side":             side.value,
+            "qty":              qty,
+            "limit_px":         limit_px,
+            "notional":         notional,
+            "latency_ms":       0.0,
+            "mode":             "SHADOW",
+            "client_order_id":  client_order_id,
         }
 
     # ── Live / Paper mode ─────────────────────────────────────────────────────
@@ -119,19 +220,21 @@ class OrderManager:
     )
     async def _submit_to_api(
         self,
-        symbol:   str,
-        side:     OrderSide,
-        qty:      float,
-        limit_px: float,
-        notional: float,
-        tif:      TimeInForce,
+        symbol:          str,
+        side:            OrderSide,
+        qty:             float,
+        limit_px:        float,
+        notional:        float,
+        tif:             TimeInForce,
+        client_order_id: str = "",
     ) -> dict:
         req = LimitOrderRequest(
-            symbol        = symbol,
-            qty           = qty,
-            side          = side,
-            limit_price   = limit_px,
-            time_in_force = tif,
+            symbol           = symbol,
+            qty              = qty,
+            side             = side,
+            limit_price      = limit_px,
+            time_in_force    = tif,
+            client_order_id  = client_order_id or None,
         )
         t0    = time.perf_counter_ns()
         order = await asyncio.to_thread(self._client.submit_order, req)
@@ -140,17 +243,20 @@ class OrderManager:
         log.info(
             "order_submitted",
             id=str(order.id),
+            client_order_id=client_order_id,
             symbol=symbol,
             side=side.value,
             qty=qty,
             limit_px=limit_px,
             notional=notional,
             latency_ms=round(lat, 3),
+            tag=self.strategy_tag,
             mode=self._mode.value,
         )
         return {
-            "id":         str(order.id),
-            "status":     str(order.status),
-            "latency_ms": round(lat, 3),
-            "mode":       self._mode.value,
+            "id":               str(order.id),
+            "status":           str(order.status),
+            "latency_ms":       round(lat, 3),
+            "mode":             self._mode.value,
+            "client_order_id":  client_order_id,
         }
