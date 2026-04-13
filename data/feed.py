@@ -159,7 +159,10 @@ class LiveFeed:
         hiccup cannot cancel the engine tasks.
         """
         log.info("feed_starting")
-        delay = 60
+        # Start with a short backoff — escalate only on repeated connection-limit hits.
+        # Cold-start with a zombie connection typically clears in 10–30 s; starting
+        # at 60 s was causing 3+ minutes of unmonitored exposure on restart.
+        delay = 10
         while True:
             try:
                 # Call _start_ws directly — _run_forever swallows all exceptions
@@ -177,11 +180,11 @@ class LiveFeed:
                         note="waiting for Alpaca server to drain stale connections",
                     )
                     await asyncio.sleep(delay)
-                    delay = min(delay * 2, 300)
+                    delay = min(delay * 2, 300)  # 10→20→40→80→160→300
                 else:
                     log.warning("feed_reconnect", error=str(e), sleep_s=5)
                     await asyncio.sleep(5)
-                    delay = 60  # reset on non-limit error
+                    delay = 10  # reset on non-limit error
                 # Recreate stream so we get a fresh WebSocket object on retry.
                 self._stream = CryptoDataStream(
                     api_key    = self._data_key,

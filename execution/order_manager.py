@@ -156,8 +156,13 @@ class OrderManager:
                 if self._fill_handler is not None:
                     self._fill_handler(cid, symbol, qty, side)
 
-            except Exception:
-                log.exception("trade_update_parse_error", raw=str(data))
+            except Exception as _exc:
+                log.error(
+                    "trade_update_parse_error",
+                    raw=str(data),
+                    exc_type=type(_exc).__name__,
+                    exc_msg=str(_exc),
+                )
 
         stream.subscribe_trade_updates(_on_trade_update)
         log.info("trade_updates_starting", tag=self.strategy_tag)
