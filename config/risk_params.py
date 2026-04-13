@@ -13,9 +13,16 @@ MAX_DAILY_DRAWDOWN_PCT   = 0.02    # Hard halt if equity drops 2% intraday
 MAX_DAILY_LOSS_DOLLARS   =  35.0 if _is_live() else 500.0   # $350 live / $200k paper
 
 # --- Per-Order Size Caps ---
-MAX_ORDER_NOTIONAL       =  15.00 if _is_live() else 1_500.00  # $350 live / $200k paper
-MAX_CONTRACTS_PER_LEG    =  10     # Options: max contracts per leg
+MAX_ORDER_NOTIONAL       =  15.00 if _is_live() else 1_500.00  # $15 live / $1500 paper
+MAX_CONTRACTS_PER_LEG    =  10     # Options: max contracts per leg (circuit breaker)
 MAX_SHARES_PER_ORDER     = 500     # Equities: max shares per order
+
+# --- Options Engine Caps ---
+# Budget per opening trade (total debit = premium × 100 × qty).
+# At $345 equity: $50 = ~14% of account per trade — already aggressive.
+MAX_OPTIONS_BUDGET       =  50.00 if _is_live() else 500.00
+MAX_OPTIONS_POSITIONS    =   3     # max concurrent open options positions
+MAX_CONTRACTS_PER_TRADE  =   1     # single contract per signal (small account)
 
 # --- Portfolio-Level Caps ---
 MAX_OPEN_POSITIONS       =  10     # Total open positions allowed
