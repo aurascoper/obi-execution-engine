@@ -3,14 +3,17 @@ config/risk_params.py — Hardcoded circuit breaker thresholds.
 These are constants — not configurable at runtime.
 """
 
+import os as _os
+
+def _is_live() -> bool:
+    return _os.environ.get("EXECUTION_MODE", "PAPER").upper().strip() == "LIVE"
+
 # --- Daily P&L Circuit Breakers ---
 MAX_DAILY_DRAWDOWN_PCT   = 0.02    # Hard halt if equity drops 2% intraday
-MAX_DAILY_LOSS_DOLLARS   = 500.0   # Absolute dollar floor (whichever hits first)
+MAX_DAILY_LOSS_DOLLARS   =  35.0 if _is_live() else 500.0   # $350 live / $200k paper
 
 # --- Per-Order Size Caps ---
-# Intentionally set to $5.00 during live validation phase.
-# Raise only after latency + slippage are verified on real fills.
-MAX_ORDER_NOTIONAL       = 15.00   # Alpaca minimum order is $10; set to $15 with margin
+MAX_ORDER_NOTIONAL       =  15.00 if _is_live() else 1_500.00  # $350 live / $200k paper
 MAX_CONTRACTS_PER_LEG    =  10     # Options: max contracts per leg
 MAX_SHARES_PER_ORDER     = 500     # Equities: max shares per order
 

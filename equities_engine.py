@@ -111,7 +111,7 @@ Z_SHORT_EXIT       =  0.50   # short exit (cover): mean-reversion back toward me
 OBI_THETA          = -0.001  # slightly negative: OBI=0.0 (no quote data) passes
                              # the gate, so z-score alone fires for symbols outside
                              # the QUOTE_PRIORITY set in stock_feed.py.
-EQUITY_NOTIONAL    = 1_500.00  # paper sizing ($200k account); revert to $15 for live
+EQUITY_NOTIONAL    = 15.00 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.00
 
 _ET        = zoneinfo.ZoneInfo("America/New_York")
 _RTH_OPEN  = dtime(9, 30)

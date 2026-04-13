@@ -72,7 +72,7 @@ Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
 OBI_LEVELS          = 5       # top N order-book levels to aggregate depth
 LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 1_500.0  # paper sizing ($200k account); revert to $15 for live
+NOTIONAL_PER_TRADE  = 15.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.0
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
