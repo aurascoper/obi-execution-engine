@@ -138,7 +138,8 @@ class MakerEngine:
             if self._breaker.halted:
                 log.critical("maker_engine_halted")
                 self._running = False
-                self._feed.stop()
+                if self._feed is not None:
+                    self._feed.stop()
                 break
 
             msg = await self._msg_q.get()
@@ -215,12 +216,14 @@ class MakerEngine:
             safe = await self._breaker.check_drawdown()
             if not safe:
                 self._running = False
-                self._feed.stop()
+                if self._feed is not None:
+                    self._feed.stop()
 
     def stop(self) -> None:
         log.info("maker_engine_shutdown")
         self._running = False
-        self._feed.stop()
+        if self._feed is not None:
+            self._feed.stop()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

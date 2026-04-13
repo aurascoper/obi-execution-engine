@@ -135,7 +135,8 @@ class Engine:
             if self._breaker.halted:
                 log.critical("engine_halted")
                 self._running = False
-                self._feed.stop()
+                if self._feed is not None:
+                    self._feed.stop()
                 break
 
             msg = await self._msg_q.get()
