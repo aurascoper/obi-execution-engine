@@ -570,11 +570,7 @@ class Engine:
                 continue
 
             if msg["type"] == "bar":
-                # Belt-and-suspenders: strategy layer also enforces RTH
-                now_et = datetime.now(_ET).time()
-                if not (_RTH_OPEN <= now_et < _RTH_CLOSE):
-                    continue
-
+                # Daily bars arrive after market close — no RTH guard needed.
                 signal = self._signals.evaluate(msg)
                 if signal is None:
                     continue

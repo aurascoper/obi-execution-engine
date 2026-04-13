@@ -69,17 +69,17 @@ class LiveStockFeed:
             secret_key = cfg.api_secret,
             feed       = DataFeed.IEX,
         )
-        # IEX free tier: 1 WebSocket connection, ~100 symbol-channel subscriptions.
-        # Subscribe bars for the full universe; quotes only for a small priority
-        # subset so the combined count stays well under the cap.
-        # OBI_THETA in equities_engine.py is set to -0.001 so symbols without
-        # fresh quote data (OBI defaults to 0.0) still clear the gate.
+        # Daily bars: one bar per symbol per day, delivered at market close (~4 PM ET).
+        # This matches the 60-day pre-seeded z-score window and prevents PDT violations —
+        # entries and exits happen on different calendar days by construction.
+        # Intraday NBBO quotes still stream for a priority subset to keep OBI fresh
+        # throughout the day; signal evaluation fires only on the daily bar.
         QUOTE_PRIORITY = {
             "NKE", "INTC", "NFLX", "HPE", "SLB", "CSX",
         }
         quote_syms = [s for s in symbols if s in QUOTE_PRIORITY]
 
-        self._stream.subscribe_bars(self._on_bar, *symbols)
+        self._stream.subscribe_daily_bars(self._on_bar, *symbols)
         if quote_syms:
             self._stream.subscribe_quotes(self._on_quote, *quote_syms)
 
@@ -87,7 +87,7 @@ class LiveStockFeed:
             "stock_feed_subscribed",
             n_symbols=len(symbols),
             n_quote_syms=len(quote_syms),
-            channels=["bars", "quotes(priority)"],
+            channels=["daily_bars", "quotes(priority)"],
             endpoint="wss://stream.data.alpaca.markets/v2/iex",
         )
 
@@ -121,8 +121,9 @@ class LiveStockFeed:
     async def _on_bar(self, bar: Bar) -> None:
         if bar.symbol not in self._symbols:
             return
-        if not self._is_rth():
-            return
+        # No RTH guard here — daily bars are delivered after the close (~4 PM ET),
+        # which falls outside the 09:30–16:00 window. The strategy layer is
+        # responsible for any additional timing constraints it needs.
         self._tick_count("bar")
         await self._queue.put({
             "type":      "bar",
