@@ -54,6 +54,27 @@ class LiveFeed:
             secret_key = cfg.data_secret or cfg.api_secret,
         )
 
+        # Patch _start_ws to add backoff on "connection limit exceeded".
+        # The SDK's _run_forever retries immediately on any error, hammering
+        # Alpaca's server and accumulating zombie connections. A 60s sleep
+        # gives the server time to clean them up before the next attempt.
+        _orig_start_ws = self._stream._start_ws
+
+        async def _backoff_start_ws() -> None:
+            try:
+                await _orig_start_ws()
+            except Exception as e:
+                if "connection limit" in str(e).lower():
+                    log.warning(
+                        "feed_connection_limit_backoff",
+                        sleep_s=60,
+                        note="waiting for Alpaca server to clear stale connections",
+                    )
+                    await asyncio.sleep(60)
+                raise
+
+        self._stream._start_ws = _backoff_start_ws
+
         # Register handlers — SDK calls these as async callbacks.
         # Quotes subscription removed: orderbook snapshots already deliver L2
         # bid/ask depth for OBI.  28 bars + 28 orderbooks = 56 subscriptions,
