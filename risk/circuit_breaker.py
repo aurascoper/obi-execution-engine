@@ -61,18 +61,21 @@ class CircuitBreaker:
         qty:        float,
         notional:   float,
         asset_class: str = "crypto",    # "equity" | "option" | "crypto"
+        side:        str = "buy",       # "buy" | "sell"
     ) -> bool:
         if self._halted:
             log.warning("order_blocked_halted", symbol=symbol)
             return False
-        if notional > MAX_ORDER_NOTIONAL:
-            log.warning("order_blocked_notional",
-                        symbol=symbol, notional=notional, cap=MAX_ORDER_NOTIONAL)
-            return False
-        if symbol in SYMBOL_CAPS and notional > SYMBOL_CAPS[symbol]:
-            log.warning("order_blocked_symbol_cap",
-                        symbol=symbol, notional=notional, cap=SYMBOL_CAPS[symbol])
-            return False
+        # Notional caps guard entries only — exits reduce exposure, not increase it.
+        if side == "buy":
+            if notional > MAX_ORDER_NOTIONAL:
+                log.warning("order_blocked_notional",
+                            symbol=symbol, notional=notional, cap=MAX_ORDER_NOTIONAL)
+                return False
+            if symbol in SYMBOL_CAPS and notional > SYMBOL_CAPS[symbol]:
+                log.warning("order_blocked_symbol_cap",
+                            symbol=symbol, notional=notional, cap=SYMBOL_CAPS[symbol])
+                return False
         if asset_class == "option" and qty > MAX_CONTRACTS_PER_LEG:
             log.warning("order_blocked_contracts", symbol=symbol, qty=qty)
             return False

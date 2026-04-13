@@ -583,6 +583,16 @@ class Engine:
                 action = signal.pop("action", "")
                 sym    = signal.get("symbol", "")
 
+                # Live Alpaca accounts require shorting privileges to place SELL
+                # orders without an existing long position.  Skip short entries
+                # on LIVE and roll back the state set by evaluate() so the engine
+                # can cleanly re-evaluate on the next bar.
+                if action == "enter_short" and self._cfg.execution_mode == ExecutionMode.LIVE:
+                    self._signals.rollback_short(sym)
+                    log.warning("short_skipped_no_privilege", symbol=sym,
+                                mode=self._cfg.execution_mode.value)
+                    continue
+
                 await self._bucket.acquire()
                 # Alpaca requires DAY (not GTC) for fractional equity orders
                 result = await self._orders.submit_limit(**signal, tif=TimeInForce.DAY)

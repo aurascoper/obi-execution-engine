@@ -182,7 +182,8 @@ class OrderManager:
         Route order through the active execution mode.
         Returns a result dict on success, None if blocked by circuit breaker.
         """
-        if not self._breaker.validate_order(symbol, qty, notional):
+        if not self._breaker.validate_order(symbol, qty, notional,
+                                             side=side.value.lower()):
             return None
 
         cid = self._make_client_id(symbol)
