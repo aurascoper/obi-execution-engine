@@ -5,3 +5,6 @@ tenacity>=8.0
 numpy>=1.26
 streamlit>=1.35.0
 plotly>=5.20.0
+python-dotenv>=1.0
+hyperliquid-python-sdk>=0.22
+eth-account>=0.13

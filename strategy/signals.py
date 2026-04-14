@@ -1,6 +1,7 @@
 """
 strategy/signals.py — Hybrid OBI + Mean-Reversion Signal Engine
-Long-Only Crypto  |  ~$150 account  |  No shorting  |  No equities (PDT)
+Default: Long-Only (Alpaca crypto/equities).  allow_short=True unlocks the
+bi-directional Hyperliquid path (Phase 4).
 
 ╔══════════════════════════════════════════════════════════════════╗
 ║  Mathematical Basis                                              ║
@@ -13,11 +14,11 @@ Long-Only Crypto  |  ~$150 account  |  No shorting  |  No equities (PDT)
 ║    ρ_t = (V^b_t − V^a_t) / (V^b_t + V^a_t)                     ║
 ║    where V^b, V^a are aggregated bid/ask depth at top N levels   ║
 ║                                                                  ║
-║  Entry:  z_t < −Z_ENTRY  AND  ρ_t > OBI_THETA                  ║
-║    → price is statistically oversold AND buy pressure confirms   ║
-║                                                                  ║
-║  Exit:   z_t > −Z_EXIT                                          ║
-║    → mean-reversion has completed sufficiently                   ║
+║  Long entry:  z_t < Z_ENTRY        AND  ρ_t >  OBI_THETA        ║
+║  Long exit:   z_t > Z_EXIT                                       ║
+║  Short entry: z_t > Z_SHORT_ENTRY  AND  ρ_t < −OBI_THETA        ║
+║               (gated by allow_short; off for Alpaca engines)     ║
+║  Short exit:  z_t < Z_EXIT_SHORT                                 ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Phase 3 — Tag-aware inventory
@@ -69,10 +70,18 @@ WINDOW              = 60       # rolling bars for z-score
                                #                  (pre-seeded from IEX history at startup; warm on bar 1)
 Z_ENTRY             = -1.25   # enter long when z < Z_ENTRY (oversold)
 Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
+Z_SHORT_ENTRY       = +1.25   # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
+Z_EXIT_SHORT        = +0.50   # cover short when z reverts below Z_EXIT_SHORT    — HL only
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
-OBI_LEVELS          = 5       # top N order-book levels to aggregate depth
+OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
+                              # live burn-in on HL BTC/ETH showed OBI-5 captures
+                              # high-frequency MM flicker at the front row, with
+                              # 2.6–5.8× more std than OBI-20 and occasional sign
+                              # contradictions vs the deeper committed book —
+                              # specifically a "bid-side façade at levels 1-5
+                              # over an ask-heavy levels 6-20" trap on ETH.
 LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 15.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.0
+NOTIONAL_PER_TRADE  = 100.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.0
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
@@ -235,17 +244,23 @@ class SignalEngine:
         window:             int       = WINDOW,
         z_entry:            float     = Z_ENTRY,
         z_exit:             float     = Z_EXIT,
+        z_short_entry:      float     = Z_SHORT_ENTRY,
+        z_exit_short:       float     = Z_EXIT_SHORT,
         obi_theta:          float     = OBI_THETA,
         obi_levels:         int       = OBI_LEVELS,
         notional_per_trade: float     = NOTIONAL_PER_TRADE,
         strategy_tag:       str       = "taker",
+        allow_short:        bool      = False,
     ) -> None:
         self._z_entry            = z_entry
         self._z_exit             = z_exit
+        self._z_short_entry      = z_short_entry
+        self._z_exit_short       = z_exit_short
         self._obi_theta          = obi_theta
         self._obi_levels         = obi_levels
         self._notional_per_trade = notional_per_trade
         self.strategy_tag        = strategy_tag
+        self._allow_short        = allow_short
 
         self._state: dict[str, _SymbolState] = {
             s: _SymbolState(s, window) for s in symbols
@@ -277,7 +292,7 @@ class SignalEngine:
             return None
 
         tag = self.strategy_tag
-        log.debug(
+        log.info(
             "signal_tick",
             symbol=sym,
             z=round(z, 4),
@@ -288,55 +303,68 @@ class SignalEngine:
 
         # 3. Exit path — check before considering a new entry
         if st.is_open(tag):
-            # Sell order already submitted; waiting for on_fill() to clear state.
+            # Close order already submitted; waiting for on_fill() to clear state.
             if st.pending_exits.get(tag, False):
                 return None
 
-            if z > self._z_exit:
-                qty_to_sell = st.open_qty(tag)
-                sell_px     = self._limit_px(st, close, OrderSide.SELL)
-                notional    = round(qty_to_sell * close, 2)
-                entry_px    = st.entry_prices.get(tag, float("nan"))
-                pnl_est     = (
-                    round((close - entry_px) / entry_px * 100, 3)
-                    if not math.isnan(entry_px) else float("nan")
-                )
-                log.info(
-                    "exit_signal",
-                    symbol=sym,
-                    z=round(z, 4),
-                    tag=tag,
-                    entry_px=entry_px,
-                    close=close,
-                    sell_px=sell_px,
-                    qty=qty_to_sell,
-                    pnl_est=pnl_est,
-                )
-                st.pending_exits[tag] = True
-                return {
-                    "symbol":   sym,
-                    "side":     OrderSide.SELL,
-                    "qty":      qty_to_sell,
-                    "limit_px": sell_px,
-                    "notional": notional,
-                }
+            cur_qty  = st.open_qty(tag)     # signed: +long, −short
+            is_long  = cur_qty > 0
+            exit_ok  = (z > self._z_exit) if is_long else (z < self._z_exit_short)
+            if not exit_ok:
+                return None
 
-            return None     # still in position, mean-reversion incomplete
+            exit_side = OrderSide.SELL if is_long else OrderSide.BUY
+            exit_qty  = abs(cur_qty)
+            exit_px   = self._limit_px(st, close, exit_side)
+            notional  = round(exit_qty * close, 2)
+            entry_px  = st.entry_prices.get(tag, float("nan"))
+            if not math.isnan(entry_px) and entry_px > 0:
+                raw_pnl   = (close - entry_px) if is_long else (entry_px - close)
+                pnl_est   = round(raw_pnl / entry_px * 100, 3)
+            else:
+                pnl_est   = float("nan")
+            log.info(
+                "exit_signal",
+                symbol=sym,
+                z=round(z, 4),
+                tag=tag,
+                direction=("long" if is_long else "short"),
+                entry_px=entry_px,
+                close=close,
+                exit_px=exit_px,
+                qty=exit_qty,
+                pnl_est=pnl_est,
+            )
+            st.pending_exits[tag] = True
+            return {
+                "symbol":   sym,
+                "side":     exit_side,
+                "qty":      exit_qty,
+                "limit_px": exit_px,
+                "notional": notional,
+            }
 
-        # 4. Entry path — BOTH conditions must hold
-        oversold     = z < self._z_entry                  # condition 1: z-score
-        buy_pressure = st.obi > self._obi_theta           # condition 2: OBI
-        if not (oversold and buy_pressure):
+        # 4. Entry path — long xor short (both conditions must hold)
+        long_entry  = (z < self._z_entry)       and (st.obi >  self._obi_theta)
+        short_entry = (
+            self._allow_short
+            and (z > self._z_short_entry)
+            and (st.obi < -self._obi_theta)
+        )
+        if not (long_entry or short_entry):
             return None
 
-        # 5. Size the order
+        entry_side = OrderSide.BUY if long_entry else OrderSide.SELL
+        direction  = "long" if long_entry else "short"
+
+        # 5. Size the order (absolute qty; sign applied to positions below)
         qty, notional = self._size_order(sym, close)
         if qty <= 0.0:
             log.warning("sizing_returned_zero", symbol=sym, close=close)
             return None
 
         # 6. Compute limit price (strategy-aware via _limit_px)
-        limit_px = self._limit_px(st, close, OrderSide.BUY)
+        limit_px = self._limit_px(st, close, entry_side)
 
         log.info(
             "entry_signal",
@@ -344,16 +372,17 @@ class SignalEngine:
             z=round(z, 4),
             obi=round(st.obi, 4),
             tag=tag,
+            direction=direction,
             qty=qty,
             limit_px=limit_px,
             notional=notional,
         )
-        st.positions[tag]    = qty
+        st.positions[tag]    = qty if long_entry else -qty
         st.entry_prices[tag] = close
 
         return {
             "symbol":   sym,
-            "side":     OrderSide.BUY,
+            "side":     entry_side,
             "qty":      qty,
             "limit_px": limit_px,
             "notional": notional,
@@ -429,21 +458,45 @@ class SignalEngine:
         if st is None:
             return
 
-        # Extract tag from prefix — robust to any suffix format
-        parts = client_order_id.split("_", 1)
-        fill_tag = parts[0] if parts else ""
-
-        if fill_tag != self.strategy_tag:
+        # Tag match: our client_order_ids are `{tag}_{sym}_{epoch}`, so a
+        # prefix + trailing underscore uniquely identifies this engine's fills
+        # and tolerates multi-underscore tags like "hl_taker_z".
+        if not client_order_id.startswith(self.strategy_tag + "_"):
             return   # fill belongs to a different engine instance
 
-        if side.lower() in ("buy", "b"):
-            st.positions[fill_tag] = qty
-            log.info("fill_recorded", symbol=symbol, tag=fill_tag, qty=qty, side="buy")
-        else:
+        fill_tag = self.strategy_tag
+        side_l = side.lower()
+        # pending_exits[tag]=True means evaluate() emitted a close; any fill
+        # that arrives while the flag is set is the cover/close, regardless of
+        # side (SELL covers long, BUY covers short).
+        if st.pending_exits.get(fill_tag, False):
             st.positions[fill_tag]     = 0.0
             st.entry_prices[fill_tag]  = float("nan")
             st.pending_exits[fill_tag] = False
-            log.info("fill_recorded", symbol=symbol, tag=fill_tag, qty=0.0, side="sell")
+            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
+                     qty=0.0, side=side_l, role="exit")
+            return
+
+        # Entry fill — sign the recorded qty by side.
+        # Short-entry branch is gated by allow_short so an untracked SELL on a
+        # long-only engine (e.g. manual UI close) does NOT leave a phantom
+        # short position in memory.
+        if side_l in ("buy", "b"):
+            st.positions[fill_tag] = qty
+            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
+                     qty=qty, side=side_l, role="entry")
+        elif self._allow_short:
+            st.positions[fill_tag] = -qty
+            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
+                     qty=-qty, side=side_l, role="entry")
+        else:
+            # Long-only engine received a SELL fill we didn't author as an
+            # exit. Treat as a force-close (old behaviour) and flag it.
+            st.positions[fill_tag]     = 0.0
+            st.entry_prices[fill_tag]  = float("nan")
+            st.pending_exits[fill_tag] = False
+            log.warning("untracked_sell_treated_as_close",
+                        symbol=symbol, tag=fill_tag, qty=qty)
 
     # ── Position state rollback ───────────────────────────────────────────────
     def rollback_entry(self, symbol: str) -> None:
@@ -534,6 +587,63 @@ class SignalEngine:
                 avg_entry_px=avg_entry,
                 client_order_id=cid or "uuid_pre_phase3",
             )
+
+    def reconcile_hl_positions(
+        self,
+        hl_positions:  list[dict],
+        coin_to_symbol: dict[str, str],
+    ) -> None:
+        """
+        Seed state from Hyperliquid open positions on engine startup.
+        Parallel to reconcile_positions() but consumes the signed HL schema
+        ({"coin","szi","entry_px",...}) so it never mixes with the Alpaca path.
+
+        coin_to_symbol : {"BTC": "BTC/USD", ...} — HL coin name → state key.
+        """
+        live_open_syms: set[str] = set()
+        for pos in hl_positions:
+            coin      = str(pos.get("coin", "")).upper()
+            state_sym = coin_to_symbol.get(coin)
+            if state_sym is None or state_sym not in self._state:
+                continue
+
+            szi = float(pos.get("szi", 0) or 0)
+            if szi == 0.0:
+                continue
+            entry_px = float(pos.get("entry_px", 0) or 0)
+
+            live_open_syms.add(state_sym)
+            st = self._state[state_sym]
+            st.positions[self.strategy_tag]    = szi        # signed
+            st.entry_prices[self.strategy_tag] = entry_px
+            log.info(
+                "hl_position_reconciled",
+                symbol=state_sym,
+                coin=coin,
+                tag=self.strategy_tag,
+                szi=szi,
+                entry_px=entry_px,
+            )
+
+        # Flat-on-chain sweep: any memory position under our tag whose symbol
+        # is NOT in live_open_syms is stale (e.g. SHADOW mock entry, or a
+        # missed-fill WebSocket event in LIVE). Wipe it so the flip-guard
+        # exit deadlock self-heals on the next bar.
+        tag = self.strategy_tag
+        for sym, st in self._state.items():
+            if sym in live_open_syms:
+                continue
+            if st.positions.get(tag, 0.0) != 0.0:
+                stale_qty = st.positions[tag]
+                st.positions[tag]     = 0.0
+                st.entry_prices[tag]  = float("nan")
+                st.pending_exits[tag] = False
+                log.warning(
+                    "hl_memory_wiped_stale",
+                    symbol=sym, tag=tag,
+                    stale_qty=stale_qty,
+                    reason="mem_nonzero_but_live_flat",
+                )
 
     def rollback_exit(self, symbol: str) -> None:
         """

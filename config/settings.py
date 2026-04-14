@@ -14,6 +14,15 @@ Execution modes (set via EXECUTION_MODE env var):
 import os
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from the project root on import. Non-overriding: values already
+# present in the environment (e.g. via `source env.sh`) win, so the existing
+# Alpaca workflow is unaffected. .env is gitignored.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
 
 class ExecutionMode(str, Enum):
@@ -47,6 +56,10 @@ class Settings:
     data_key:       str = ""
     data_secret:    str = ""
     log_dir:        str = "logs"
+    # Phase 4 — Hyperliquid perpetuals. Empty strings when unconfigured so the
+    # Alpaca path keeps working without HL_* env vars present.
+    hl_wallet_address: str = ""
+    hl_private_key:    str = ""
 
 
 def load() -> Settings:
@@ -75,6 +88,9 @@ def load() -> Settings:
     data_key    = os.environ.get("ALPACA_API_KEY_ID",       key)
     data_secret = os.environ.get("ALPACA_API_SECRET_KEY", secret)
 
+    hl_wallet = os.environ.get("HL_WALLET_ADDRESS", "").strip()
+    hl_key    = os.environ.get("HL_PRIVATE_KEY",    "").strip()
+
     return Settings(
         api_key        = key,
         api_secret     = secret,
@@ -93,4 +109,6 @@ def load() -> Settings:
         execution_mode = exec_mode,
         data_key       = data_key,
         data_secret    = data_secret,
+        hl_wallet_address = hl_wallet,
+        hl_private_key    = hl_key,
     )
