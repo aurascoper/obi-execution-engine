@@ -1,14 +1,15 @@
 # OBI + Mean-Reversion Execution Engine
-### Dual-Engine | HF Directional Mean Reversion (Crypto) + Statistical Arbitrage (Equities) | Async Python | Apple Silicon M4
+### Tri-Engine | Mean Reversion (Crypto Spot) + Statistical Arbitrage (Equities) + Bi-Directional Perps (Hyperliquid) | Async Python | Apple Silicon M4
 
-A production-grade algorithmic trading system implementing two architecturally distinct
-quantitative strategies across parallel paper-trading engines, grounded in the survey of
+A production-grade algorithmic trading system implementing three architecturally distinct
+quantitative strategies across parallel execution engines, grounded in the survey of
 [`whitepaper.pdf`](whitepaper.pdf).
 
 | Engine | Strategy Paradigm | Session | Directionality |
 |--------|-------------------|---------|----------------|
-| `live_engine.py` (Crypto) | **High-Frequency Directional Mean Reversion** | 24/7 continuous tick loop | Long-only (spot market, broker-constrained) |
-| `equities_engine.py` (Equities) | **Statistical Arbitrage & Mean Reversion** | US RTH 09:30–16:00 ET strictly | Fully bidirectional (long + short, margin) |
+| `live_engine.py` (Alpaca Crypto Spot) | **High-Frequency Directional Mean Reversion** | 24/7 continuous tick loop | Long-only (spot market, broker-constrained) |
+| `equities_engine.py` (Alpaca Equities) | **Statistical Arbitrage & Mean Reversion** | US RTH 09:30–16:00 ET strictly | Fully bidirectional (long + short, margin) |
+| `hl_engine.py` (Hyperliquid Perps) | **Bi-Directional Z-Score Taker on Perp Futures** | 24/7 continuous tick loop | Fully bidirectional (long + short, 2x cross leverage) |
 
 Both engines share the same mathematical primitive — an **Ornstein–Uhlenbeck z-score** gated
 by **Order-Book Imbalance** — but differ fundamentally in their execution regime, hedging
@@ -163,7 +164,7 @@ Long-only — Alpaca's spot crypto API does not support short selling.
 | Entry signal | $s_t < -1.25\sigma$ (extreme negative deviation) **AND** $\rho_t > 0$ (OBI buy pressure) |
 | Pre-seed | None — live warmup, ~60 min to first signal |
 | OBI source | L2 orderbook via `CryptoDataStream` v1beta3 |
-| Notional/trade | \$15 |
+| Notional/trade | \$100 LIVE / \$1,500 PAPER |
 | Logs | `logs/engine.jsonl` |
 
 **Universe (28 pairs):**
@@ -177,6 +178,58 @@ Long-only — Alpaca's spot crypto API does not support short selling.
 | Precious metals (crypto) | PAXG (gold-backed ERC-20, tracks XAU/USD) |
 
 *Excluded: TRUMP, WIF, HYPE, SKY, ONDO (illiquid/political meme); USDC, USDT, USDG (stablecoins).*
+
+### Engine 3 — Hyperliquid Perps (`hl_engine.py`) — Bi-Directional Z-Score Taker
+
+Same mean-reversion primitive as Engine 1, but on a decentralized perp venue that permits
+shorting. Signal source is **Alpaca spot bars** — the Alpaca spot mid is treated as the
+"truer" mean for HL perps to revert against. Order book and execution go direct to
+Hyperliquid (L2 WebSocket + exchange POST). The engine runs against **real capital on HL
+mainnet** — Hyperliquid has no paper sandbox.
+
+| Property | Value |
+|----------|-------|
+| Strategy | Bi-Directional OBI-Gated Z-Score Taker (IOC limit, cross-spread) |
+| Universe | BTC/USD, ETH/USD (perp) |
+| Session | **24/7** continuous — no market-hours gate |
+| Timeframe | 1-minute bars (from Alpaca CryptoDataStream) |
+| Z-score window | $W = 60$ bars = 60-minute rolling window |
+| Directionality | **Bi-directional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$) |
+| OBI source | HL L2 WebSocket @ 20 levels (`l2Book` channel) |
+| Leverage | 2x cross |
+| Notional/trade | \$100 LIVE / \$1,500 PAPER (auto-downsized for \$474 USDC account) |
+| TIF | `Ioc` — taker behaviour; residual cancels rather than resting |
+| Strategy tag | `hl_taker_z` (embedded in every `client_order_id`) |
+| Logs | `logs/hl_engine.jsonl` |
+
+**Why the OBI depth differs from Engine 1 (N=5 → N=20):** live burn-in on HL BTC/ETH
+showed front-row market-maker flicker at levels 1–5 contradicts the deeper committed
+book — specifically a "bid-side façade at levels 1–5 over an ask-heavy 6–20" trap on
+ETH. Deepening to 20 levels improves OBI stability by 2.6–5.8×.
+
+**Venue precision rules** (both enforced by `hl_engine._submit`):
+
+$$
+\text{Tick}: \quad \text{price decimals} \leq \max(6 - \text{szDecimals}, 0) \;\wedge\; \text{sigfigs} \leq 5
+$$
+
+$$
+\text{Lot}: \quad \text{qty} \equiv 0 \pmod{10^{-\text{szDecimals}}} \quad \text{(floor, never round up)}
+$$
+
+For BTC (`szDecimals=5`) at \$75k: integer-only prices, 5-decimal qty.
+
+**HL response quirk — `status=ok` lies.** The exchange returns the envelope
+`{"status":"ok","response":{...}}` even when the validator rejects the order. The true
+per-order verdict is `response.data.statuses[i].error`. `_submit` parses this and
+returns `None` on inner-error to trigger `rollback_entry`, preventing a phantom
+in-memory position.
+
+**Flip-guard with authoritative state wipe.** Before every submission, the engine
+queries live HL positions and compares against in-memory intent. If live is flat but
+memory holds a non-zero position, `reconcile_hl_positions` wipes the stale memory entry
+(rather than just adding live non-zero positions). Without this sweep, any missed fill
+or manual UI trade deadlocked every subsequent exit ("`exit_but_live_flat`" block loop).
 
 ### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
 
@@ -196,7 +249,7 @@ short entries, creating a naturally hedged book.
 | Entry signal | Z-score gate ±1.25σ **AND** OBI confirmation; sector cap must not be breached |
 | Pre-seed | 60 daily IEX closes fetched at startup — warm on bar 1 |
 | OBI source | NBBO quotes synthesized to single-level OBI via `StockDataStream` |
-| Notional/trade | \$15 |
+| Notional/trade | \$100 LIVE / \$1,500 PAPER |
 | Sector caps | Defense=1, Energy=1, Energy ETF=1, Nuclear=1, Semis=2, others=3 |
 | Logs | `logs/equities_engine.jsonl` |
 
@@ -305,18 +358,22 @@ Replacement uses Alpaca's atomic `replace_order_by_id()` — no cancel-race wind
 live_trading/
 ├── live_engine.py            Crypto engine — TaskGroup(feed, strategy, drawdown)
 ├── equities_engine.py        Equities engine — TaskGroup(feed, strategy, drawdown, sector_guard)
+├── hl_engine.py              Hyperliquid perps — TaskGroup(alpaca_bars, hl_orderbook, obi_pump, strategy)
+├── fund_perp.py              One-shot HL spot→perp USDC transfer utility
 ├── screener.py               Universe scanner (MIN_PRICE=$20, MIN_ADV=1M, CLI filters)
 ├── config/
-│   ├── settings.py           Env-driven credentials — os.environ only, zero hardcoding
-│   ├── risk_params.py        Circuit breaker constants, notional caps
+│   ├── settings.py           Env-driven credentials (Alpaca + HL) via os.environ + .env
+│   ├── risk_params.py        Circuit breaker constants, notional caps (LIVE/PAPER ternary)
 │   └── universe.py           SECTOR_MAP (142 symbols), SECTOR_CAPS
 ├── data/
 │   ├── feed.py               CryptoDataStream v1beta3 — bars + L2 orderbooks + quotes
-│   └── stock_feed.py         StockDataStream — bars + NBBO quotes (synthesized OBI)
+│   ├── stock_feed.py         StockDataStream — bars + NBBO quotes (synthesized OBI)
+│   └── hl_feed.py            Hyperliquid WebSocket — l2Book channel → unified messages
 ├── strategy/
-│   └── signals.py            SignalEngine: _RollingBuffer (O(1)), _SymbolState, dual-gate
+│   └── signals.py            SignalEngine: _RollingBuffer, _SymbolState, reconcile_hl_positions
 ├── execution/
-│   └── order_manager.py      submit_limit() taker (current) | submit_maker() Phase 3
+│   ├── order_manager.py      Alpaca submit_limit() taker | submit_maker() Phase 3
+│   └── hl_manager.py         Hyperliquid exchange client, leverage pin, submit_order
 ├── risk/
 │   ├── circuit_breaker.py    Drawdown watchdog — zero strategy imports by design
 │   ├── sector_tracker.py     SectorExposureTracker — O(1) check/open/close
@@ -324,7 +381,8 @@ live_trading/
 │   └── order_tracker.py      [Phase 3] OrderTracker — cancel/replace loop
 └── logs/
     ├── engine.jsonl           Crypto engine structured JSON (gitignored)
-    └── equities_engine.jsonl  Equities engine structured JSON (gitignored)
+    ├── equities_engine.jsonl  Equities engine structured JSON (gitignored)
+    └── hl_engine.jsonl        Hyperliquid engine structured JSON (gitignored)
 ```
 
 ### Signal Pipeline
@@ -370,12 +428,15 @@ All thresholds are hardcoded constants in `config/risk_params.py`. `CircuitBreak
 | Control | Value | Trigger |
 |---------|-------|---------|
 | Daily drawdown halt | 2% equity | Hard stop — engine exits, feed closes |
-| Max order notional | \$15 | Per-order cap (Alpaca minimum \$10) |
+| Max order notional | \$100 LIVE / \$1,500 PAPER | Per-order cap (ternary on `EXECUTION_MODE`) |
+| Max daily loss | \$50 LIVE / \$500 PAPER | Hard halt on cumulative intraday loss |
 | Per-symbol cap | \$500–\$5,000 | `SYMBOL_CAPS` dict |
 | API rate limit | 30 orders/min | Token bucket (Alpaca allows 200/min) |
 | Sector exposure | 1–3 positions | `SectorExposureTracker` O(1) check |
 | Macro halt window | ±15 min | [Phase 3] FMP calendar, tier-1 events only |
-| Rollback on block | on submit error | `signals.rollback_entry()` resets state |
+| HL flip guard | pre-submit live check | Blocks if on-chain state disagrees with memory |
+| HL reconcile sweep | on startup + on mismatch | Wipes mem-non-zero-but-live-flat entries |
+| Rollback on block | on submit error or inner-reject | `signals.rollback_entry()` resets state |
 
 ---
 
@@ -383,38 +444,52 @@ All thresholds are hardcoded constants in `config/risk_params.py`. `CircuitBreak
 
 ```bash
 # 1. Credentials
-source env.sh   # env.sh is gitignored; contains ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
+source env.sh   # Alpaca keys (gitignored). Contains ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
+# For Hyperliquid, a .env file at repo root provides:
+#   HL_WALLET_ADDRESS=0x...
+#   HL_PRIVATE_KEY=0x...        (master wallet — agent keys can't do USD transfers)
+# config/settings.py loads .env non-overriding, so env.sh values still win.
 
 # 2. Install
 pip install -r requirements.txt
 
-# 3. Run both engines (paper mode)
+# 3a. Run Alpaca engines (paper mode)
 nohup /path/to/venv/bin/python3 live_engine.py     >> logs/engine.jsonl          2>&1 &
 sleep 5
 nohup /path/to/venv/bin/python3 equities_engine.py >> logs/equities_engine.jsonl 2>&1 &
 
-# 4. Screen for new signals
+# 3b. Run Hyperliquid engine (mainnet — real capital)
+#     First time only: fund the perp clearinghouse
+python3 fund_perp.py
+#     Then launch. LIVE + live paired to pass the settings.py safety gate.
+EXECUTION_MODE=LIVE ALPACA_TRADING_MODE=live \
+  nohup caffeinate -i venv/bin/python3 hl_engine.py &
+
+# 4. Screen for new signals (Alpaca universe only)
 python3 screener.py --new-only
 python3 screener.py --sector Financials --min-z 1.5
 
 # 5. Monitor live signals
-tail -f logs/engine.jsonl | python3 -c \
+tail -f logs/hl_engine.jsonl | python3 -c \
   "import sys,json; [print(json.dumps(json.loads(l),indent=2)) for l in sys.stdin
-   if any(k in l for k in ['entry_signal','exit_signal','order_submitted','macro_halt'])]"
+   if any(k in l for k in ['entry_signal','exit_signal','hl_order_intent','hl_order_inner_rejection'])]"
 ```
 
 ---
 
 ## Execution Modes
 
-| `EXECUTION_MODE` | `ALPACA_TRADING_MODE` | Orders | Capital |
-|---|---|---|---|
-| `SHADOW` | `paper` | No | None |
-| `PAPER` | `paper` | Yes | Paper only |
-| `LIVE` | `live` | Yes | Real capital |
+| `EXECUTION_MODE` | `ALPACA_TRADING_MODE` | Alpaca Orders | Alpaca Capital | Hyperliquid |
+|---|---|---|---|---|
+| `SHADOW` | `paper` | No | None | Subscribes to L2 + logs intent, does not submit |
+| `PAPER` | `paper` | Yes | Paper only | **N/A** — HL has no paper sandbox |
+| `LIVE` | `live` | Yes | Real capital | Real capital on mainnet |
 
 `config/settings.py` enforces that `LIVE` mode requires `ALPACA_TRADING_MODE=live` —
-mismatched flags raise `RuntimeError` before any connection is made.
+mismatched flags raise `RuntimeError` before any connection is made. The Hyperliquid
+path only exists in `SHADOW` (observe-only) and `LIVE` (real submission); there is no
+mainnet/testnet switch in `hl_engine.py` — HL testnet is a separate URL the engine
+does not target.
 
 ---
 
