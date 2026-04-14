@@ -23,15 +23,19 @@ The [`whitepaper.pdf`](whitepaper.pdf) surveys four quantitative strategy famili
 below maps each section to the engines and flags where each engine diverges from or extends
 the paper.
 
+> The **"Crypto Engine"** column below spans two engines: `live_engine.py` (Alpaca spot,
+> long-only) and `hl_engine.py` (Hyperliquid perps, bi-directional). Where the two
+> diverge, the cell calls it out explicitly.
+
 | Whitepaper Section | Equities Engine | Crypto Engine | Notes |
 |--------------------|:-:|:-:|-------|
 | **§1 Mean-Reversion** — OU process, 60-day z-score, entry at 1.25σ, exit at 0.50σ | ✓ Full | ✓ Partial | Crypto uses 60-**minute** window, not 60-day — intentional divergence for HF micro-structure |
-| **§1 Short selling** — sell short when `s_t > +s_entry` | ✓ Implemented | ✗ Not applicable | Alpaca does not support crypto short selling; equities engine is bidirectional |
+| **§1 Short selling** — sell short when `s_t > +s_entry` | ✓ Implemented | ✓ HL only | `hl_engine.py` implements the short-spread exactly (`allow_short=True`); Alpaca spot crypto (`live_engine.py`) can't short — API limitation |
 | **§2 Statistical Arbitrage** — factor models, PCA, cointegration, beta-neutral portfolios | ✓ Partial | ✗ Not implemented | Equities uses sector-level exposure caps as a proxy for factor neutrality; no explicit PCA |
-| **§3 Order-Book Imbalance** — ρ_t formula, Cartea et al. (2018) | ✓ Full (NBBO) | ✓ Full (L2) | Crypto uses true L2 depth at 5 levels; equities synthesizes NBBO quotes to a single-level OBI |
+| **§3 Order-Book Imbalance** — ρ_t formula, Cartea et al. (2018) | ✓ Full (NBBO) | ✓ Full (L2) | `live_engine.py` N=5, `hl_engine.py` N=20 (burn-in deepened to avoid front-row MM flicker); equities synthesizes NBBO quotes to single-level OBI |
 | **§4 Data & Feature Engineering** — rolling z-scores, L2 features, normalization | ✓ Full | ✓ Full | 60-day window (equities) vs 60-minute window (crypto); both normalize per-bar |
-| **§5 Backtesting** — look-ahead bias, survivorship bias, transaction costs | — | — | Both engines are live/paper; backtesting is future work |
-| **§6 Risk Management** — position sizing, drawdown, factor neutrality | ✓ Extended | ✓ Partial | Equities adds sector caps (Defense=1, Energy=1, Semis=2) not covered in whitepaper |
+| **§5 Backtesting** — look-ahead bias, survivorship bias, transaction costs | — | — | All engines are live/paper; backtesting is future work |
+| **§6 Risk Management** — position sizing, drawdown, factor neutrality | ✓ Extended | ✓ Extended (HL) | Equities adds sector caps (Defense=1, Energy=1, Semis=2); HL adds pre-submit flip-guard + authoritative flat-sweep reconciler not covered in whitepaper |
 
 ---
 
