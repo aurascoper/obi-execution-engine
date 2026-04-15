@@ -88,12 +88,21 @@ Per Cartea et al. (2018): a buy-heavy imbalance predicts a higher probability of
 market order being a buy and a short-term price uptick. The engine uses $\theta = 0$ (any net
 buy pressure) as the gate condition.
 
-**Engine-specific OBI data sources:**
+### Engine-Specific OBI Data Sources & Execution Regimes
 
-| Engine | Data source | Levels |
-|--------|-------------|--------|
-| Crypto | Alpaca `CryptoDataStream` — true L2 orderbook snapshots | $N = 5$ |
-| Equities | Alpaca `StockDataStream` — NBBO quotes synthesized to single-level OBI | $N = 1$ |
+Three execution paths with unified signal logic but different OBI sources and market access:
+
+| Engine | Asset Class | Data Source | OBI Levels | Bidirectional |
+|--------|-------------|-------------|-----------|---|
+| **live_engine.py** | Crypto Spot (Alpaca) | `CryptoDataStream` v1beta3 — L2 orderbook snapshots | N = 20 | ❌ Long-only |
+| **hl_engine.py** | Crypto Perps (Hyperliquid) | `LiveFeed` (Alpaca bars) + `HyperliquidFeed` (HL L2) | N = 20 | ✅ Bidirectional |
+| **equities_engine.py** | US Equities | `StockDataStream` — NBBO quotes synthesized to single-level OBI | N = 1 | ✅ Bidirectional |
+
+**OBI Depth Rationale:**
+
+Both crypto engines operate at **N = 20 levels** (deepened from N = 5 after live burn-in). Early testing revealed front-row market-maker flicker at levels 1–5 that contradicted the deeper committed book — specifically, a "bid-side façade at levels 1–5 over an ask-heavy 6–20" pattern on ETH. Deepening to 20 levels reduces OBI volatility by **2.6–5.8×** and eliminates spurious sign flips that blocked valid entries.
+
+Equities use N = 1 (NBBO top-of-book only) because `StockDataStream` does not expose L2 orderbooks (crypto-only feature). The daily bar timeframe requires less granular microstructure, and the quote rate (~500/min) keeps OBI fresh between daily bar events.
 
 ### Dual-Gate Entry Logic (§1 + §3 Combined)
 
@@ -108,20 +117,21 @@ $$
 $$
 
 $$
-\text{SHORT ENTRY (equities only)}: \quad s_t > +s_{\text{entry}} \;\wedge\; \rho_t < -\theta
+\text{SHORT ENTRY (bidirectional engines only)}: \quad s_t > +s_{\text{entry}} \;\wedge\; \rho_t < -\theta
 $$
 
 $$
-\text{SHORT EXIT (equities only)}: \quad s_t < +s_{\text{exit}}
+\text{SHORT EXIT (bidirectional engines only)}: \quad s_t < +s_{\text{exit}}
 $$
 
 The z-score confirms statistical overextension; OBI confirms microstructure liquidity pressure
 before capital is committed.
 
-> **Crypto engine is long-only.** The short-entry condition is not implemented in
-> `live_engine.py`. Alpaca does not support crypto short selling. The whitepaper's §1
-> short-spread logic ("sell short when $s_t > +s_{\text{entry}}$") applies only to the
-> equities engine.
+**Implementation per engine:**
+
+- **Crypto spot (`live_engine.py`)** is long-only. Alpaca does not support crypto short selling; the short-entry gate is never evaluated (`allow_short=False`). The whitepaper's §1 short-spread logic does not apply to this engine.
+- **Hyperliquid perps (`hl_engine.py`)** is fully bidirectional (`allow_short=True`). Short entries fire when $s_t > +1.25\sigma$ **AND** $\rho_t < 0$ (sell pressure detected in HL L2).
+- **Equities (`equities_engine.py`)** is fully bidirectional via margin account. Short entries mirror long entries with opposite sign.
 
 ### §2 — Statistical Arbitrage: Sector Factor Proxy
 
