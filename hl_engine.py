@@ -12,7 +12,7 @@ Wiring:
   * Order book: data.hl_feed.HyperliquidFeed for L2 → OBI.
   * Signals   : strategy.signals.SignalEngine(strategy_tag="hl_taker_z",
                                               allow_short=True).
-  * Execution : execution.hl_manager.HyperliquidOrderManager(default_leverage=2).
+  * Execution : execution.hl_manager.HyperliquidOrderManager(default_leverage=5).
 
 Sign-flip guard:
   Before each submission we pull get_positions() and abort if the live HL
@@ -37,6 +37,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
+import secrets
 import signal as signal_lib
 import time
 from pathlib import Path
@@ -79,10 +81,37 @@ HL_COINS    = list(COIN_TO_SYMBOL.keys())
 HL_SYMBOLS  = list(COIN_TO_SYMBOL.values())
 STRATEGY_TAG = "hl_taker_z"
 
+# Execution style flag (Spike B). "taker" = existing IOC cross-spread path,
+# synchronous response. "maker" = Alo at best bid/ask, rests until filled, fill
+# arrives asynchronously via userFills WS. Default stays "taker" so the env
+# change alone flips behavior — no code path divergence at rest.
+EXECUTION_STYLE = os.environ.get("EXECUTION_STYLE", "taker").lower().strip()
+
+# ── Maker watchdog tuning (Spike C) ──────────────────────────────────────────
+# How often the watchdog wakes to check resting quotes. 1 s is well under
+# HL's 200-action-per-min wallet limit even with 2 symbols × worst-case churn.
+MAKER_WATCHDOG_INTERVAL_S = 1.0
+# Hard ceiling on how long a single maker intent can remain live (resting +
+# reprices combined). Past this we cancel and roll back the optimistic memory
+# write — the signal has to re-qualify on a later bar. Spike E will replace
+# the rollback here with a taker escalation.
+MAKER_MAX_LIFETIME_S = 30.0
+# Max times one intent can be repriced before we give up. Bounds API churn
+# when the book is moving faster than our quote can chase.
+MAKER_MAX_REPRICES = 5
+
 # ── HL venue price precision ──────────────────────────────────────────────────
 # HL rule: price decimals ≤ max(6 - szDecimals, 0) AND significant figures ≤ 5.
 # Values from Info.meta() probe — extend when universe grows.
 _HL_SZ_DECIMALS: dict[str, int] = {"BTC": 5, "ETH": 4}
+
+# Sub-lot dust tolerance used by flip-guard AND reconciler. 1.5 × lot size:
+# below this, a residual is treated as flat. Keeps stale 1-lot leftovers
+# (observed: −0.0001 ETH from partial fills / manual UI) from re-seeding the
+# exit signal every bar after restart.
+_HL_DUST_CAPS: dict[str, float] = {
+    coin: 1.5 * (10 ** -dec) for coin, dec in _HL_SZ_DECIMALS.items()
+}
 
 
 def _round_hl_price(px: float, sz_decimals: int) -> float:
@@ -113,7 +142,7 @@ class HLEngine:
         self._hl = HyperliquidOrderManager(
             self._cfg,
             strategy_tag     = STRATEGY_TAG,
-            default_leverage = 2,
+            default_leverage = 5,
             coins            = HL_COINS,
             is_cross         = True,
         )
@@ -131,9 +160,23 @@ class HLEngine:
         self._hl_raw_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
         self._bars = LiveFeed(self._cfg, HL_SYMBOLS, self._msg_q)
-        self._book = HyperliquidFeed(HL_COINS, self._hl_raw_q)
+        # userFills is address-scoped; passing the wallet turns on the
+        # Spike-A subscription. Without it the feed runs L2-only.
+        self._book = HyperliquidFeed(
+            HL_COINS,
+            self._hl_raw_q,
+            wallet = self._cfg.hl_wallet_address or None,
+        )
 
         self._running = True
+
+        # Spike B: symbol → {cloid, cid, side, qty, submit_ts} for each
+        # resting Alo order awaiting a userFills WS confirmation. Strategy
+        # loop skips a bar for any symbol with a live entry here, so we
+        # don't dogpile signals while waiting for the quote to fill.
+        # Spike C will add a cancel/replace deadline; Spike E will escalate
+        # stale entries to taker.
+        self._pending_resting: dict[str, dict] = {}
 
     # ── Boot: seed in-memory state from on-chain positions ───────────────────
     async def _reconcile_startup(self) -> None:
@@ -143,7 +186,9 @@ class HLEngine:
             log.warning("hl_reconcile_failed", error=str(exc))
             return
         log.info("hl_reconcile_ok", pos_count=len(positions))
-        self._signals.reconcile_hl_positions(positions, COIN_TO_SYMBOL)
+        self._signals.reconcile_hl_positions(
+            positions, COIN_TO_SYMBOL, _HL_DUST_CAPS,
+        )
 
     # ── Pump: translate HL feed symbols onto the SignalEngine state keys ─────
     async def _hl_obi_pump(self) -> None:
@@ -187,19 +232,29 @@ class HLEngine:
 
         is_entry = not pending_exit    # exit signals set pending_exits=True
 
+        # Sub-lot dust tolerance: HL's minimum lot is 10^-szDecimals. A stray
+        # residual smaller than ~1.5 lots (rounding / partial-fill leftovers /
+        # manual UI leftovers) is "effectively flat" for guard purposes. Without
+        # this, one lot of dust (observed: −0.0001 ETH) deadlocks entries
+        # indefinitely — each bar blocks, reconciles dust back in, and rolls
+        # back. The 1.5× multiplier stays well below a genuine 2-lot position.
+        sz_dec     = _HL_SZ_DECIMALS.get(coin, 2)
+        dust_cap   = 1.5 * (10 ** -sz_dec)
+        live_flat  = abs(live_szi) < dust_cap
+
         # Entry: memory should be pre-written with our intended signed qty;
         # live should be flat (the fill hasn't happened yet). Any live size
-        # means desync.
-        # Exit: memory says non-zero; live should agree in sign. Live-flat
-        # means the position was already closed elsewhere — skip.
+        # above dust means desync.
+        # Exit: memory says non-zero; live should agree in sign. Live at-or-below
+        # dust means the position was already closed elsewhere — skip.
         mismatch = False
         reason   = ""
         if is_entry:
-            if live_szi != 0.0:
+            if not live_flat:
                 mismatch = True
                 reason   = "entry_but_live_nonzero"
         else:
-            if live_szi == 0.0:
+            if live_flat:
                 mismatch = True
                 reason   = "exit_but_live_flat"
             elif (live_szi * mem_szi) < 0:
@@ -215,7 +270,9 @@ class HLEngine:
             )
             # Reconcile truth-on-chain → memory, then undo the optimistic write
             # for the blocked signal so evaluate() re-fires on the next bar.
-            self._signals.reconcile_hl_positions(positions, COIN_TO_SYMBOL)
+            self._signals.reconcile_hl_positions(
+                positions, COIN_TO_SYMBOL, _HL_DUST_CAPS,
+            )
             if is_entry:
                 self._signals.rollback_entry(sym)
             else:
@@ -224,8 +281,295 @@ class HLEngine:
 
         return True
 
+    # ── Maker (Alo) path ─────────────────────────────────────────────────────
+    async def _submit_maker(self, sig: dict) -> dict | None:
+        """
+        Submit an Alo order at the non-crossing side of the book (best_bid for
+        BUY, best_ask for SELL). Fill arrives asynchronously via userFills;
+        _strategy_loop matches the cloid to clear self._pending_resting and
+        hand the fill to SignalEngine.on_fill.
+
+        HL rejects Alo orders that would cross the spread — if our cached
+        best_bid/ask has drifted or is nan, we fall back to the signal's
+        `limit_px` (strategy layer already computes a non-crossing limit).
+        """
+        sym  = sig["symbol"]
+        coin = SYMBOL_TO_COIN[sym]
+        side = "buy" if sig["side"] == OrderSide.BUY else "sell"
+
+        sz_dec      = _HL_SZ_DECIMALS.get(coin, 2)
+        raw_qty     = sig["qty"]
+        rounded_qty = _round_hl_size(raw_qty, sz_dec)
+        if rounded_qty <= 0:
+            log.warning(
+                "hl_maker_qty_floored_to_zero",
+                symbol=sym, coin=coin, raw_qty=raw_qty, sz_decimals=sz_dec,
+            )
+            return None
+
+        st = self._signals._state[sym]
+        if side == "buy":
+            raw_px = st.best_bid
+        else:
+            raw_px = st.best_ask
+        if not math.isfinite(raw_px) or raw_px <= 0:
+            raw_px = sig["limit_px"]
+        rounded_px = _round_hl_price(raw_px, sz_dec)
+
+        cloid = f"0x{secrets.randbits(128):032x}"
+        cid   = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"
+        log.info(
+            "hl_maker_intent",
+            client_order_id=cid, cloid=cloid,
+            symbol=sym, coin=coin, side=side,
+            qty=rounded_qty, raw_qty=raw_qty,
+            limit_px=rounded_px, raw_limit_px=raw_px,
+            notional=sig.get("notional"),
+        )
+
+        hl_order = {
+            "symbol":      coin,
+            "side":        side,
+            "qty":         rounded_qty,
+            "limit_px":    rounded_px,
+            "tif":         "Alo",
+            "reduce_only": False,
+            "cloid":       cloid,
+        }
+        result = await self._hl.submit_order(hl_order)
+        log.info("hl_maker_result", client_order_id=cid, cloid=cloid,
+                 result=result)
+
+        # Detect immediate rejection — HL returns status=ok with an `error`
+        # field inside the per-order status when Alo can't rest (e.g. would
+        # cross). Treat as a taker-style rejection so the caller rolls back.
+        try:
+            statuses = (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            for s in statuses:
+                if isinstance(s, dict) and s.get("error"):
+                    log.warning(
+                        "hl_maker_inner_rejection",
+                        client_order_id=cid, cloid=cloid, error=s["error"],
+                    )
+                    return None
+        except Exception:
+            pass
+
+        # Register resting order: strategy loop will gate new signals on this
+        # symbol until the WS fill clears it. Spike-C watchdog uses last_px to
+        # detect queue-behind drift, reprice_count to bound API churn, and
+        # is_entry to pick the right rollback path on give-up.
+        st_now = self._signals._state[sym]
+        is_entry = not st_now.pending_exits.get(STRATEGY_TAG, False)
+        self._pending_resting[sym] = {
+            "cloid":         cloid.lower(),
+            "cid":           cid,
+            "side":          side,
+            "qty":           rounded_qty,
+            "last_px":       rounded_px,
+            "reprice_count": 0,
+            "is_entry":      is_entry,
+            "submit_ts":     int(time.time()),
+        }
+        return result
+
+    # ── Maker watchdog (Spike C): cancel/replace + rollback on stale quotes ──
+    @staticmethod
+    def _cancel_ok(resp: dict | None) -> bool:
+        """
+        True iff HL returned a success verdict for a cancel. Failure modes
+        (e.g. "Order was already filled") return statuses[i] as a dict with
+        "error" — in that case we leave the pending entry alone and let the
+        userFills WS event clear it.
+        """
+        if not resp or resp.get("status") != "ok":
+            return False
+        statuses = resp.get("response", {}).get("data", {}).get("statuses", [])
+        return any(isinstance(s, str) and s == "success" for s in statuses)
+
+    def _rollback_pending(self, sym: str, is_entry: bool) -> None:
+        if is_entry:
+            self._signals.rollback_entry(sym)
+        else:
+            self._signals.rollback_exit(sym)
+
+    async def _cancel_pending(self, sym: str, reason: str) -> None:
+        """
+        Cancel the resting order for `sym`, roll back the optimistic memory
+        write, and clear the pending entry. Safe to call when no pending
+        exists — no-op.
+        """
+        pending = self._pending_resting.get(sym)
+        if pending is None:
+            return
+        coin  = SYMBOL_TO_COIN[sym]
+        cloid = pending["cloid"]
+        age   = round(time.time() - pending["submit_ts"], 2)
+        log.info(
+            "hl_maker_giveup",
+            symbol=sym, reason=reason, cloid=cloid, age_s=age,
+            reprice_count=pending.get("reprice_count", 0),
+            cid=pending["cid"],
+        )
+        try:
+            resp = await self._hl.cancel_by_cloid(coin, cloid)
+        except Exception as exc:
+            log.warning("hl_maker_giveup_cancel_exception",
+                        symbol=sym, cloid=cloid, error=str(exc))
+            resp = None
+
+        if self._cancel_ok(resp):
+            # Order was resting and is now gone. Safe to clear pending and
+            # roll back memory.
+            self._pending_resting.pop(sym, None)
+            self._rollback_pending(sym, pending["is_entry"])
+            return
+
+        # Cancel reported failure — most commonly because the order just
+        # filled. Leave pending alone so the userFills WS event clears it
+        # and fires on_fill. If the order is truly gone but we don't know,
+        # the lifetime check on the next watchdog tick will pop it.
+        log.warning("hl_maker_giveup_cancel_unconfirmed",
+                    symbol=sym, cloid=cloid, resp=resp)
+
+    async def _reprice_pending(self, sym: str, new_px: float) -> None:
+        """
+        Cancel the current resting order and resubmit at `new_px` with a
+        fresh cloid. Preserves the signal's `cid` (on_fill still routes to
+        the right intent when any attempt fills).
+        """
+        pending = self._pending_resting.get(sym)
+        if pending is None:
+            return
+        coin   = SYMBOL_TO_COIN[sym]
+        old_cl = pending["cloid"]
+        try:
+            cresp = await self._hl.cancel_by_cloid(coin, old_cl)
+        except Exception as exc:
+            log.warning("hl_maker_reprice_cancel_exception",
+                        symbol=sym, cloid=old_cl, error=str(exc))
+            return
+
+        if not self._cancel_ok(cresp):
+            # The order filled (or is filling) while we were trying to
+            # reprice. Leave pending alone — userFills will clean up.
+            log.info("hl_maker_reprice_skipped_cancel_failed",
+                     symbol=sym, cloid=old_cl, resp=cresp)
+            return
+
+        new_cloid = f"0x{secrets.randbits(128):032x}"
+        log.info(
+            "hl_maker_reprice",
+            symbol=sym, coin=coin, side=pending["side"],
+            qty=pending["qty"], old_px=pending["last_px"], new_px=new_px,
+            old_cloid=old_cl, new_cloid=new_cloid,
+            reprice_count=pending["reprice_count"] + 1, cid=pending["cid"],
+        )
+
+        hl_order = {
+            "symbol":      coin,
+            "side":        pending["side"],
+            "qty":         pending["qty"],
+            "limit_px":    new_px,
+            "tif":         "Alo",
+            "reduce_only": False,
+            "cloid":       new_cloid,
+        }
+        result = await self._hl.submit_order(hl_order)
+
+        # Inner-rejection check — if the new quote would cross, HL returns
+        # status=ok with an inner error. In that case give up: the market
+        # just ran through our level, so a taker is closer to the right
+        # response than another reprice. Spike E will replace this rollback
+        # with the escalation.
+        inner_ok = True
+        try:
+            statuses = (result or {}).get("response", {}).get(
+                "data", {}).get("statuses", [])
+            for s in statuses:
+                if isinstance(s, dict) and s.get("error"):
+                    inner_ok = False
+                    log.warning(
+                        "hl_maker_reprice_inner_rejection",
+                        symbol=sym, new_cloid=new_cloid, error=s["error"],
+                    )
+                    break
+        except Exception:
+            pass
+
+        if result is None or not inner_ok:
+            # Re-submission failed: roll back and clear pending.
+            self._pending_resting.pop(sym, None)
+            self._rollback_pending(sym, pending["is_entry"])
+            return
+
+        # Swap in the new cloid / px / counters. cid + side + qty + is_entry
+        # + submit_ts (age baseline) all carry over unchanged.
+        pending["cloid"]        = new_cloid.lower()
+        pending["last_px"]      = new_px
+        pending["reprice_count"] = pending["reprice_count"] + 1
+
+    async def _maker_watchdog(self) -> None:
+        """
+        Periodic sweep of _pending_resting. For each live intent:
+          1. lifetime > MAKER_MAX_LIFETIME_S → cancel + rollback.
+          2. reprice_count ≥ MAKER_MAX_REPRICES → cancel + rollback.
+          3. best bid/ask has moved "behind the queue" relative to our
+             resting px → cancel + resubmit at the new best.
+
+          "Behind the queue" means the market has moved *away from fill*:
+          for a resting BUY, best_bid > our_px (the market is willing to
+          pay more than us, so new buy interest stacks above us); for a
+          SELL, best_ask < our_px. When the market moves *toward* fill
+          (best_bid falls for a buy, best_ask rises for a sell) we stay
+          put — we're already at a better price than the new best, and
+          moving would widen the spread we captured.
+        """
+        while self._running:
+            await asyncio.sleep(MAKER_WATCHDOG_INTERVAL_S)
+            if not self._pending_resting:
+                continue
+
+            now_ts = time.time()
+            for sym in list(self._pending_resting.keys()):
+                pending = self._pending_resting.get(sym)
+                if pending is None:
+                    continue
+
+                age = now_ts - pending["submit_ts"]
+                if age >= MAKER_MAX_LIFETIME_S:
+                    await self._cancel_pending(sym, reason="lifetime_exceeded")
+                    continue
+                if pending["reprice_count"] >= MAKER_MAX_REPRICES:
+                    await self._cancel_pending(sym, reason="max_reprices")
+                    continue
+
+                coin = SYMBOL_TO_COIN.get(sym)
+                if coin is None:
+                    continue
+                st = self._signals._state.get(sym)
+                if st is None:
+                    continue
+                sz_dec = _HL_SZ_DECIMALS.get(coin, 2)
+
+                side = pending["side"]
+                raw  = st.best_bid if side == "buy" else st.best_ask
+                if not math.isfinite(raw) or raw <= 0:
+                    continue
+                new_px = _round_hl_price(raw, sz_dec)
+                cur_px = pending["last_px"]
+
+                behind = (side == "buy"  and new_px > cur_px) or \
+                         (side == "sell" and new_px < cur_px)
+                if behind:
+                    await self._reprice_pending(sym, new_px)
+
     # ── Signal → HL order translation + CID logging ──────────────────────────
     async def _submit(self, sig: dict) -> dict | None:
+        # Route by execution style. Env-gated so the taker contract is
+        # untouched when EXECUTION_STYLE is unset or "taker".
+        if EXECUTION_STYLE == "maker":
+            return await self._submit_maker(sig)
         sym   = sig["symbol"]
         coin  = SYMBOL_TO_COIN[sym]
         side  = "buy" if sig["side"] == OrderSide.BUY else "sell"
@@ -280,10 +624,89 @@ class HLEngine:
                         sent_qty=rounded_qty, raw_qty=raw_qty,
                     )
                     return None  # triggers rollback in _strategy_loop
+
+            # HL has no TradingStream equivalent wired today — the Alpaca path
+            # drives signals.on_fill from user_trades WS events, but hl_feed
+            # only subscribes to l2Book. For IOC (taker) the synchronous
+            # response is terminal, so parse `filled` here and synthesize
+            # on_fill() ourselves. Without this, pending_exits[tag] never
+            # clears and evaluate() short-circuits forever after the first
+            # exit. For future maker/Alo orders that can rest we'll need a
+            # userFills WS subscription.
+            for s in statuses:
+                if isinstance(s, dict) and "filled" in s:
+                    try:
+                        filled_sz = float(s["filled"].get("totalSz", 0))
+                    except (TypeError, ValueError):
+                        filled_sz = 0.0
+                    if filled_sz > 0:
+                        self._signals.on_fill(
+                            client_order_id = cid,
+                            symbol          = sym,
+                            qty             = filled_sz,
+                            side            = side,
+                        )
         except Exception:
             pass
 
         return result
+
+    # ── Async fill routing (Spike A + B) ─────────────────────────────────────
+    def _handle_hl_fill(self, msg: dict) -> None:
+        """
+        Match a userFills WS event to a resting Alo order and drive on_fill.
+        WS cloid comes as hex; we normalize to lowercase for comparison.
+
+        Fills without a cloid, or whose cloid is not in self._pending_resting,
+        are ignored here — those are either taker fills (handled synchronously
+        in _submit) or out-of-band UI activity. Both cases are already
+        reconciled by the startup + flip-guard reconcile paths.
+        """
+        sym   = msg.get("symbol")
+        cloid = msg.get("cloid")
+        if not (sym and cloid):
+            return
+        cloid_lc = str(cloid).lower()
+
+        pending = self._pending_resting.get(sym)
+        if not pending or pending["cloid"] != cloid_lc:
+            return
+
+        try:
+            filled_sz = float(msg["sz"])
+        except (KeyError, TypeError, ValueError):
+            filled_sz = 0.0
+        if filled_sz <= 0:
+            return
+
+        cumulative = pending.get("filled_qty", 0.0) + filled_sz
+        remaining  = pending["qty"] - cumulative
+        # Floor at half a lot — anything below is dust that HL can't match,
+        # so treat as terminal.
+        coin       = SYMBOL_TO_COIN.get(sym, "")
+        sz_dec     = _HL_SZ_DECIMALS.get(coin, 2)
+        dust_half  = 0.5 * (10 ** -sz_dec)
+        terminal   = remaining <= dust_half
+
+        log.info(
+            "hl_maker_fill_matched",
+            symbol=sym, cloid=cloid_lc,
+            client_order_id=pending["cid"],
+            fill_sz=filled_sz, px=msg.get("px"),
+            crossed=msg.get("crossed"),
+            cumulative=cumulative, remaining=remaining,
+            terminal=terminal,
+        )
+        self._signals.on_fill(
+            client_order_id = pending["cid"],
+            symbol          = sym,
+            qty             = filled_sz,
+            side            = pending["side"],
+        )
+        if terminal:
+            del self._pending_resting[sym]
+        else:
+            pending["filled_qty"] = cumulative
 
     # ── Main loop ────────────────────────────────────────────────────────────
     async def _strategy_loop(self) -> None:
@@ -299,7 +722,18 @@ class HLEngine:
                     self._signals.update_orderbook(msg)
                 continue
 
+            if msg["type"] == "hl_fill":
+                self._handle_hl_fill(msg)
+                continue
+
             if msg["type"] != "bar":
+                continue
+
+            # Maker gate: if a resting Alo order for this symbol is still
+            # awaiting a fill, don't run evaluate() — the strategy already
+            # has an open intent on the book. Spike C enforces a max-wait
+            # before cancel/replace; Spike E adds taker escalation.
+            if msg.get("symbol") in self._pending_resting:
                 continue
 
             sig = self._signals.evaluate(msg)
@@ -334,11 +768,13 @@ class HLEngine:
         log.info(
             "hl_engine_start",
             symbols=HL_SYMBOLS, coins=HL_COINS,
-            tag=STRATEGY_TAG, leverage=2, mode=self._cfg.execution_mode.value,
+            tag=STRATEGY_TAG, leverage=5, mode=self._cfg.execution_mode.value,
+            execution_style=EXECUTION_STYLE,
         )
         print(
             f"\n[HL-ENGINE] Tag={STRATEGY_TAG}  Coins={HL_COINS}  "
-            f"Leverage=2x  Mode={self._cfg.execution_mode.value}\n"
+            f"Leverage=5x  Mode={self._cfg.execution_mode.value}  "
+            f"Style={EXECUTION_STYLE}\n"
             f"           Logs → logs/hl_engine.jsonl\n"
             f"           Ctrl-C to stop.\n"
         )
@@ -350,6 +786,9 @@ class HLEngine:
             tg.create_task(self._book.run(),       name="hl_orderbook")
             tg.create_task(self._hl_obi_pump(),    name="hl_obi_pump")
             tg.create_task(self._strategy_loop(),  name="strategy")
+            # Watchdog only runs in maker mode; taker path never rests.
+            if EXECUTION_STYLE == "maker":
+                tg.create_task(self._maker_watchdog(), name="maker_watchdog")
 
     def stop(self) -> None:
         log.info("hl_engine_shutdown")

@@ -1,34 +1,34 @@
 """
-data/hl_feed.py — Hyperliquid L2 order book WebSocket feed (Phase 4 scaffold).
+data/hl_feed.py — Hyperliquid WebSocket feed (L2 order book + user fills).
 
-Isolated from the Alpaca path: this module produces dicts in the same shape
-that SignalEngine.update_orderbook() expects ({type, symbol, bids[[px,sz]…],
-asks[[px,sz]…], timestamp, recv_ns}), so the signal layer does not need to
-know the venue.
+Isolated from the Alpaca path: l2Book payloads are normalized to the shape
+SignalEngine.update_orderbook() expects, and userFills payloads are normalized
+to a {type: "hl_fill", ...} schema the engine can route to SignalEngine.on_fill.
+The signal layer never sees HL-specific types.
 
 Hyperliquid WS protocol (wss://api.hyperliquid.xyz/ws):
 
-  Subscribe:
+  L2 subscribe:
     {"method": "subscribe", "subscription": {"type": "l2Book", "coin": "BTC"}}
 
-  Snapshot payload:
-    {
-      "channel": "l2Book",
-      "data": {
-        "coin":   "BTC",
-        "time":   1_700_000_000_000,      # ms epoch
-        "levels": [
-          [ {"px": "...", "sz": "...", "n": N}, ... ],   # bids (index 0)
-          [ {"px": "...", "sz": "...", "n": N}, ... ],   # asks (index 1)
-        ]
-      }
-    }
+  L2 payload:
+    {"channel": "l2Book", "data": {"coin":"BTC","time":…,"levels":[[bids],[asks]]}}
 
-This file intentionally does NOT share any code with data/feed.py.  The Alpaca
-crypto engine must remain unaffected by Hyperliquid connectivity issues.
+  userFills subscribe (address-scoped):
+    {"method": "subscribe",
+     "subscription": {"type": "userFills", "user": "0x…"}}
 
-Phase 4 state: scaffold. Not wired into any engine yet — kept standalone until
-Phase 3 (taker/maker side-by-side) is validated.
+  userFills payload:
+    {"channel": "userFills",
+     "data": {"user":"0x…","isSnapshot":bool,"fills":[
+        {"coin":"BTC","px":"…","sz":"…","side":"A"|"B",
+         "time":…,"oid":…,"cloid":"0x…"|null,"crossed":bool, …}, …]}}
+
+  Side encoding: "B" = bid-side fill (we bought),
+                 "A" = ask-side fill (we sold).
+
+This file intentionally does NOT share any code with data/feed.py — the
+Alpaca crypto engine must remain unaffected by Hyperliquid connectivity issues.
 """
 
 from __future__ import annotations
@@ -62,16 +62,20 @@ class HyperliquidFeed:
         coins:      Iterable[str],
         msg_queues: asyncio.Queue | list[asyncio.Queue],
         url:        str = HL_WS_URL,
+        wallet:     str | None = None,
     ):
         self._coins = [c.upper() for c in coins]
         self._queues: list[asyncio.Queue] = (
             msg_queues if isinstance(msg_queues, list) else [msg_queues]
         )
         self._url = url
+        # userFills subscription is address-scoped. Optional: when absent, the
+        # feed runs L2-only — preserves the pre-Spike-A call sites.
+        self._wallet = wallet.lower() if wallet else None
         self._stop = asyncio.Event()
 
         # Debug counters, flushed once per 60 s — mirrors data/feed.py.
-        self._msg_counts: dict[str, int] = {"l2Book": 0}
+        self._msg_counts: dict[str, int] = {"l2Book": 0, "userFills": 0}
         self._count_window_start: float  = time.monotonic()
 
     # ── Subscription ──────────────────────────────────────────────────────────
@@ -85,6 +89,22 @@ class HyperliquidFeed:
             }
             await ws.send(json.dumps(frame))
             log.info("hl_subscribed", channel="l2Book", coin=coin)
+
+    async def _subscribe_userfills(self, ws) -> None:
+        """
+        One userFills subscription (address-scoped, not per-coin). Only
+        fired when a wallet was provided to __init__. On reconnect, HL
+        replays recent fills with isSnapshot=true; we skip those to avoid
+        double-counting against state already on disk.
+        """
+        if not self._wallet:
+            return
+        frame = {
+            "method":       "subscribe",
+            "subscription": {"type": "userFills", "user": self._wallet},
+        }
+        await ws.send(json.dumps(frame))
+        log.info("hl_subscribed", channel="userFills", user=self._wallet)
 
     # ── Fan-out ───────────────────────────────────────────────────────────────
 
@@ -142,6 +162,45 @@ class HyperliquidFeed:
             "recv_ns":   time.perf_counter_ns(),
         }
 
+    def _normalize_userfill(self, fill: dict) -> dict | None:
+        """
+        Translate one HL userFills entry into the engine-facing schema:
+          {type: "hl_fill", symbol: coin, side: "buy"|"sell",
+           px: float, sz: float, oid: int|None, cloid: str|None,
+           crossed: bool, ts: str, recv_ns: int}
+
+        side decoding: HL uses "B" for bid-side (we're the buyer) and "A"
+        for ask-side (we're the seller). `crossed=True` marks taker fills;
+        Alo (maker) fills come back with crossed=False.
+        """
+        try:
+            coin = str(fill["coin"]).upper()
+            px   = float(fill["px"])
+            sz   = float(fill["sz"])
+            raw_side = str(fill["side"]).upper()
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        if raw_side == "B":
+            side = "buy"
+        elif raw_side == "A":
+            side = "sell"
+        else:
+            return None
+
+        return {
+            "type":      "hl_fill",
+            "symbol":    coin,
+            "side":      side,
+            "px":        px,
+            "sz":        sz,
+            "oid":       fill.get("oid"),
+            "cloid":     fill.get("cloid"),
+            "crossed":   bool(fill.get("crossed", True)),
+            "ts":        str(fill.get("time", "")),
+            "recv_ns":   time.perf_counter_ns(),
+        }
+
     # ── Message router ───────────────────────────────────────────────────────
 
     async def _handle_message(self, raw: str) -> None:
@@ -168,6 +227,35 @@ class HyperliquidFeed:
             await self._put(norm)
             return
 
+        if channel == "userFills":
+            data = msg.get("data")
+            if not isinstance(data, dict):
+                return
+            # isSnapshot=true is replayed history on each (re)connect. We
+            # skip it — the engine's startup reconcile already reads open
+            # positions; replaying past fills would double-fire on_fill.
+            if data.get("isSnapshot"):
+                log.info(
+                    "hl_userfills_snapshot_skipped",
+                    count=len(data.get("fills", []) or []),
+                )
+                return
+            fills = data.get("fills") or []
+            for f in fills:
+                norm = self._normalize_userfill(f)
+                if norm is None:
+                    continue
+                self._tick_count("userFills")
+                log.info(
+                    "hl_fill_received",
+                    symbol=norm["symbol"], side=norm["side"],
+                    px=norm["px"], sz=norm["sz"],
+                    oid=norm["oid"], cloid=norm["cloid"],
+                    crossed=norm["crossed"],
+                )
+                await self._put(norm)
+            return
+
         # Unknown channel — log once so it's visible but don't spam.
         log.debug("hl_unknown_channel", channel=channel)
 
@@ -189,6 +277,7 @@ class HyperliquidFeed:
                     max_queue=1024,
                 ) as ws:
                     await self._subscribe_l2book(ws)
+                    await self._subscribe_userfills(ws)
                     delay = 5  # reset backoff on successful connect
 
                     async for raw in ws:

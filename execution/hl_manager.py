@@ -65,6 +65,11 @@ class HyperliquidOrderManager:
         from hyperliquid.exchange import Exchange
         from hyperliquid.info     import Info
         from hyperliquid.utils    import constants
+        from hyperliquid.utils.types import Cloid as _Cloid
+
+        # Stash on the instance so submit_order / cancel_by_cloid can reuse
+        # without re-importing. Keeps the HL dependency lazy.
+        self._Cloid = _Cloid
 
         # constants.MAINNET_API_URL is the canonical string; the user spec
         # referred to this as "constants.MAINNET" — we resolve whichever the
@@ -149,6 +154,7 @@ class HyperliquidOrderManager:
             limit_px     = float(order["limit_px"])
             tif          = str(order.get("tif", "Gtc"))
             reduce_only  = bool(order.get("reduce_only", False))
+            cloid_raw    = order.get("cloid")  # optional; maker path sets it
         except (KeyError, TypeError, ValueError) as exc:
             log.error("hl_order_malformed", order=order, error=str(exc))
             return None
@@ -159,11 +165,23 @@ class HyperliquidOrderManager:
 
         is_buy = (side == "buy")
 
+        # Build the SDK Cloid object once — passed through both the SHADOW
+        # short-circuit response and the real submit. Invalid strings are
+        # caught here rather than in the signer.
+        cloid_obj = None
+        if cloid_raw:
+            try:
+                cloid_obj = self._Cloid.from_str(str(cloid_raw))
+            except Exception as exc:
+                log.error("hl_order_bad_cloid", cloid=cloid_raw, error=str(exc))
+                return None
+
         if self._mode == ExecutionMode.SHADOW:
             log.warning(
                 "[SHADOW EXECUTION] hl mock order",
                 symbol=symbol, side=side, qty=qty, limit_px=limit_px,
-                tif=tif, reduce_only=reduce_only, tag=self.strategy_tag,
+                tif=tif, reduce_only=reduce_only,
+                cloid=cloid_raw, tag=self.strategy_tag,
             )
             return {
                 "status":   "shadow_filled",
@@ -171,6 +189,7 @@ class HyperliquidOrderManager:
                 "side":     side,
                 "qty":      qty,
                 "limit_px": limit_px,
+                "cloid":    cloid_raw,
                 "mode":     "SHADOW",
             }
 
@@ -186,6 +205,7 @@ class HyperliquidOrderManager:
                 limit_px,
                 order_type,
                 reduce_only,
+                cloid_obj,
             )
         except Exception as exc:
             log.warning(
@@ -200,10 +220,82 @@ class HyperliquidOrderManager:
             "hl_order_submitted",
             symbol=symbol, side=side, qty=qty, limit_px=limit_px,
             tif=tif, reduce_only=reduce_only,
+            cloid=cloid_raw,
             latency_ms=round(lat_ms, 3),
             resp_status=(resp or {}).get("status"),
             tag=self.strategy_tag,
             mode=self._mode.value,
+        )
+        return resp
+
+    # ── Order cancellation ───────────────────────────────────────────────────
+
+    async def cancel_order(
+        self, symbol: str, oid: int
+    ) -> dict[str, Any] | None:
+        """
+        Cancel a resting order by its on-chain oid (returned by HL inside the
+        submit response `statuses[i].resting.oid`). Spike C uses this to walk
+        a maker quote when the book moves away from us.
+        """
+        if self._mode == ExecutionMode.SHADOW:
+            log.warning(
+                "[SHADOW EXECUTION] hl mock cancel",
+                symbol=symbol, oid=oid, tag=self.strategy_tag,
+            )
+            return {"status": "shadow_cancelled", "symbol": symbol, "oid": oid}
+        try:
+            resp = await asyncio.to_thread(
+                self._exchange.cancel, symbol.upper(), int(oid)
+            )
+        except Exception as exc:
+            log.warning(
+                "hl_cancel_rejected",
+                symbol=symbol, oid=oid, error=str(exc),
+            )
+            return None
+        log.info(
+            "hl_order_cancelled",
+            symbol=symbol, oid=oid,
+            resp_status=(resp or {}).get("status"),
+            tag=self.strategy_tag,
+        )
+        return resp
+
+    async def cancel_by_cloid(
+        self, symbol: str, cloid: str
+    ) -> dict[str, Any] | None:
+        """
+        Cancel by client order id — matches the cloid we stamped at submit.
+        Preferred in the maker loop because we track orders by cloid locally
+        (the oid only appears after the rest response).
+        """
+        if self._mode == ExecutionMode.SHADOW:
+            log.warning(
+                "[SHADOW EXECUTION] hl mock cancel_by_cloid",
+                symbol=symbol, cloid=cloid, tag=self.strategy_tag,
+            )
+            return {"status": "shadow_cancelled", "symbol": symbol, "cloid": cloid}
+        try:
+            cloid_obj = self._Cloid.from_str(str(cloid))
+        except Exception as exc:
+            log.error("hl_cancel_bad_cloid", cloid=cloid, error=str(exc))
+            return None
+        try:
+            resp = await asyncio.to_thread(
+                self._exchange.cancel_by_cloid, symbol.upper(), cloid_obj
+            )
+        except Exception as exc:
+            log.warning(
+                "hl_cancel_by_cloid_rejected",
+                symbol=symbol, cloid=cloid, error=str(exc),
+            )
+            return None
+        log.info(
+            "hl_order_cancelled_by_cloid",
+            symbol=symbol, cloid=cloid,
+            resp_status=(resp or {}).get("status"),
+            tag=self.strategy_tag,
         )
         return resp
 

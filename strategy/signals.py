@@ -81,7 +81,7 @@ OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
                               # specifically a "bid-side façade at levels 1-5
                               # over an ask-heavy levels 6-20" trap on ETH.
 LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 100.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.0
+NOTIONAL_PER_TRADE  = 100.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 2_000.0
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
@@ -592,14 +592,22 @@ class SignalEngine:
         self,
         hl_positions:  list[dict],
         coin_to_symbol: dict[str, str],
+        dust_caps_by_coin: dict[str, float] | None = None,
     ) -> None:
         """
         Seed state from Hyperliquid open positions on engine startup.
         Parallel to reconcile_positions() but consumes the signed HL schema
         ({"coin","szi","entry_px",...}) so it never mixes with the Alpaca path.
 
-        coin_to_symbol : {"BTC": "BTC/USD", ...} — HL coin name → state key.
+        coin_to_symbol    : {"BTC": "BTC/USD", ...} — HL coin name → state key.
+        dust_caps_by_coin : {"BTC": 1.5e-5, ...} — sub-lot residuals at or below
+                            this absolute szi are treated as flat and not
+                            written to memory. Matches the flip-guard dust
+                            tolerance so one-lot leftovers don't perpetually
+                            re-seed an exit signal. Missing coins default to
+                            no-dust (exact-zero only).
         """
+        dust_caps_by_coin = dust_caps_by_coin or {}
         live_open_syms: set[str] = set()
         for pos in hl_positions:
             coin      = str(pos.get("coin", "")).upper()
@@ -608,7 +616,14 @@ class SignalEngine:
                 continue
 
             szi = float(pos.get("szi", 0) or 0)
-            if szi == 0.0:
+            dust_cap = dust_caps_by_coin.get(coin, 0.0)
+            if abs(szi) <= dust_cap:
+                if szi != 0.0:
+                    log.info(
+                        "hl_reconcile_dust_skipped",
+                        symbol=state_sym, coin=coin,
+                        szi=szi, dust_cap=dust_cap,
+                    )
                 continue
             entry_px = float(pos.get("entry_px", 0) or 0)
 

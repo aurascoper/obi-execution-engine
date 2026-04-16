@@ -41,3 +41,6 @@ ENV/
 
 # ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
+
+# ── Claude Code local state (not for commit) ──────────────────────────────────
+.claude/

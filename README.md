@@ -203,17 +203,17 @@ mainnet** — Hyperliquid has no paper sandbox.
 
 | Property | Value |
 |----------|-------|
-| Strategy | Bi-Directional OBI-Gated Z-Score Taker (IOC limit, cross-spread) |
+| Strategy | Bi-Directional OBI-Gated Z-Score — dual-mode execution (taker / maker) |
 | Universe | BTC/USD, ETH/USD (perp) |
 | Session | **24/7** continuous — no market-hours gate |
 | Timeframe | 1-minute bars (from Alpaca CryptoDataStream) |
 | Z-score window | $W = 60$ bars = 60-minute rolling window |
 | Directionality | **Bi-directional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$) |
 | OBI source | HL L2 WebSocket @ 20 levels (`l2Book` channel) |
-| Leverage | 2x cross |
-| Notional/trade | \$100 LIVE / \$1,500 PAPER (auto-downsized for \$474 USDC account) |
-| TIF | `Ioc` — taker behaviour; residual cancels rather than resting |
-| Strategy tag | `hl_taker_z` (embedded in every `client_order_id`) |
+| Leverage | 5x cross |
+| Notional/trade | \$100 LIVE / \$2,000 PAPER (auto-downsized for account size) |
+| Execution style | `EXECUTION_STYLE=taker` (default, `Ioc` cross-spread) or `maker` (`Alo` at best bid/ask, rests; see Phase 4.2) |
+| Strategy tag | `hl_taker_z` (retained for log-parser continuity across the taker→maker pivot) |
 | Logs | `logs/hl_engine.jsonl` |
 
 **Why the OBI depth differs from Engine 1 (N=5 → N=20):** live burn-in on HL BTC/ETH
@@ -244,6 +244,35 @@ queries live HL positions and compares against in-memory intent. If live is flat
 memory holds a non-zero position, `reconcile_hl_positions` wipes the stale memory entry
 (rather than just adding live non-zero positions). Without this sweep, any missed fill
 or manual UI trade deadlocked every subsequent exit ("`exit_but_live_flat`" block loop).
+Sub-lot residuals (`|szi| ≤ 1.5 × 10⁻szDecimals`) are treated as flat — eliminates a
+deadlock observed on ETH where −0.0001 dust perpetually re-seeded the exit signal.
+
+#### Phase 4.2 — Maker Execution (`EXECUTION_STYLE=maker`)
+
+Live taker burn-in revealed transaction fees at **~210% of gross P&L** — the whitepaper
+§3/§5 concern made concrete. The maker pivot posts `Alo` orders at the non-crossing
+best (best_bid for buys, best_ask for sells) and rests until filled. HL fee flip:
+
+$$
+\text{Taker RT fee: } 2 \times (-3.5\ \text{bps}) = -7\ \text{bps}
+\quad\longrightarrow\quad
+\text{Maker RT fee: } 2 \times (+0.5\ \text{bps}) = +1\ \text{bps}
+$$
+
+The maker path is built as three composable spikes (all shipped; unit-tested in
+`verify_maker_watchdog.py`):
+
+| Spike | File | What it adds |
+|---|---|---|
+| **A** — userFills WS | `data/hl_feed.py` | Address-scoped `userFills` subscription; normalizes HL fill payloads into `{type: "hl_fill", cloid, side, ...}` on the engine queue. `isSnapshot` replay is skipped to avoid double-firing `on_fill` against reconciled startup state. |
+| **B** — Alo submit + cloid | `execution/hl_manager.py` | `Cloid` round-trip on `submit_order`; `cancel_by_cloid(coin, cloid)`; inner-rejection detection (HL's `status=ok` ⊕ `statuses[i].error` pattern). |
+| **C** — Reprice watchdog | `hl_engine.py::_maker_watchdog` | 1 s sweep over `_pending_resting`. Cancel+resubmit when the market moves *behind the queue* (buy: best\_bid > our\_px; sell: best\_ask < our\_px); give up after 30 s or 5 reprices. Partial-fill tolerant: cumulative fills track until remainder ≤ ½ lot. |
+
+The strategy loop gates new signals on any symbol with a live pending intent, so
+concurrent bars don't dogpile orders while a quote chases fill. `cid` (client order id)
+persists across reprices so `SignalEngine.on_fill` routes a final fill to the original
+intent regardless of how many times the `cloid` rolled. Spike E (planned) will replace
+the watchdog's give-up rollback with a taker escalation when the queue truly won't fill.
 
 ### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
 
@@ -476,7 +505,9 @@ nohup /path/to/venv/bin/python3 equities_engine.py >> logs/equities_engine.jsonl
 #     First time only: fund the perp clearinghouse
 python3 fund_perp.py
 #     Then launch. LIVE + live paired to pass the settings.py safety gate.
-EXECUTION_MODE=LIVE ALPACA_TRADING_MODE=live \
+#     EXECUTION_STYLE defaults to "taker" (Ioc); set to "maker" for Phase 4.2
+#     Alo resting orders with reprice watchdog (see README "Phase 4.2" section).
+EXECUTION_MODE=LIVE ALPACA_TRADING_MODE=live EXECUTION_STYLE=maker \
   nohup caffeinate -i venv/bin/python3 hl_engine.py &
 
 # 4. Screen for new signals (Alpaca universe only)
