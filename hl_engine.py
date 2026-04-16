@@ -67,19 +67,18 @@ structlog.configure(
 )
 log = structlog.get_logger("hl_engine")
 
-# ── Universe mapping ──────────────────────────────────────────────────────────
+# ── Universe ──────────────────────────────────────────────────────────────────
 # State/SignalEngine are keyed by the Alpaca-style symbol ("BTC/USD") so the
 # bar stream can drive evaluate() without translation. HL APIs want the coin
 # name ("BTC"), so we translate at the order and feed edges only.
-COIN_TO_SYMBOL: dict[str, str] = {
-    "BTC": "BTC/USD",
-    "ETH": "ETH/USD",
-}
-SYMBOL_TO_COIN: dict[str, str] = {v: k for k, v in COIN_TO_SYMBOL.items()}
-
-HL_COINS    = list(COIN_TO_SYMBOL.keys())
-HL_SYMBOLS  = list(COIN_TO_SYMBOL.values())
-STRATEGY_TAG = "hl_taker_z"
+#
+# Universe is env-driven (HL_UNIVERSE="BTC,ETH,SOL,..."). The per-coin maps
+# (szDecimals, dust caps, coin↔symbol) are built at __init__ time from a live
+# Info.meta() probe so adding a new coin never drifts from the venue.
+#
+# STRATEGY_TAG is retained at module scope — the test harness imports it.
+STRATEGY_TAG    = "hl_taker_z"
+DEFAULT_UNIVERSE = "BTC,ETH"
 
 # Execution style flag (Spike B). "taker" = existing IOC cross-spread path,
 # synchronous response. "maker" = Alo at best bid/ask, rests until filled, fill
@@ -102,16 +101,7 @@ MAKER_MAX_REPRICES = 5
 
 # ── HL venue price precision ──────────────────────────────────────────────────
 # HL rule: price decimals ≤ max(6 - szDecimals, 0) AND significant figures ≤ 5.
-# Values from Info.meta() probe — extend when universe grows.
-_HL_SZ_DECIMALS: dict[str, int] = {"BTC": 5, "ETH": 4}
-
-# Sub-lot dust tolerance used by flip-guard AND reconciler. 1.5 × lot size:
-# below this, a residual is treated as flat. Keeps stale 1-lot leftovers
-# (observed: −0.0001 ETH from partial fills / manual UI) from re-seeding the
-# exit signal every bar after restart.
-_HL_DUST_CAPS: dict[str, float] = {
-    coin: 1.5 * (10 ** -dec) for coin, dec in _HL_SZ_DECIMALS.items()
-}
+# szDecimals is queried at boot via Info.meta(); dust caps derived from it.
 
 
 def _round_hl_price(px: float, sz_decimals: int) -> float:
@@ -137,20 +127,86 @@ class HLEngine:
     def __init__(self) -> None:
         self._cfg = load_settings()
 
+        # ── Universe: env-driven, CSV, upper-cased, dedup, order-preserving ──
+        raw_universe = os.environ.get("HL_UNIVERSE", DEFAULT_UNIVERSE)
+        seen: set[str] = set()
+        coins: list[str] = []
+        for token in raw_universe.split(","):
+            c = token.strip().upper()
+            if c and c not in seen:
+                seen.add(c)
+                coins.append(c)
+        if not coins:
+            raise RuntimeError(
+                f"HL_UNIVERSE produced empty coin list (raw={raw_universe!r})"
+            )
+        self._hl_coins: list[str] = coins
+        self._coin_to_symbol: dict[str, str] = {c: f"{c}/USD" for c in coins}
+        self._symbol_to_coin: dict[str, str] = {
+            v: k for k, v in self._coin_to_symbol.items()
+        }
+        self._hl_symbols: list[str] = list(self._coin_to_symbol.values())
+
         # Fail loud at init if USDC is unbridged / agent is wrong — the leverage
-        # pin is the canary.
+        # pin is the canary. default_leverage=2 matches the live account and
+        # stays below every candidate coin's maxLeverage floor (screener ≥ 3).
+        self._default_leverage = 2
         self._hl = HyperliquidOrderManager(
             self._cfg,
             strategy_tag     = STRATEGY_TAG,
-            default_leverage = 5,
-            coins            = HL_COINS,
+            default_leverage = self._default_leverage,
+            coins            = self._hl_coins,
             is_cross         = True,
         )
 
+        # Populate per-coin szDecimals from a live meta() probe. Any requested
+        # coin missing from the venue universe is a hard failure — better to
+        # refuse to start than trade a coin with unknown lot size.
+        meta = self._hl._info.meta()
+        venue_universe = meta.get("universe", [])
+        venue_sz_dec: dict[str, int] = {}
+        for asset in venue_universe:
+            name = str(asset.get("name", "")).upper()
+            if not name:
+                continue
+            try:
+                venue_sz_dec[name] = int(asset.get("szDecimals", 0))
+            except (TypeError, ValueError):
+                continue
+        missing = [c for c in self._hl_coins if c not in venue_sz_dec]
+        if missing:
+            raise RuntimeError(
+                f"HL meta() missing szDecimals for requested coins: {missing}"
+            )
+        self._sz_decimals: dict[str, int] = {
+            c: venue_sz_dec[c] for c in self._hl_coins
+        }
+        # Sub-lot dust tolerance used by flip-guard AND reconciler. 1.5 × lot
+        # size — below this a residual is treated as flat. Keeps stale 1-lot
+        # leftovers (observed: −0.0001 ETH from partial fills / manual UI)
+        # from re-seeding the exit signal every bar after restart.
+        self._dust_caps: dict[str, float] = {
+            c: 1.5 * (10 ** -dec) for c, dec in self._sz_decimals.items()
+        }
+
+        # Per-pair notional split. Baseline: NOTIONAL_PER_TRADE was sized for
+        # the 2-coin (BTC/ETH) universe, so an N-coin expansion divides that
+        # same dollar budget across N pairs. For N ≤ 2 we keep the historical
+        # sizing untouched; for N > 2 we scale down to protect MAX_ORDER_NOTIONAL
+        # and daily-loss headroom.
+        from strategy.signals import NOTIONAL_PER_TRADE as _BASE_NTL
+        n = len(self._hl_coins)
+        if n <= 2:
+            per_pair_notional = _BASE_NTL
+        else:
+            per_pair_notional = _BASE_NTL * 2.0 / n
+        self._per_pair_notional = per_pair_notional
+
         self._signals = SignalEngine(
-            symbols      = HL_SYMBOLS,
-            strategy_tag = STRATEGY_TAG,
-            allow_short  = True,
+            symbols            = self._hl_symbols,
+            strategy_tag       = STRATEGY_TAG,
+            allow_short        = True,
+            notional_per_trade = per_pair_notional,
         )
 
         # Unified message queue — bars arrive from Alpaca LiveFeed with
@@ -159,11 +215,11 @@ class HLEngine:
         self._msg_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self._hl_raw_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
-        self._bars = LiveFeed(self._cfg, HL_SYMBOLS, self._msg_q)
+        self._bars = LiveFeed(self._cfg, self._hl_symbols, self._msg_q)
         # userFills is address-scoped; passing the wallet turns on the
         # Spike-A subscription. Without it the feed runs L2-only.
         self._book = HyperliquidFeed(
-            HL_COINS,
+            self._hl_coins,
             self._hl_raw_q,
             wallet = self._cfg.hl_wallet_address or None,
         )
@@ -187,7 +243,7 @@ class HLEngine:
             return
         log.info("hl_reconcile_ok", pos_count=len(positions))
         self._signals.reconcile_hl_positions(
-            positions, COIN_TO_SYMBOL, _HL_DUST_CAPS,
+            positions, self._coin_to_symbol, self._dust_caps,
         )
 
     # ── Pump: translate HL feed symbols onto the SignalEngine state keys ─────
@@ -195,7 +251,7 @@ class HLEngine:
         while self._running:
             msg = await self._hl_raw_q.get()
             coin = str(msg.get("symbol", "")).upper()
-            sym  = COIN_TO_SYMBOL.get(coin)
+            sym  = self._coin_to_symbol.get(coin)
             if sym is None:
                 continue
             msg["symbol"] = sym
@@ -211,7 +267,7 @@ class HLEngine:
         qualifying bar will re-evaluate against reconciled state.
         """
         sym  = sig["symbol"]
-        coin = SYMBOL_TO_COIN[sym]
+        coin = self._symbol_to_coin[sym]
 
         try:
             positions = await self._hl.get_positions()
@@ -238,8 +294,8 @@ class HLEngine:
         # this, one lot of dust (observed: −0.0001 ETH) deadlocks entries
         # indefinitely — each bar blocks, reconciles dust back in, and rolls
         # back. The 1.5× multiplier stays well below a genuine 2-lot position.
-        sz_dec     = _HL_SZ_DECIMALS.get(coin, 2)
-        dust_cap   = 1.5 * (10 ** -sz_dec)
+        sz_dec     = self._sz_decimals.get(coin, 2)
+        dust_cap   = self._dust_caps.get(coin, 1.5 * (10 ** -sz_dec))
         live_flat  = abs(live_szi) < dust_cap
 
         # Entry: memory should be pre-written with our intended signed qty;
@@ -271,7 +327,7 @@ class HLEngine:
             # Reconcile truth-on-chain → memory, then undo the optimistic write
             # for the blocked signal so evaluate() re-fires on the next bar.
             self._signals.reconcile_hl_positions(
-                positions, COIN_TO_SYMBOL, _HL_DUST_CAPS,
+                positions, self._coin_to_symbol, self._dust_caps,
             )
             if is_entry:
                 self._signals.rollback_entry(sym)
@@ -294,10 +350,10 @@ class HLEngine:
         `limit_px` (strategy layer already computes a non-crossing limit).
         """
         sym  = sig["symbol"]
-        coin = SYMBOL_TO_COIN[sym]
+        coin = self._symbol_to_coin[sym]
         side = "buy" if sig["side"] == OrderSide.BUY else "sell"
 
-        sz_dec      = _HL_SZ_DECIMALS.get(coin, 2)
+        sz_dec      = self._sz_decimals.get(coin, 2)
         raw_qty     = sig["qty"]
         rounded_qty = _round_hl_size(raw_qty, sz_dec)
         if rounded_qty <= 0:
@@ -402,7 +458,7 @@ class HLEngine:
         pending = self._pending_resting.get(sym)
         if pending is None:
             return
-        coin  = SYMBOL_TO_COIN[sym]
+        coin  = self._symbol_to_coin[sym]
         cloid = pending["cloid"]
         age   = round(time.time() - pending["submit_ts"], 2)
         log.info(
@@ -441,7 +497,7 @@ class HLEngine:
         pending = self._pending_resting.get(sym)
         if pending is None:
             return
-        coin   = SYMBOL_TO_COIN[sym]
+        coin   = self._symbol_to_coin[sym]
         old_cl = pending["cloid"]
         try:
             cresp = await self._hl.cancel_by_cloid(coin, old_cl)
@@ -544,13 +600,13 @@ class HLEngine:
                     await self._cancel_pending(sym, reason="max_reprices")
                     continue
 
-                coin = SYMBOL_TO_COIN.get(sym)
+                coin = self._symbol_to_coin.get(sym)
                 if coin is None:
                     continue
                 st = self._signals._state.get(sym)
                 if st is None:
                     continue
-                sz_dec = _HL_SZ_DECIMALS.get(coin, 2)
+                sz_dec = self._sz_decimals.get(coin, 2)
 
                 side = pending["side"]
                 raw  = st.best_bid if side == "buy" else st.best_ask
@@ -571,12 +627,12 @@ class HLEngine:
         if EXECUTION_STYLE == "maker":
             return await self._submit_maker(sig)
         sym   = sig["symbol"]
-        coin  = SYMBOL_TO_COIN[sym]
+        coin  = self._symbol_to_coin[sym]
         side  = "buy" if sig["side"] == OrderSide.BUY else "sell"
 
         # SignalEngine uses Alpaca-style precision; HL has stricter rules.
         raw_px      = sig["limit_px"]
-        sz_dec      = _HL_SZ_DECIMALS.get(coin, 2)
+        sz_dec      = self._sz_decimals.get(coin, 2)
         rounded_px  = _round_hl_price(raw_px, sz_dec)
         raw_qty     = sig["qty"]
         rounded_qty = _round_hl_size(raw_qty, sz_dec)
@@ -683,8 +739,8 @@ class HLEngine:
         remaining  = pending["qty"] - cumulative
         # Floor at half a lot — anything below is dust that HL can't match,
         # so treat as terminal.
-        coin       = SYMBOL_TO_COIN.get(sym, "")
-        sz_dec     = _HL_SZ_DECIMALS.get(coin, 2)
+        coin       = self._symbol_to_coin.get(sym, "")
+        sz_dec     = self._sz_decimals.get(coin, 2)
         dust_half  = 0.5 * (10 ** -sz_dec)
         terminal   = remaining <= dust_half
 
@@ -714,7 +770,7 @@ class HLEngine:
             msg = await self._msg_q.get()
 
             if msg["type"] == "orderbook":
-                # Only accept orderbooks we've mapped to HL_SYMBOLS; the Alpaca
+                # Only accept orderbooks we've mapped to self._hl_symbols; the Alpaca
                 # LiveFeed also emits orderbook/quote messages for its own
                 # venue. We ignore those — HL OBI is authoritative for this
                 # engine (HL pump rewrites coin→symbol before enqueueing).
@@ -767,13 +823,17 @@ class HLEngine:
     async def run(self) -> None:
         log.info(
             "hl_engine_start",
-            symbols=HL_SYMBOLS, coins=HL_COINS,
-            tag=STRATEGY_TAG, leverage=5, mode=self._cfg.execution_mode.value,
+            symbols=self._hl_symbols, coins=self._hl_coins,
+            tag=STRATEGY_TAG, leverage=self._default_leverage,
+            per_pair_notional=self._per_pair_notional,
+            mode=self._cfg.execution_mode.value,
             execution_style=EXECUTION_STYLE,
         )
         print(
-            f"\n[HL-ENGINE] Tag={STRATEGY_TAG}  Coins={HL_COINS}  "
-            f"Leverage=5x  Mode={self._cfg.execution_mode.value}  "
+            f"\n[HL-ENGINE] Tag={STRATEGY_TAG}  Coins={self._hl_coins}  "
+            f"Leverage={self._default_leverage}x  "
+            f"PerPair=${self._per_pair_notional:.2f}  "
+            f"Mode={self._cfg.execution_mode.value}  "
             f"Style={EXECUTION_STYLE}\n"
             f"           Logs → logs/hl_engine.jsonl\n"
             f"           Ctrl-C to stop.\n"
