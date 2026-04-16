@@ -291,6 +291,39 @@ persists across reprices so `SignalEngine.on_fill` routes a final fill to the or
 intent regardless of how many times the `cloid` rolled. Spike E (planned) will replace
 the watchdog's give-up rollback with a taker escalation when the queue truly won't fill.
 
+#### Phase 4.3 — Partial-Fill Accumulation Fix + Trending-Regime Safety Net
+
+Two corrections surfaced by the first day of live maker runs on the expanded universe.
+
+**Partial-fill accumulation (`hl_engine.py::_handle_hl_fill`).** `SignalEngine.on_fill`
+overwrites `positions[tag]` rather than accumulating, which is correct for a single-shot
+taker cross but incorrect for a maker order that fills in multiple chunks. A SOL short
+that filled in three chunks (0.38 + 0.20 + 5.27) left memory at the last chunk's size
+(−5.27) instead of the true total (−5.85). The subsequent exit sized 5.27, leaving 0.58
+on chain; a reconcile-driven exit then filled 0.57, leaving a 0.01 dust residual below
+the sub-lot dust cap that never got swept. Fix: call `on_fill` exactly once per order —
+on the terminal fill, with `cumulative` as the qty. Same fix also closes the inverse
+bug on multi-chunk exits where partials 2+ would resurrect a phantom entry.
+
+**Stop-loss + time-stop (`strategy/signals.py::evaluate`).** Mean-reversion has no
+theoretical floor on adverse drawdown in a trending regime; a live session with sustained
+upward drift produced a SOL short at −3.44% that the z-exit gate couldn't close because
+the z-score kept climbing. Added two independent safety valves:
+
+$$
+\text{Hard stop:} \quad \frac{|P_t - P_{\text{entry}}|}{P_{\text{entry}}} \geq 1\% \text{ against direction} \quad\Longrightarrow\quad \text{force exit}
+$$
+
+$$
+\text{Time stop:} \quad t - t_{\text{entry}} \geq 30\ \text{min} \quad\Longrightarrow\quad \text{force exit}
+$$
+
+Either condition triggers an `exit_signal` with `reason=stop_loss_<pnl>` or `reason=time_stop_<secs>`
+regardless of z-score state. Entry timestamp (`entry_ts`) is a new per-tag field on
+`_SymbolState`, populated at entry and at reconcile (adopt-now semantics → reconciled
+positions get the full 30 min before a time-stop fires). Constants live in `signals.py`:
+`STOP_LOSS_PCT=0.010`, `MAX_POSITION_SECS=1800`. No changes to `risk/` or `config/risk_params.py`.
+
 ### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
 
 Hedged, sector-capped statistical arbitrage exploiting ±1.25σ deviations across a 138-symbol

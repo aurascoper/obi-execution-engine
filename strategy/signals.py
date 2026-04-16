@@ -53,6 +53,7 @@ Output dict format (required by order_manager.py):
 from __future__ import annotations
 
 import math
+import time
 import numpy as np
 import structlog
 from alpaca.trading.enums import OrderSide
@@ -72,6 +73,8 @@ Z_ENTRY             = -1.25   # enter long when z < Z_ENTRY (oversold)
 Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
 Z_SHORT_ENTRY       = +1.25   # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
 Z_EXIT_SHORT        = +0.50   # cover short when z reverts below Z_EXIT_SHORT    — HL only
+STOP_LOSS_PCT       = 0.010   # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
+MAX_POSITION_SECS   = 30 * 60 # time-stop at 30 min — cut positions that haven't mean-reverted
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
 OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
                               # live burn-in on HL BTC/ETH showed OBI-5 captures
@@ -81,7 +84,7 @@ OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
                               # specifically a "bid-side façade at levels 1-5
                               # over an ask-heavy levels 6-20" trap on ETH.
 LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 100.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 2_000.0
+NOTIONAL_PER_TRADE  = 750.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 2_000.0
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
@@ -171,6 +174,7 @@ class _SymbolState:
         "best_bid",       # latest best bid (maker passive limit)
         "positions",      # dict[str, float]  tag → open qty
         "entry_prices",   # dict[str, float]  tag → entry price
+        "entry_ts",       # dict[str, int]    tag → epoch-sec at entry (for time-stop)
         "pending_exits",  # dict[str, bool]   tag → sell order submitted, awaiting fill
     )
 
@@ -182,6 +186,7 @@ class _SymbolState:
         self.best_bid       = float("nan")
         self.positions      : dict[str, float] = {}
         self.entry_prices   : dict[str, float] = {}
+        self.entry_ts       : dict[str, int]   = {}
         self.pending_exits  : dict[str, bool]  = {}
 
     # ── Tag-aware helpers ──────────────────────────────────────────────────────
@@ -309,15 +314,31 @@ class SignalEngine:
 
             cur_qty  = st.open_qty(tag)     # signed: +long, −short
             is_long  = cur_qty > 0
-            exit_ok  = (z > self._z_exit) if is_long else (z < self._z_exit_short)
-            if not exit_ok:
+            entry_px = st.entry_prices.get(tag, float("nan"))
+
+            # Trending-regime safety net: exit on adverse-move stop OR time-stop.
+            # Evaluated before z-revert so a reversion that happens AFTER the
+            # stop breach still closes the position (z-revert would also fire).
+            stop_reason: str | None = None
+            if not math.isnan(entry_px) and entry_px > 0:
+                adverse = ((entry_px - close) / entry_px) if is_long \
+                          else ((close - entry_px) / entry_px)
+                if adverse >= STOP_LOSS_PCT:
+                    stop_reason = f"stop_loss_{adverse:.4f}"
+            entry_ts = st.entry_ts.get(tag, 0)
+            if entry_ts > 0:
+                age_s = int(time.time()) - entry_ts
+                if age_s >= MAX_POSITION_SECS:
+                    stop_reason = stop_reason or f"time_stop_{age_s}s"
+
+            z_revert = (z > self._z_exit) if is_long else (z < self._z_exit_short)
+            if not (z_revert or stop_reason):
                 return None
 
             exit_side = OrderSide.SELL if is_long else OrderSide.BUY
             exit_qty  = abs(cur_qty)
             exit_px   = self._limit_px(st, close, exit_side)
             notional  = round(exit_qty * close, 2)
-            entry_px  = st.entry_prices.get(tag, float("nan"))
             if not math.isnan(entry_px) and entry_px > 0:
                 raw_pnl   = (close - entry_px) if is_long else (entry_px - close)
                 pnl_est   = round(raw_pnl / entry_px * 100, 3)
@@ -334,6 +355,7 @@ class SignalEngine:
                 exit_px=exit_px,
                 qty=exit_qty,
                 pnl_est=pnl_est,
+                reason=(stop_reason or "z_revert"),
             )
             st.pending_exits[tag] = True
             return {
@@ -379,6 +401,7 @@ class SignalEngine:
         )
         st.positions[tag]    = qty if long_entry else -qty
         st.entry_prices[tag] = close
+        st.entry_ts[tag]     = int(time.time())
 
         return {
             "symbol":   sym,
@@ -472,6 +495,7 @@ class SignalEngine:
         if st.pending_exits.get(fill_tag, False):
             st.positions[fill_tag]     = 0.0
             st.entry_prices[fill_tag]  = float("nan")
+            st.entry_ts[fill_tag]      = 0
             st.pending_exits[fill_tag] = False
             log.info("fill_recorded", symbol=symbol, tag=fill_tag,
                      qty=0.0, side=side_l, role="exit")
@@ -494,6 +518,7 @@ class SignalEngine:
             # exit. Treat as a force-close (old behaviour) and flag it.
             st.positions[fill_tag]     = 0.0
             st.entry_prices[fill_tag]  = float("nan")
+            st.entry_ts[fill_tag]      = 0
             st.pending_exits[fill_tag] = False
             log.warning("untracked_sell_treated_as_close",
                         symbol=symbol, tag=fill_tag, qty=qty)
@@ -512,6 +537,7 @@ class SignalEngine:
                         reason="order_blocked_or_failed")
             st.positions[tag]    = 0.0
             st.entry_prices[tag] = float("nan")
+            st.entry_ts[tag]     = 0
 
     def reconcile_positions(
         self,
@@ -579,6 +605,7 @@ class SignalEngine:
             st = self._state[state_sym]
             st.positions[tag]    = qty
             st.entry_prices[tag] = avg_entry
+            st.entry_ts[tag]     = int(time.time())   # adopt-now: gives full time-stop budget
             log.info(
                 "position_reconciled",
                 symbol=state_sym,
@@ -631,6 +658,7 @@ class SignalEngine:
             st = self._state[state_sym]
             st.positions[self.strategy_tag]    = szi        # signed
             st.entry_prices[self.strategy_tag] = entry_px
+            st.entry_ts[self.strategy_tag]     = int(time.time())   # adopt-now
             log.info(
                 "hl_position_reconciled",
                 symbol=state_sym,
@@ -652,6 +680,7 @@ class SignalEngine:
                 stale_qty = st.positions[tag]
                 st.positions[tag]     = 0.0
                 st.entry_prices[tag]  = float("nan")
+                st.entry_ts[tag]      = 0
                 st.pending_exits[tag] = False
                 log.warning(
                     "hl_memory_wiped_stale",

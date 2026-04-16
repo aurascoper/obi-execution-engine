@@ -13,7 +13,7 @@ MAX_DAILY_DRAWDOWN_PCT   = 0.02    # Hard halt if equity drops 2% intraday
 MAX_DAILY_LOSS_DOLLARS   =  50.0 if _is_live() else 500.0   # $50 live / $500 paper
 
 # --- Per-Order Size Caps ---
-MAX_ORDER_NOTIONAL       = 100.00 if _is_live() else 2_000.00  # $100 live / $2000 paper
+MAX_ORDER_NOTIONAL       = 550.00 if _is_live() else 2_000.00  # $550 live / $2000 paper
 MAX_CONTRACTS_PER_LEG    =  10     # Options: max contracts per leg (circuit breaker)
 MAX_SHARES_PER_ORDER     = 500     # Equities: max shares per order
 

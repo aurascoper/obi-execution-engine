@@ -148,9 +148,10 @@ class HLEngine:
         self._hl_symbols: list[str] = list(self._coin_to_symbol.values())
 
         # Fail loud at init if USDC is unbridged / agent is wrong — the leverage
-        # pin is the canary. default_leverage=2 matches the live account and
-        # stays below every candidate coin's maxLeverage floor (screener ≥ 3).
-        self._default_leverage = 2
+        # pin is the canary. default_leverage=5 matches the prior "5-for-5" live
+        # cadence on BTC and stays below every candidate coin's maxLeverage
+        # floor (screener ≥ 3; BTC/ETH/SOL all support ≥ 20).
+        self._default_leverage = 5
         self._hl = HyperliquidOrderManager(
             self._cfg,
             strategy_tag     = STRATEGY_TAG,
@@ -753,13 +754,18 @@ class HLEngine:
             cumulative=cumulative, remaining=remaining,
             terminal=terminal,
         )
-        self._signals.on_fill(
-            client_order_id = pending["cid"],
-            symbol          = sym,
-            qty             = filled_sz,
-            side            = pending["side"],
-        )
+        # signals.on_fill overwrites (not accumulates) and clears pending_exits
+        # on the first call. Fire it only once per order, on the terminal fill,
+        # with the cumulative qty — otherwise multi-chunk entries leave mem at
+        # the last chunk size (→ under-sized exit → dust residual), and
+        # multi-chunk exits resurrect a phantom position after the close.
         if terminal:
+            self._signals.on_fill(
+                client_order_id = pending["cid"],
+                symbol          = sym,
+                qty             = cumulative,
+                side            = pending["side"],
+            )
             del self._pending_resting[sym]
         else:
             pending["filled_qty"] = cumulative
