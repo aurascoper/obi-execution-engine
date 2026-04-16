@@ -16,7 +16,21 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from hl_engine import HLEngine, STRATEGY_TAG, COIN_TO_SYMBOL
+from hl_engine import HLEngine, STRATEGY_TAG
+
+# Test-local universe map. Matches what HLEngine.__init__ would build from
+# HL_UNIVERSE="BTC,ETH,SOL" + a live meta() probe. Pre-baking it here keeps the
+# test hermetic (no network on import).
+_TEST_SZ_DECIMALS: dict[str, int] = {"BTC": 5, "ETH": 4, "SOL": 2}
+_TEST_COIN_TO_SYMBOL: dict[str, str] = {
+    c: f"{c}/USD" for c in _TEST_SZ_DECIMALS
+}
+_TEST_SYMBOL_TO_COIN: dict[str, str] = {
+    v: k for k, v in _TEST_COIN_TO_SYMBOL.items()
+}
+_TEST_DUST_CAPS: dict[str, float] = {
+    c: 1.5 * (10 ** -d) for c, d in _TEST_SZ_DECIMALS.items()
+}
 
 
 # ── Stubs ─────────────────────────────────────────────────────────────────────
@@ -54,15 +68,19 @@ class FakeSignals:
 
 def run_case(case: dict) -> dict:
     sym   = case["symbol"]
-    coin  = {v: k for k, v in COIN_TO_SYMBOL.items()}[sym]
+    coin  = _TEST_SYMBOL_TO_COIN[sym]
 
     positions = []
     if case["live_szi"] != 0.0:
         positions.append({"coin": coin, "szi": case["live_szi"]})
 
     stub = SimpleNamespace(
-        _hl      = FakeHL(positions),
-        _signals = FakeSignals(sym, case["mem_szi"], case["pending_exit"]),
+        _hl             = FakeHL(positions),
+        _signals        = FakeSignals(sym, case["mem_szi"], case["pending_exit"]),
+        _coin_to_symbol = _TEST_COIN_TO_SYMBOL,
+        _symbol_to_coin = _TEST_SYMBOL_TO_COIN,
+        _sz_decimals    = _TEST_SZ_DECIMALS,
+        _dust_caps      = _TEST_DUST_CAPS,
     )
 
     sig = {"symbol": sym}
@@ -110,6 +128,27 @@ CASES = [
          pending_exit=False,
          expect_allowed=False, expect_rollback="rollback_entry"),
 
+    # --- SOL entries (szDecimals=2, dust_cap=1.5e-2) ---
+    dict(name="SOL entry, on-chain flat → allow",
+         symbol="SOL/USD", live_szi=0.0, mem_szi=-0.5,
+         pending_exit=False,
+         expect_allowed=True, expect_rollback=None),
+
+    dict(name="SOL entry, 1-lot dust 0.01 (under 1.5x cap) → allow",
+         symbol="SOL/USD", live_szi=0.01, mem_szi=-0.5,
+         pending_exit=False,
+         expect_allowed=True, expect_rollback=None),
+
+    dict(name="SOL entry, 0.02 (2 lots, above 1.5x cap) → block",
+         symbol="SOL/USD", live_szi=0.02, mem_szi=-0.5,
+         pending_exit=False,
+         expect_allowed=False, expect_rollback="rollback_entry"),
+
+    dict(name="SOL entry, 0.5 genuine long on chain → block",
+         symbol="SOL/USD", live_szi=0.5, mem_szi=-0.5,
+         pending_exit=False,
+         expect_allowed=False, expect_rollback="rollback_entry"),
+
     # --- EXIT branch (pending_exit=True) ---
     dict(name="ETH exit, live matches memory (same sign)",
          symbol="ETH/USD", live_szi=-0.0427, mem_szi=-0.0427,
@@ -130,6 +169,16 @@ CASES = [
          symbol="ETH/USD", live_szi=+0.0427, mem_szi=-0.0427,
          pending_exit=True,
          expect_allowed=False, expect_rollback="rollback_exit"),
+
+    dict(name="SOL exit, live dust 0.01 (under cap) → block (effectively flat)",
+         symbol="SOL/USD", live_szi=0.01, mem_szi=-0.5,
+         pending_exit=True,
+         expect_allowed=False, expect_rollback="rollback_exit"),
+
+    dict(name="SOL exit, live matches memory -0.5 → allow",
+         symbol="SOL/USD", live_szi=-0.5, mem_szi=-0.5,
+         pending_exit=True,
+         expect_allowed=True, expect_rollback=None),
 ]
 
 
