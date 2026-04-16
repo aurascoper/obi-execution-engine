@@ -213,7 +213,7 @@ mainnet** — Hyperliquid has no paper sandbox.
 | Leverage | 2x cross (matches the live account; screener filters `maxLeverage ≥ 3` so pin never exceeds venue ceiling) |
 | Notional/trade | \$100 LIVE / \$2,000 PAPER base; split per-pair as `base × 2 / N` when `HL_UNIVERSE` has `N > 2` coins |
 | Execution style | `EXECUTION_STYLE=taker` (default, `Ioc` cross-spread) or `maker` (`Alo` at best bid/ask, rests; see Phase 4.2) |
-| Strategy tag | `hl_taker_z` (retained for log-parser continuity across the taker→maker pivot) |
+| Strategy tag | `hl_z` (renamed from `hl_taker_z`; `analyze_session.py` accepts both for historical log replay) |
 | Logs | `logs/hl_engine.jsonl` |
 
 **Why the OBI depth differs from Engine 1 (N=5 → N=20):** live burn-in on HL BTC/ETH

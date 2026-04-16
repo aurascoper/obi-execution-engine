@@ -10,7 +10,7 @@ Wiring:
                 on BTC/USD and ETH/USD. Signal source assumption: Alpaca spot
                 is the "truer mean" to reversion-trade against HL perps.
   * Order book: data.hl_feed.HyperliquidFeed for L2 → OBI.
-  * Signals   : strategy.signals.SignalEngine(strategy_tag="hl_taker_z",
+  * Signals   : strategy.signals.SignalEngine(strategy_tag="hl_z",
                                               allow_short=True).
   * Execution : execution.hl_manager.HyperliquidOrderManager(default_leverage=5).
 
@@ -23,7 +23,7 @@ Sign-flip guard:
   reconcile finishes.
 
 Client-order-id parity:
-  Every submission is logged with  hl_taker_z_{COIN}_{epoch}  for log-parser
+  Every submission is logged with  hl_z_{COIN}_{epoch}  for log-parser
   compatibility with the Phase 3 tagging scheme.
 
 Preconditions before first run:
@@ -77,7 +77,7 @@ log = structlog.get_logger("hl_engine")
 # Info.meta() probe so adding a new coin never drifts from the venue.
 #
 # STRATEGY_TAG is retained at module scope — the test harness imports it.
-STRATEGY_TAG    = "hl_taker_z"
+STRATEGY_TAG    = "hl_z"
 DEFAULT_UNIVERSE = "BTC,ETH"
 
 # Execution style flag (Spike B). "taker" = existing IOC cross-spread path,

@@ -483,7 +483,7 @@ class SignalEngine:
 
         # Tag match: our client_order_ids are `{tag}_{sym}_{epoch}`, so a
         # prefix + trailing underscore uniquely identifies this engine's fills
-        # and tolerates multi-underscore tags like "hl_taker_z".
+        # and tolerates multi-underscore tags like "hl_z".
         if not client_order_id.startswith(self.strategy_tag + "_"):
             return   # fill belongs to a different engine instance
 

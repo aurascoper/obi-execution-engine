@@ -24,7 +24,7 @@ from pathlib import Path
 
 LOG = Path("/Users/aurascoper/Developer/live_trading/logs/hl_engine.jsonl")
 TAKER_FEE_BPS = 3.5  # per side
-STRATEGY_TAG = "hl_taker_z"
+STRATEGY_TAGS = ("hl_z", "hl_taker_z")
 
 
 def _fee(notional: float) -> float:
@@ -74,7 +74,7 @@ def extract_fills(events: list[dict]) -> list[dict]:
                         continue
                     if sz <= 0:
                         continue
-                    # cid format: hl_taker_z_{COIN}_{epoch}
+                    # cid format: hl_z_{COIN}_{epoch} (or legacy hl_taker_z_...)
                     pending_result = {
                         "cid": cid,
                         "price": px,
