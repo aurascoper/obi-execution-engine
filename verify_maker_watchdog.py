@@ -76,6 +76,16 @@ from hl_engine import HLEngine, MAKER_MAX_LIFETIME_S  # noqa: E402
 from strategy.signals import SignalEngine  # noqa: E402
 
 
+# Test universe — mirrors what HLEngine.__init__ builds from HL_UNIVERSE="BTC,ETH"
+# + Info.meta() probe. Hermetic, no network.
+_TEST_COINS      = ["BTC", "ETH"]
+_TEST_SYMBOLS    = [f"{c}/USD" for c in _TEST_COINS]
+_TEST_C2S        = {c: f"{c}/USD" for c in _TEST_COINS}
+_TEST_S2C        = {v: k for k, v in _TEST_C2S.items()}
+_TEST_SZ_DEC     = {"BTC": 5, "ETH": 4}
+_TEST_DUST_CAPS  = {c: 1.5 * (10 ** -d) for c, d in _TEST_SZ_DEC.items()}
+
+
 # ── Fakes wired into an HLEngine instance ───────────────────────────────────
 
 class FakeHL:
@@ -110,8 +120,15 @@ def _make_engine() -> HLEngine:
     eng = HLEngine.__new__(HLEngine)          # bypass __init__ / HL boot
     eng._cfg              = None
     eng._hl               = FakeHL()
+    eng._hl_coins         = list(_TEST_COINS)
+    eng._hl_symbols       = list(_TEST_SYMBOLS)
+    eng._coin_to_symbol   = dict(_TEST_C2S)
+    eng._symbol_to_coin   = dict(_TEST_S2C)
+    eng._sz_decimals      = dict(_TEST_SZ_DEC)
+    eng._dust_caps        = dict(_TEST_DUST_CAPS)
+    eng._default_leverage = 2
     eng._signals          = SignalEngine(
-        symbols=hl_engine.HL_SYMBOLS,
+        symbols=_TEST_SYMBOLS,
         strategy_tag=hl_engine.STRATEGY_TAG,
         allow_short=True,
     )
