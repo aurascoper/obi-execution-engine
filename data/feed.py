@@ -165,9 +165,13 @@ class LiveFeed:
         delay = 10
         while True:
             try:
-                # Call _start_ws directly — _run_forever swallows all exceptions
-                # internally and never propagates them, making backoff impossible.
-                await self._stream._start_ws()
+                # _run_forever performs connect → auth → send_subscribe → consume.
+                # Calling _start_ws alone skips steps 3–4, leaving an authenticated
+                # zombie socket that holds the free-tier slot but receives no data.
+                # Its internal exception handling is WS-reconnect resiliency, not a
+                # bug to work around; the outer backoff catches anything that still
+                # escapes.
+                await self._stream._run_forever()
                 return  # clean stop via self.stop()
             except asyncio.CancelledError:
                 raise  # always propagate cancellation

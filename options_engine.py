@@ -52,7 +52,7 @@ from alpaca.trading.enums import TimeInForce
 from config.settings import ExecutionMode, load as load_settings
 from config.risk_params import MAX_ORDERS_PER_MINUTE
 from risk.circuit_breaker import CircuitBreaker
-from data.stock_feed import LiveStockFeed
+from data.rest_stock_poller import RestStockPoller
 from data.options_chain import OptionsChainCache
 from execution.order_manager import OrderManager
 from strategy.options_signals import OptionsSignalEngine, WINDOW
@@ -96,9 +96,15 @@ SYMBOLS = [
     "PLTR",  # ~$25-40 range; high beta, liquid options
     "CRWD",  # ~$300+ range; will typically exceed budget → skip gracefully
     "AMD",   # ~$100-150 range; will typically exceed budget → skip gracefully
+    # ── Short-zone adds from screener 2026-04-14 (puts on overbought) ─────────
+    "WULF",  # ~$20 range; cheap weekly puts should fit $110 budget
+    "AMZN",  # ~$246; usually budget-skipped, catch cheap OTM on IV spikes
+    "NVDA",  # ~$192; usually budget-skipped, catch cheap OTM on IV spikes
 ]
-# NOTE: CRWD and AMD are included to catch cheap OTM options in high-vol regimes,
-# but will usually be skipped by the MAX_OPTIONS_BUDGET cap at normal IV levels.
+# NOTE: CRWD, AMD, AMZN, NVDA are included to catch cheap OTM options in
+# high-vol regimes, but will usually be skipped by MAX_OPTIONS_BUDGET at
+# normal IV levels. Zero financial risk — best_contract() returns None when
+# nothing qualifies.
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 _ET                  = zoneinfo.ZoneInfo("America/New_York")
@@ -145,7 +151,8 @@ class OptionsEngine:
         )
         self._breaker = CircuitBreaker(self._client)
         self._orders  = OrderManager(
-            self._client, self._breaker, self._cfg, strategy_tag="options"
+            self._client, self._breaker, self._cfg,
+            strategy_tag="options", asset_class="option",
         )
         self._chain  = OptionsChainCache(
             trading_client = self._client,
@@ -161,7 +168,7 @@ class OptionsEngine:
             strategy_tag   = "options",
         )
         self._msg_q  = asyncio.Queue(maxsize=2000)
-        self._feed   = LiveStockFeed(self._cfg, SYMBOLS, self._msg_q)
+        self._feed   = RestStockPoller(self._data_client, SYMBOLS, self._msg_q)
         self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
         self._running = True
 
@@ -203,9 +210,7 @@ class OptionsEngine:
         while self._running:
             if self._breaker.halted:
                 log.critical("options_engine_halted")
-                self._running = False
-                self._feed.stop()
-                self._chain.stop()
+                self.stop()
                 break
 
             msg = await self._msg_q.get()
@@ -248,10 +253,24 @@ class OptionsEngine:
             for order_kwargs in order_list:
                 action = order_kwargs.pop("action", "")
                 await self._bucket.acquire()
-                result = await self._orders.submit_limit(
-                    **order_kwargs,
-                    tif=TimeInForce.DAY,   # options require DAY TIF
-                )
+                try:
+                    result = await self._orders.submit_limit(
+                        **order_kwargs,
+                        tif=TimeInForce.DAY,   # options require DAY TIF
+                    )
+                except Exception as exc:
+                    # Transient network / Alpaca failure. Treat like a blocked
+                    # leg: log, roll back pre-committed entry state, skip remaining
+                    # legs so we don't execute half a spread. Engine survives.
+                    log.warning(
+                        "options_order_network_error",
+                        action=action,
+                        symbol=order_kwargs.get("symbol"),
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:160],
+                    )
+                    result = None
+
                 if result:
                     log.info("options_order_result", action=action, **result)
                 else:
@@ -278,10 +297,25 @@ class OptionsEngine:
                 for order_kwargs in order_list:
                     action = order_kwargs.pop("action", "dte_close")
                     await self._bucket.acquire()
-                    result = await self._orders.submit_limit(
-                        **order_kwargs,
-                        tif=TimeInForce.DAY,
-                    )
+                    try:
+                        result = await self._orders.submit_limit(
+                            **order_kwargs,
+                            tif=TimeInForce.DAY,
+                        )
+                    except Exception as exc:
+                        # Network failure on a DTE close is serious (position
+                        # still expiring) — log at error level so it's visible,
+                        # but don't crash; retry on next 30-min tick.
+                        log.error(
+                            "dte_close_network_error",
+                            action=action,
+                            symbol=order_kwargs.get("symbol"),
+                            exc_type=type(exc).__name__,
+                            exc_msg=str(exc)[:160],
+                            note="will retry next DTE monitor tick",
+                        )
+                        result = None
+
                     if result:
                         log.info("dte_close_result", action=action, **result)
                     else:
@@ -301,9 +335,7 @@ class OptionsEngine:
             await asyncio.sleep(60)
             safe = await self._breaker.check_drawdown()
             if not safe:
-                self._running = False
-                self._feed.stop()
-                self._chain.stop()
+                self.stop()
 
     # ── Pre-seed rolling buffers ──────────────────────────────────────────────
 
@@ -325,7 +357,7 @@ class OptionsEngine:
             bars = await asyncio.to_thread(self._data_client.get_stock_bars, req)
             seeded = 0
             for sym in SYMBOLS:
-                sym_bars = bars.get(sym, [])
+                sym_bars = (bars.data if hasattr(bars, "data") else bars).get(sym, [])
                 if not sym_bars:
                     log.warning("options_preseed_no_bars", symbol=sym)
                     continue
@@ -342,8 +374,14 @@ class OptionsEngine:
     def stop(self) -> None:
         log.info("options_engine_shutdown")
         self._running = False
-        self._feed.stop()
-        self._chain.stop()
+        try:
+            self._feed.stop()
+        except Exception:
+            pass
+        try:
+            self._chain.stop()
+        except Exception:
+            pass
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

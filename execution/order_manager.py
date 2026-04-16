@@ -28,6 +28,7 @@ from typing import Callable
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.stream import TradingStream
 from alpaca.trading.requests import LimitOrderRequest
@@ -51,12 +52,14 @@ class OrderManager:
         breaker:      CircuitBreaker,
         cfg:          Settings,
         strategy_tag: str = "taker",
+        asset_class:  str = "equity",   # "equity" | "option" | "crypto"
     ):
         self._client       = client
         self._breaker      = breaker
         self._mode         = cfg.execution_mode
         self._cfg          = cfg
         self.strategy_tag  = strategy_tag
+        self._asset_class  = asset_class
         self._fill_handler: Callable | None = None
 
     # ── Client Order ID ───────────────────────────────────────────────────────
@@ -183,6 +186,7 @@ class OrderManager:
         Returns a result dict on success, None if blocked by circuit breaker.
         """
         if not self._breaker.validate_order(symbol, qty, notional,
+                                             asset_class=self._asset_class,
                                              side=side.value.lower()):
             return None
 
@@ -192,7 +196,20 @@ class OrderManager:
             return self._shadow_fill(symbol, side, qty, limit_px, notional, cid)
 
         # PAPER or LIVE — hit the actual API
-        return await self._submit_to_api(symbol, side, qty, limit_px, notional, tif, cid)
+        try:
+            return await self._submit_to_api(symbol, side, qty, limit_px, notional, tif, cid)
+        except APIError as exc:
+            # Non-retriable broker rejections — log and treat as blocked (return None)
+            # so the TaskGroup is not killed by a single order rejection.
+            log.warning(
+                "order_rejected_by_broker",
+                symbol=symbol,
+                side=side.value,
+                code=getattr(exc, "code", None),
+                msg=str(exc)[:200],
+                tag=self.strategy_tag,
+            )
+            return None
 
     def log_slippage(self, symbol: str, expected_px: float, fill_px: float) -> None:
         slip  = abs(fill_px - expected_px) / expected_px

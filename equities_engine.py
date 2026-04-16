@@ -73,11 +73,19 @@ SYMBOLS = [
     # ── Long zone  z < -1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ──────
     # Trimmed to highest-conviction names; defensive/staples longs dropped to
     # stay within IEX free-tier 100-symbol WebSocket cap.
-    # CMCSA added 2026-04-13 (screener: z=-1.39σ, $27.94, 1.6M ADV, Communication)
-    "CMCSA",
-    "NKE",  "TSLA", "NOW",  "PODD", "VRSK", "ZS",   "NTAP", "CRM",
-    "DLTR", "DG",   "DDOG", "WDAY", "CTAS", "INTU", "SMCI", "ISRG",
-    "PLTR", "GPN",  "GD",   "TTD",  "ULTA", "FICO", "ORCL", "TEAM",
+    # 2026-04-14 fundamentals purge — mean-reversion invalid on regime-break
+    # names (z-magnet works on cyclical dislocations, not secular shifts):
+    #   NKE   — fundamentals flagged
+    #   TTD   — agency-trust moat cracking, exec exits, Publicis delisting
+    #   FICO  — Senate pricing probe + FHFA/VantageScore regulatory risk
+    #   NOW   — AI-automation moat erosion (UBS)
+    #   WDAY  — AI agents cannibalizing HCM/finance SaaS seats
+    #   INTU  — AI disruption of TurboTax/QuickBooks
+    #   CMCSA — structural cord-cutting value trap
+    #   SMCI  — governance/accounting binary gap risk
+    "TSLA", "PODD", "VRSK", "ZS",   "NTAP", "CRM",
+    "DLTR", "DG",   "DDOG", "CTAS", "ISRG",
+    "PLTR", "GPN",  "GD",   "ULTA", "ORCL", "TEAM",
     "CPRT", "SNOW", "CRWD",
     # ── Short zone  z > +1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ─────
     # 20 low-signal names dropped to stay under IEX 80-symbol bars+quotes cap.
@@ -591,7 +599,19 @@ class Engine:
 
                 await self._bucket.acquire()
                 # Alpaca requires DAY (not GTC) for fractional equity orders
-                result = await self._orders.submit_limit(**signal, tif=TimeInForce.DAY)
+                try:
+                    result = await self._orders.submit_limit(**signal, tif=TimeInForce.DAY)
+                except Exception as exc:
+                    # Transient network / Alpaca failure (e.g. ConnectionResetError).
+                    # Treat like a blocked order: log, roll back, survive to next bar.
+                    log.warning(
+                        "equities_order_network_error",
+                        action=action,
+                        symbol=sym,
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:160],
+                    )
+                    result = None
 
                 if result:
                     log.info("equities_order_result", action=action, **result)
@@ -604,7 +624,7 @@ class Engine:
                     if snap:
                         log.debug("sector_exposure_snapshot", exposure=snap)
                 else:
-                    # Order blocked — rollback position state so engine can retry
+                    # Order blocked or errored — rollback position state so engine can retry
                     if action == "enter_short":
                         self._signals.rollback_short(sym)
                     elif action == "enter_long":

@@ -9,6 +9,7 @@ from config.risk_params import (
     MAX_DAILY_DRAWDOWN_PCT,
     MAX_DAILY_LOSS_DOLLARS,
     MAX_ORDER_NOTIONAL,
+    MAX_OPTIONS_BUDGET,
     MAX_CONTRACTS_PER_LEG,
     MAX_SHARES_PER_ORDER,
     SYMBOL_CAPS,
@@ -80,11 +81,16 @@ class CircuitBreaker:
             return False
         # Notional caps guard entries only — exits reduce exposure, not increase it.
         if side == "buy":
-            if notional > MAX_ORDER_NOTIONAL:
+            if asset_class == "option":
+                cap = MAX_OPTIONS_BUDGET
+            else:
+                cap = MAX_ORDER_NOTIONAL
+            if notional > cap:
                 log.warning("order_blocked_notional",
-                            symbol=symbol, notional=notional, cap=MAX_ORDER_NOTIONAL)
+                            symbol=symbol, notional=notional, cap=cap,
+                            asset_class=asset_class)
                 return False
-            if symbol in SYMBOL_CAPS and notional > SYMBOL_CAPS[symbol]:
+            if asset_class != "option" and symbol in SYMBOL_CAPS and notional > SYMBOL_CAPS[symbol]:
                 log.warning("order_blocked_symbol_cap",
                             symbol=symbol, notional=notional, cap=SYMBOL_CAPS[symbol])
                 return False

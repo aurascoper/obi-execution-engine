@@ -223,8 +223,11 @@ class OptionsChainCache:
             status="active",
         )
         result   = self._tc.get_option_contracts(req)
-        # Result may be a list or a paginated wrapper — normalize.
-        contracts = list(result) if result else []
+        # SDK returns GetOptionContractsResponse with .option_contracts list.
+        if hasattr(result, "option_contracts"):
+            contracts = list(result.option_contracts) if result.option_contracts else []
+        else:
+            contracts = list(result) if result else []
         if not contracts:
             self._cache[sym] = []
             log.debug("options_chain_empty", symbol=sym, dte_window=f"{exp_min}…{exp_max}")

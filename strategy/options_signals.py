@@ -117,7 +117,7 @@ class OptionsSignalEngine:
         self._buffers: dict[str, _RollingBuffer] = {
             s: _RollingBuffer(window) for s in symbols
         }
-        self._obi:  dict[str, float] = {s: 0.0  for s in symbols}
+        self._obi:  dict[str, float | None] = {s: None for s in symbols}
         self._best_bid: dict[str, float] = {s: float("nan") for s in symbols}
         self._best_ask: dict[str, float] = {s: float("nan") for s in symbols}
 
@@ -145,12 +145,13 @@ class OptionsSignalEngine:
             return None
 
         obi = self._obi[sym]
+        obi_ready = obi is not None  # False until first NBBO quote arrives
 
         log.debug(
             "options_signal_tick",
             symbol=sym,
             z=round(z, 4),
-            obi=round(obi, 4),
+            obi=round(obi, 4) if obi_ready else None,
             in_position=sym in self._positions,
             level=self._level,
         )
@@ -169,9 +170,9 @@ class OptionsSignalEngine:
         if len(self._positions) >= MAX_OPTIONS_POSITIONS:
             return None
 
-        # 3. Entry path
-        bullish  = z < Z_ENTRY_LONG  and obi > OBI_THETA_LONG
-        bearish  = z > Z_ENTRY_SHORT and obi < OBI_THETA_SHORT
+        # 3. Entry path — bypass OBI gate if no quote has arrived yet
+        bullish  = z < Z_ENTRY_LONG  and (not obi_ready or obi > OBI_THETA_LONG)
+        bearish  = z > Z_ENTRY_SHORT and (not obi_ready or obi < OBI_THETA_SHORT)
 
         if bullish:
             return self._enter_bullish(sym, close)
@@ -194,7 +195,7 @@ class OptionsSignalEngine:
             return
         vb = float(bids[0][1]) if bids else 0.0
         va = float(asks[0][1]) if asks else 0.0
-        self._obi[sym]      = (vb - va) / (vb + va + 1e-8)
+        self._obi[sym] = (vb - va) / (vb + va + 1e-8)
         self._best_bid[sym] = float(bids[0][0])
         self._best_ask[sym] = float(asks[0][0])
 
