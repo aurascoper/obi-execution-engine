@@ -204,14 +204,14 @@ mainnet** — Hyperliquid has no paper sandbox.
 | Property | Value |
 |----------|-------|
 | Strategy | Bi-Directional OBI-Gated Z-Score — dual-mode execution (taker / maker) |
-| Universe | BTC/USD, ETH/USD (perp) |
+| Universe | Env-driven via `HL_UNIVERSE` CSV (default `"BTC,ETH"`); per-coin `szDecimals` + dust caps populated at boot from a live `Info.meta()` probe |
 | Session | **24/7** continuous — no market-hours gate |
 | Timeframe | 1-minute bars (from Alpaca CryptoDataStream) |
 | Z-score window | $W = 60$ bars = 60-minute rolling window |
 | Directionality | **Bi-directional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$) |
 | OBI source | HL L2 WebSocket @ 20 levels (`l2Book` channel) |
-| Leverage | 5x cross |
-| Notional/trade | \$100 LIVE / \$2,000 PAPER (auto-downsized for account size) |
+| Leverage | 2x cross (matches the live account; screener filters `maxLeverage ≥ 3` so pin never exceeds venue ceiling) |
+| Notional/trade | \$100 LIVE / \$2,000 PAPER base; split per-pair as `base × 2 / N` when `HL_UNIVERSE` has `N > 2` coins |
 | Execution style | `EXECUTION_STYLE=taker` (default, `Ioc` cross-spread) or `maker` (`Alo` at best bid/ask, rests; see Phase 4.2) |
 | Strategy tag | `hl_taker_z` (retained for log-parser continuity across the taker→maker pivot) |
 | Logs | `logs/hl_engine.jsonl` |
@@ -246,6 +246,23 @@ memory holds a non-zero position, `reconcile_hl_positions` wipes the stale memor
 or manual UI trade deadlocked every subsequent exit ("`exit_but_live_flat`" block loop).
 Sub-lot residuals (`|szi| ≤ 1.5 × 10⁻szDecimals`) are treated as flat — eliminates a
 deadlock observed on ETH where −0.0001 dust perpetually re-seeded the exit signal.
+
+**Universe expansion workflow (`screener_hl.py`).** Ranking candidates across the HL
+perp universe is driven by a standalone screener rather than baked into the engine.
+Filter stack: intersect with Alpaca-supported crypto bar symbols
+(`{SOL, DOGE, AVAX, LINK, SHIB}` — any non-whitelisted coin would silently no-op
+because the z-score buffer never warms from a missing Alpaca bar stream), require
+`maxLeverage ≥ 3`, require top-of-book spread ≤ 5 bps, then rank by 24 h notional
+volume.
+
+```bash
+python3 screener_hl.py --top 4          # writes config/hl_universe_candidates.json
+python3 screener_hl.py --top 4 --apply  # also prints suggested HL_UNIVERSE CSV
+export HL_UNIVERSE="BTC,ETH,SOL,AVAX"   # paste into env.sh; engine picks it up on restart
+```
+
+The engine never auto-reads the JSON — the operator pastes the CSV so expansion stays
+an explicit, reviewable change.
 
 #### Phase 4.2 — Maker Execution (`EXECUTION_STYLE=maker`)
 
