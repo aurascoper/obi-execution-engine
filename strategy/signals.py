@@ -328,11 +328,13 @@ class SignalEngine:
         if z is None:
             return None
 
+        z_4h = st.trend_buf.zscore(close)
         tag = self.strategy_tag
         log.info(
             "signal_tick",
             symbol=sym,
             z=round(z, 4),
+            z_4h=round(z_4h, 4) if z_4h is not None else None,
             obi=round(st.obi, 4),
             tag=tag,
             in_position=st.is_open(tag),
