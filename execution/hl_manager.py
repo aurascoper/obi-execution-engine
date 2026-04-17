@@ -100,6 +100,7 @@ class HyperliquidOrderManager:
 
         self._exchange = Exchange(wallet, mainnet_url, **exchange_kwargs)
         self._info = Info(mainnet_url, **info_kwargs)
+        self._builder_dexs = [d for d in (perp_dexs or []) if d]
 
         log.info(
             "hl_manager_initialized",
@@ -355,9 +356,30 @@ class HyperliquidOrderManager:
             "unrealized_pnl": float, "leverage": dict }
 
         szi is signed: positive = long, negative = short.
+
+        Queries both the native HyperCore clearinghouse and each builder DEX
+        clearinghouse (e.g. TradeXYZ for HIP-3 equity perps). The SDK's
+        user_state() only returns native positions; builder DEX positions live
+        in a separate clearinghouse and require an explicit dex parameter.
         """
         state = await self.get_user_state()
-        asset_positions = state.get("assetPositions", []) or []
+        asset_positions = list(state.get("assetPositions", []) or [])
+
+        # Builder DEX positions (HIP-3 etc.) are in separate clearinghouses.
+        for dex in self._builder_dexs:
+            try:
+                dex_state = await asyncio.to_thread(
+                    self._info.post,
+                    "/info",
+                    {"type": "clearinghouseState", "user": self._wallet_address, "dex": dex},
+                )
+                asset_positions.extend(dex_state.get("assetPositions", []) or [])
+            except Exception as exc:
+                log.warning(
+                    "hl_builder_dex_state_failed",
+                    dex=dex,
+                    error=str(exc),
+                )
 
         out: list[dict[str, Any]] = []
         for ap in asset_positions:
