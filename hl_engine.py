@@ -80,6 +80,13 @@ log = structlog.get_logger("hl_engine")
 STRATEGY_TAG    = "hl_z"
 DEFAULT_UNIVERSE = "BTC,ETH"
 
+# Coins Alpaca CryptoDataStream actually delivers 1-min bars for. Any coin NOT
+# in this set gets HL-native bars synthesized from L2 midprice ticks instead.
+ALPACA_BAR_COINS = frozenset({"BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK"})
+
+# Native bar synthesis interval — matches Alpaca's 1-min bar cadence.
+NATIVE_BAR_INTERVAL_S = 60
+
 # Execution style flag (Spike B). "taker" = existing IOC cross-spread path,
 # synchronous response. "maker" = Alo at best bid/ask, rests until filled, fill
 # arrives asynchronously via userFills WS. Default stays "taker" so the env
@@ -147,11 +154,7 @@ class HLEngine:
         }
         self._hl_symbols: list[str] = list(self._coin_to_symbol.values())
 
-        # Fail loud at init if USDC is unbridged / agent is wrong — the leverage
-        # pin is the canary. default_leverage=5 matches the prior "5-for-5" live
-        # cadence on BTC and stays below every candidate coin's maxLeverage
-        # floor (screener ≥ 3; BTC/ETH/SOL all support ≥ 20).
-        self._default_leverage = 5
+        self._default_leverage = 10
         self._hl = HyperliquidOrderManager(
             self._cfg,
             strategy_tag     = STRATEGY_TAG,
@@ -190,25 +193,24 @@ class HLEngine:
             c: 1.5 * (10 ** -dec) for c, dec in self._sz_decimals.items()
         }
 
-        # Per-pair notional split. Baseline: NOTIONAL_PER_TRADE was sized for
-        # the 2-coin (BTC/ETH) universe, so an N-coin expansion divides that
-        # same dollar budget across N pairs. For N ≤ 2 we keep the historical
-        # sizing untouched; for N > 2 we scale down to protect MAX_ORDER_NOTIONAL
-        # and daily-loss headroom.
-        from strategy.signals import NOTIONAL_PER_TRADE as _BASE_NTL
-        n = len(self._hl_coins)
-        if n <= 2:
-            per_pair_notional = _BASE_NTL
-        else:
-            per_pair_notional = _BASE_NTL * 2.0 / n
-        self._per_pair_notional = per_pair_notional
+        self._per_pair_notional = 250.0
 
         self._signals = SignalEngine(
             symbols            = self._hl_symbols,
             strategy_tag       = STRATEGY_TAG,
             allow_short        = True,
-            notional_per_trade = per_pair_notional,
+            notional_per_trade = self._per_pair_notional,
         )
+
+        # Per-coin z-thresholds: BTC/ETH tight, PAXG ultra-tight, alts wide.
+        _ALTS_WIDE = {"SOL", "AVAX", "LINK", "ZEC", "AAVE"}
+        for coin in self._hl_coins:
+            sym = self._coin_to_symbol[coin]
+            if coin in _ALTS_WIDE:
+                self._signals.set_symbol_z(sym, -2.50, -0.75, +2.50, +0.75)
+            elif coin == "PAXG":
+                self._signals.set_symbol_z(sym, -0.25, -0.10, +0.25, +0.10)
+            # BTC/ETH: engine defaults (±1.25 entry, ±0.50 exit)
 
         # Unified message queue — bars arrive from Alpaca LiveFeed with
         # symbol="BTC/USD", orderbooks arrive from HL pump with symbol rewritten
@@ -216,7 +218,22 @@ class HLEngine:
         self._msg_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self._hl_raw_q: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
-        self._bars = LiveFeed(self._cfg, self._hl_symbols, self._msg_q)
+        # Split universe: coins with Alpaca bar coverage vs native-bar coins.
+        self._alpaca_coins = [c for c in self._hl_coins if c in ALPACA_BAR_COINS]
+        self._native_bar_coins = [c for c in self._hl_coins if c not in ALPACA_BAR_COINS]
+
+        alpaca_symbols = [self._coin_to_symbol[c] for c in self._alpaca_coins]
+        if alpaca_symbols:
+            self._bars = LiveFeed(self._cfg, alpaca_symbols, self._msg_q)
+        else:
+            self._bars = None
+
+        # Native bar state: per-coin OHLC tracker reset every NATIVE_BAR_INTERVAL_S.
+        # Fed by L2 midprice in _hl_obi_pump; emitted by _bar_synthesizer.
+        self._native_mid: dict[str, dict] = {
+            c: {"o": 0.0, "h": 0.0, "l": 0.0, "c": 0.0, "n": 0}
+            for c in self._native_bar_coins
+        }
         # userFills is address-scoped; passing the wallet turns on the
         # Spike-A subscription. Without it the feed runs L2-only.
         self._book = HyperliquidFeed(
@@ -256,7 +273,74 @@ class HLEngine:
             if sym is None:
                 continue
             msg["symbol"] = sym
+
+            if msg["type"] == "orderbook" and coin in self._native_mid:
+                bids = msg.get("bids", [])
+                asks = msg.get("asks", [])
+                if bids and asks:
+                    mid = (bids[0][0] + asks[0][0]) / 2.0
+                    st = self._native_mid[coin]
+                    if st["n"] == 0:
+                        st["o"] = st["h"] = st["l"] = st["c"] = mid
+                    else:
+                        st["h"] = max(st["h"], mid)
+                        st["l"] = min(st["l"], mid)
+                        st["c"] = mid
+                    st["n"] += 1
+
             await self._msg_q.put(msg)
+
+    # ── Native bar synthesis ────────────────────────────────────────────────
+    async def _bar_synthesizer(self) -> None:
+        """Emit 1-min OHLC bars for coins without Alpaca bar coverage."""
+        while self._running:
+            await asyncio.sleep(NATIVE_BAR_INTERVAL_S)
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            for coin in self._native_bar_coins:
+                st = self._native_mid[coin]
+                if st["n"] == 0:
+                    continue
+                sym = self._coin_to_symbol[coin]
+                bar = {
+                    "type":      "bar",
+                    "symbol":    sym,
+                    "open":      st["o"],
+                    "high":      st["h"],
+                    "low":       st["l"],
+                    "close":     st["c"],
+                    "volume":    0.0,
+                    "timestamp": now_iso,
+                    "recv_ns":   time.perf_counter_ns(),
+                }
+                await self._msg_q.put(bar)
+                st["o"] = st["h"] = st["l"] = st["c"] = st["c"]
+                st["n"] = 0
+
+    async def _preseed_native_bars(self) -> None:
+        """Load 240 × 1-min candles from HL for ALL coins to warm trend + z-score buffers."""
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - (240 * 60 * 1000)
+        info = self._hl._info
+        for coin in self._hl_coins:
+            sym = self._coin_to_symbol[coin]
+            try:
+                candles = info.candles_snapshot(coin, "1m", start_ms, end_ms)
+            except Exception as exc:
+                log.warning("hl_candle_preseed_failed", coin=coin, error=str(exc))
+                continue
+            st = self._signals._state.get(sym)
+            if st is None:
+                continue
+            count = 0
+            for c in candles:
+                try:
+                    close = float(c["c"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                st.price_buf.push(close)
+                st.trend_buf.push(close)
+                count += 1
+            log.info("hl_candle_preseed", coin=coin, bars=count)
 
     # ── Sign-flip guard: live-state check against in-memory direction ────────
     async def _flip_guard_ok(self, sig: dict) -> bool:
@@ -841,18 +925,29 @@ class HLEngine:
             f"PerPair=${self._per_pair_notional:.2f}  "
             f"Mode={self._cfg.execution_mode.value}  "
             f"Style={EXECUTION_STYLE}\n"
+            f"           Alpaca bars: {self._alpaca_coins or '(none)'}\n"
+            f"           Native bars: {self._native_bar_coins or '(none)'}\n"
             f"           Logs → logs/hl_engine.jsonl\n"
             f"           Ctrl-C to stop.\n"
         )
 
         await self._reconcile_startup()
+        await self._preseed_native_bars()
+
+        log.info(
+            "hl_bar_sources",
+            alpaca_coins=self._alpaca_coins,
+            native_bar_coins=self._native_bar_coins,
+        )
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._bars.run(),       name="alpaca_bars")
+            if self._bars is not None:
+                tg.create_task(self._bars.run(),       name="alpaca_bars")
             tg.create_task(self._book.run(),       name="hl_orderbook")
             tg.create_task(self._hl_obi_pump(),    name="hl_obi_pump")
             tg.create_task(self._strategy_loop(),  name="strategy")
-            # Watchdog only runs in maker mode; taker path never rests.
+            if self._native_bar_coins:
+                tg.create_task(self._bar_synthesizer(), name="native_bars")
             if EXECUTION_STYLE == "maker":
                 tg.create_task(self._maker_watchdog(), name="maker_watchdog")
 

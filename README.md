@@ -9,7 +9,7 @@ quantitative strategies across parallel execution engines, grounded in the surve
 |--------|-------------------|---------|----------------|
 | `live_engine.py` (Alpaca Crypto Spot) | **High-Frequency Directional Mean Reversion** | 24/7 continuous tick loop | Long-only (spot market, broker-constrained) |
 | `equities_engine.py` (Alpaca Equities) | **Statistical Arbitrage & Mean Reversion** | US RTH 09:30–16:00 ET strictly | Fully bidirectional (long + short, margin) |
-| `hl_engine.py` (Hyperliquid Perps) | **Bi-Directional Z-Score Taker on Perp Futures** | 24/7 continuous tick loop | Fully bidirectional (long + short, 2x cross leverage) |
+| `hl_engine.py` (Hyperliquid Perps) | **Bi-Directional Z-Score Maker on Perp Futures** | 24/7 continuous tick loop | Fully bidirectional (long + short, 10x cross leverage) |
 
 Both engines share the same mathematical primitive — an **Ornstein–Uhlenbeck z-score** gated
 by **Order-Book Imbalance** — but differ fundamentally in their execution regime, hedging
@@ -193,27 +193,29 @@ Long-only — Alpaca's spot crypto API does not support short selling.
 
 *Excluded: TRUMP, WIF, HYPE, SKY, ONDO (illiquid/political meme); USDC, USDT, USDG (stablecoins).*
 
-### Engine 3 — Hyperliquid Perps (`hl_engine.py`) — Bi-Directional Z-Score Taker
+### Engine 3 — Hyperliquid Perps (`hl_engine.py`) — Bi-Directional Z-Score Maker
 
 Same mean-reversion primitive as Engine 1, but on a decentralized perp venue that permits
-shorting. Signal source is **Alpaca spot bars** — the Alpaca spot mid is treated as the
-"truer" mean for HL perps to revert against. Order book and execution go direct to
-Hyperliquid (L2 WebSocket + exchange POST). The engine runs against **real capital on HL
-mainnet** — Hyperliquid has no paper sandbox.
+shorting. Bar sources are **hybrid**: Alpaca spot bars for coins Alpaca supports (BTC, ETH,
+SOL, AVAX, LINK) and **HL-native synthesized bars** for coins outside Alpaca's coverage
+(ZEC, AAVE, PAXG). Native bars are constructed from L2 midprice ticks every 60 s. Order
+book and execution go direct to Hyperliquid (L2 WebSocket + exchange POST). The engine runs
+against **real capital on HL mainnet** — Hyperliquid has no paper sandbox.
 
 | Property | Value |
 |----------|-------|
 | Strategy | Bi-Directional OBI-Gated Z-Score — dual-mode execution (taker / maker) |
 | Universe | Env-driven via `HL_UNIVERSE` CSV (default `"BTC,ETH"`); per-coin `szDecimals` + dust caps populated at boot from a live `Info.meta()` probe |
 | Session | **24/7** continuous — no market-hours gate |
-| Timeframe | 1-minute bars (from Alpaca CryptoDataStream) |
+| Timeframe | 1-minute bars (Alpaca CryptoDataStream for supported coins; HL-native L2 midprice synthesis for others) |
 | Z-score window | $W = 60$ bars = 60-minute rolling window |
-| Directionality | **Bi-directional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$) |
+| Z-score thresholds | **Per-coin tiers:** BTC/ETH ±1.25σ entry / ±0.50σ exit; alts (SOL/AVAX/LINK/ZEC/AAVE) ±2.50σ entry / ±0.75σ exit; PAXG ±0.25σ entry / ±0.10σ exit |
 | OBI source | HL L2 WebSocket @ 20 levels (`l2Book` channel) |
-| Leverage | 2x cross (matches the live account; screener filters `maxLeverage ≥ 3` so pin never exceeds venue ceiling) |
-| Notional/trade | \$100 LIVE / \$2,000 PAPER base; split per-pair as `base × 2 / N` when `HL_UNIVERSE` has `N > 2` coins |
+| Leverage | 10x cross |
+| Notional/trade | \$250 per pair (fixed) |
 | Execution style | `EXECUTION_STYLE=taker` (default, `Ioc` cross-spread) or `maker` (`Alo` at best bid/ask, rests; see Phase 4.2) |
 | Strategy tag | `hl_z` (renamed from `hl_taker_z`; `analyze_session.py` accepts both for historical log replay) |
+| Pre-seed | 240 × 1-min candles fetched from HL `candleSnapshot` API at boot for all coins — trend buffer + z-score buffer warm on bar 1 |
 | Logs | `logs/hl_engine.jsonl` |
 
 **Why the OBI depth differs from Engine 1 (N=5 → N=20):** live burn-in on HL BTC/ETH
@@ -249,11 +251,10 @@ deadlock observed on ETH where −0.0001 dust perpetually re-seeded the exit sig
 
 **Universe expansion workflow (`screener_hl.py`).** Ranking candidates across the HL
 perp universe is driven by a standalone screener rather than baked into the engine.
-Filter stack: intersect with Alpaca-supported crypto bar symbols
-(`{SOL, DOGE, AVAX, LINK, SHIB}` — any non-whitelisted coin would silently no-op
-because the z-score buffer never warms from a missing Alpaca bar stream), require
-`maxLeverage ≥ 3`, require top-of-book spread ≤ 5 bps, then rank by 24 h notional
-volume.
+Coins in `ALPACA_BAR_COINS` (BTC, ETH, SOL, DOGE, AVAX, LINK) receive bars from
+Alpaca's CryptoDataStream; all others receive **HL-native synthesized bars** built
+from L2 midprice ticks at 60 s intervals. This decouples the engine from Alpaca's
+coin whitelist — any HL perp coin is tradeable.
 
 ```bash
 python3 screener_hl.py --top 4          # writes config/hl_universe_candidates.json
@@ -315,14 +316,15 @@ $$
 $$
 
 $$
-\text{Time stop:} \quad t - t_{\text{entry}} \geq 30\ \text{min} \quad\Longrightarrow\quad \text{force exit}
+\text{Time stop:} \quad t - t_{\text{entry}} \geq \begin{cases} 30\ \text{min} & \text{US RTH (M-F 09:30–16:00 ET)} \\ 60\ \text{min} & \text{overnight / weekends} \end{cases} \quad\Longrightarrow\quad \text{force exit}
 $$
 
 Either condition triggers an `exit_signal` with `reason=stop_loss_<pnl>` or `reason=time_stop_<secs>`
 regardless of z-score state. Entry timestamp (`entry_ts`) is a new per-tag field on
 `_SymbolState`, populated at entry and at reconcile (adopt-now semantics → reconciled
-positions get the full 30 min before a time-stop fires). Constants live in `signals.py`:
-`STOP_LOSS_PCT=0.010`, `MAX_POSITION_SECS=1800`. No changes to `risk/` or `config/risk_params.py`.
+positions get the full budget before a time-stop fires). Constants live in `signals.py`:
+`STOP_LOSS_PCT=0.010`, `MAX_POSITION_SECS_RTH=1800`, `MAX_POSITION_SECS_OVN=3600`.
+No changes to `risk/` or `config/risk_params.py`.
 
 ### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
 

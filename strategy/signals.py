@@ -54,6 +54,8 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import numpy as np
 import structlog
 from alpaca.trading.enums import OrderSide
@@ -74,7 +76,10 @@ Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
 Z_SHORT_ENTRY       = +1.25   # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
 Z_EXIT_SHORT        = +0.50   # cover short when z reverts below Z_EXIT_SHORT    — HL only
 STOP_LOSS_PCT       = 0.010   # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
-MAX_POSITION_SECS   = 30 * 60 # time-stop at 30 min — cut positions that haven't mean-reverted
+MAX_POSITION_SECS_RTH = 30 * 60   # time-stop during US RTH (M-F 09:30-16:00 ET)
+MAX_POSITION_SECS_OVN = 60 * 60   # time-stop overnight / weekends — slower reversion
+TREND_MA_WINDOW     = 240     # 240-bar (4h at 1-min) SMA for regime gate — block entries opposing trend
+_ET = ZoneInfo("America/New_York")
 OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
 OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
                               # live burn-in on HL BTC/ETH showed OBI-5 captures
@@ -168,7 +173,8 @@ class _SymbolState:
 
     __slots__ = (
         "symbol",
-        "price_buf",      # _RollingBuffer of close prices
+        "price_buf",      # _RollingBuffer of close prices (WINDOW bars, z-score)
+        "trend_buf",      # _RollingBuffer of close prices (TREND_MA_WINDOW bars, regime gate)
         "obi",            # latest ρ_t scalar (updated by update_orderbook)
         "best_ask",       # latest best ask (taker aggressive limit)
         "best_bid",       # latest best bid (maker passive limit)
@@ -176,11 +182,16 @@ class _SymbolState:
         "entry_prices",   # dict[str, float]  tag → entry price
         "entry_ts",       # dict[str, int]    tag → epoch-sec at entry (for time-stop)
         "pending_exits",  # dict[str, bool]   tag → sell order submitted, awaiting fill
+        "z_entry",        # per-symbol override (None = use engine default)
+        "z_exit",
+        "z_short_entry",
+        "z_exit_short",
     )
 
     def __init__(self, symbol: str, window: int) -> None:
         self.symbol         = symbol
         self.price_buf      = _RollingBuffer(window)
+        self.trend_buf      = _RollingBuffer(TREND_MA_WINDOW)
         self.obi            = 0.0
         self.best_ask       = float("nan")
         self.best_bid       = float("nan")
@@ -188,6 +199,10 @@ class _SymbolState:
         self.entry_prices   : dict[str, float] = {}
         self.entry_ts       : dict[str, int]   = {}
         self.pending_exits  : dict[str, bool]  = {}
+        self.z_entry:        float | None = None
+        self.z_exit:         float | None = None
+        self.z_short_entry:  float | None = None
+        self.z_exit_short:   float | None = None
 
     # ── Tag-aware helpers ──────────────────────────────────────────────────────
 
@@ -271,6 +286,22 @@ class SignalEngine:
             s: _SymbolState(s, window) for s in symbols
         }
 
+    def set_symbol_z(
+        self,
+        symbol: str,
+        z_entry: float,
+        z_exit: float,
+        z_short_entry: float,
+        z_exit_short: float,
+    ) -> None:
+        st = self._state.get(symbol)
+        if st is None:
+            return
+        st.z_entry       = z_entry
+        st.z_exit        = z_exit
+        st.z_short_entry = z_short_entry
+        st.z_exit_short  = z_exit_short
+
     # ── Bar Update (primary path) ─────────────────────────────────────────────
     def evaluate(self, bar: dict) -> dict | None:
         """
@@ -288,8 +319,9 @@ class SignalEngine:
         st    = self._state[sym]
         close = float(bar["close"])
 
-        # 1. Feed the rolling price buffer
+        # 1. Feed the rolling price buffers
         st.price_buf.push(close)
+        st.trend_buf.push(close)
 
         # 2. Compute z-score (returns None if window not yet warm)
         z = st.price_buf.zscore(close)
@@ -328,10 +360,16 @@ class SignalEngine:
             entry_ts = st.entry_ts.get(tag, 0)
             if entry_ts > 0:
                 age_s = int(time.time()) - entry_ts
-                if age_s >= MAX_POSITION_SECS:
+                now_et = datetime.now(_ET)
+                is_rth = (now_et.weekday() < 5
+                          and 930 <= now_et.hour * 100 + now_et.minute < 1600)
+                max_secs = MAX_POSITION_SECS_RTH if is_rth else MAX_POSITION_SECS_OVN
+                if age_s >= max_secs:
                     stop_reason = stop_reason or f"time_stop_{age_s}s"
 
-            z_revert = (z > self._z_exit) if is_long else (z < self._z_exit_short)
+            _z_exit = st.z_exit if st.z_exit is not None else self._z_exit
+            _z_exit_short = st.z_exit_short if st.z_exit_short is not None else self._z_exit_short
+            z_revert = (z > _z_exit) if is_long else (z < _z_exit_short)
             if not (z_revert or stop_reason):
                 return None
 
@@ -367,14 +405,29 @@ class SignalEngine:
             }
 
         # 4. Entry path — long xor short (both conditions must hold)
-        long_entry  = (z < self._z_entry)       and (st.obi >  self._obi_theta)
+        _z_entry = st.z_entry if st.z_entry is not None else self._z_entry
+        _z_short_entry = st.z_short_entry if st.z_short_entry is not None else self._z_short_entry
+        long_entry  = (z < _z_entry)       and (st.obi >  self._obi_theta)
         short_entry = (
             self._allow_short
-            and (z > self._z_short_entry)
+            and (z > _z_short_entry)
             and (st.obi < -self._obi_theta)
         )
         if not (long_entry or short_entry):
             return None
+
+        # 4b. Trend gate — block entries that oppose the 240-bar SMA slope.
+        #     During warmup (< 240 bars), allow all entries; stops protect.
+        if st.trend_buf.is_full:
+            trend_sma = float(np.mean(st.trend_buf._active()))
+            if long_entry and close < trend_sma:
+                log.info("trend_gate_blocked", symbol=sym, direction="long",
+                         z=round(z, 4), close=close, sma=round(trend_sma, 2))
+                return None
+            if short_entry and close > trend_sma:
+                log.info("trend_gate_blocked", symbol=sym, direction="short",
+                         z=round(z, 4), close=close, sma=round(trend_sma, 2))
+                return None
 
         entry_side = OrderSide.BUY if long_entry else OrderSide.SELL
         direction  = "long" if long_entry else "short"
