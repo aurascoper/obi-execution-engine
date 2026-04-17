@@ -430,6 +430,17 @@ class HLEngine:
                 count += 1
             log.info("hl_candle_preseed", coin=coin, bars=count)
 
+    # Per-class RMSD floor — overnight-flat HIP-3 perp data understates
+    # real-session volatility. Floors ensure volatile names don't collapse
+    # to the tightest z-tier just because they preseeded during Asian hours.
+    _RMSD_FLOOR: dict[str, float] = {
+        "EQUITY": 5.0,
+        "COMMODITY": 2.5,
+        "ETF": 3.0,
+        "INDEX": 1.5,
+        "FX": 0.5,
+    }
+
     def _recalibrate_hip3_z(self) -> None:
         """Refine HIP-3 z-tiers using actual RMSD from pre-seeded price buffers."""
         import numpy as np
@@ -444,8 +455,11 @@ class HLEngine:
             mean = float(np.mean(prices))
             if mean <= 0:
                 continue
-            rmsd_pct = float(np.std(prices) / mean) * 100
+            # Raw RMSD is from 1-minute bars; assign_z_tier thresholds are
+            # calibrated for 4h RMSD.  Scale by sqrt(240) to normalise.
+            rmsd_pct = float(np.std(prices) / mean) * 100 * math.sqrt(240)
             cat = classify(coin)
+            rmsd_pct = max(rmsd_pct, self._RMSD_FLOOR.get(cat, 0))
             z = assign_z_tier(cat, rmsd_pct)
             self._signals.set_symbol_z(sym, z[0], z[1], z[2], z[3])
             log.info(
@@ -876,9 +890,28 @@ class HLEngine:
 
     # ── Signal → HL order translation + CID logging ──────────────────────────
     async def _submit(self, sig: dict) -> dict | None:
-        # Shadow filter: log the order intent + fire synthetic on_fill, skip exchange.
         sym = sig["symbol"]
         coin = self._symbol_to_coin.get(sym, "")
+
+        # SYMBOL_CAPS enforcement — entries only (exits reduce exposure).
+        st = self._signals._state.get(sym)
+        is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
+        if not is_exit:
+            from config.risk_params import SYMBOL_CAPS
+
+            cap = SYMBOL_CAPS.get(sym)
+            notional = sig.get("notional", 0)
+            if cap is not None and notional > cap:
+                log.warning(
+                    "hl_order_blocked_symbol_cap",
+                    symbol=sym,
+                    notional=round(notional, 2),
+                    cap=cap,
+                )
+                self._rollback_pending(sym, is_entry=True)
+                return None
+
+        # Shadow filter: log the order intent + fire synthetic on_fill, skip exchange.
         if coin in self._shadow_coins:
             side = "buy" if sig["side"] == OrderSide.BUY else "sell"
             cid = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"

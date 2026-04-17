@@ -32,6 +32,8 @@ POLL_INTERVAL_S = 60
 MAX_DAILY_LOSS = 50.0
 LOG_PATH = Path(__file__).resolve().parent / "logs" / "hl_watchdog.log"
 ENGINE_SCRIPT = "hl_engine.py"
+# Builder DEXs whose clearinghouse values must be included in drawdown monitoring.
+_BUILDER_DEXS = ["xyz"]
 
 
 def _log(msg: str) -> None:
@@ -63,14 +65,24 @@ def _find_engine_pid() -> int | None:
 
 
 def _get_account_value(info, addr: str) -> float:
+    # Native perp clearinghouse (BTC, ETH, SOL, etc.)
     s = info.user_state(addr)
-    balances = info.post("/info", {"type": "spotClearinghouseState", "user": addr}).get(
-        "balances", []
-    )
-    for b in balances:
-        if b["coin"] == "USDC":
-            return float(b["total"])
-    return float(s["marginSummary"]["accountValue"])
+    total = float(s["marginSummary"]["accountValue"])
+
+    # Builder DEX clearinghouses (HIP-3 equity perps on TradeXYZ etc.)
+    # These are separate clearinghouses — losses here are invisible to
+    # user_state(). Without this, the watchdog is blind to HIP-3 drawdown.
+    for dex in _BUILDER_DEXS:
+        try:
+            ds = info.post(
+                "/info",
+                {"type": "clearinghouseState", "user": addr, "dex": dex},
+            )
+            total += float(ds.get("marginSummary", {}).get("accountValue", 0))
+        except Exception:
+            pass  # transient failure — next poll retries
+
+    return total
 
 
 def main() -> int:
