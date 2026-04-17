@@ -471,6 +471,40 @@ class HLEngine:
                 z_exit=z[1],
             )
 
+    def _apply_z_overrides(self) -> None:
+        """Apply per-symbol z-tier overrides from env vars.
+
+        Format:  Z_OVERRIDE_<COIN>=z_entry,z_exit,z_short_entry,z_exit_short
+        Example: Z_OVERRIDE_xyz:MSTR=-2.0,5.0,2.0,0.5
+
+        Applied after recalibration so overrides are never clobbered.
+        """
+        prefix = "Z_OVERRIDE_"
+        for key, val in os.environ.items():
+            if not key.startswith(prefix):
+                continue
+            coin = key[len(prefix):]
+            sym = self._coin_to_symbol.get(coin)
+            if sym is None:
+                continue
+            try:
+                parts = [float(x.strip()) for x in val.split(",")]
+                if len(parts) != 4:
+                    raise ValueError(f"expected 4 values, got {len(parts)}")
+            except (ValueError, TypeError) as exc:
+                log.warning("z_override_parse_error", coin=coin, raw=val, error=str(exc))
+                continue
+            self._signals.set_symbol_z(sym, parts[0], parts[1], parts[2], parts[3])
+            log.info(
+                "z_override_applied",
+                coin=coin,
+                symbol=sym,
+                z_entry=parts[0],
+                z_exit=parts[1],
+                z_short_entry=parts[2],
+                z_exit_short=parts[3],
+            )
+
     # ── Sign-flip guard: live-state check against in-memory direction ────────
     async def _flip_guard_ok(self, sig: dict) -> bool:
         """
@@ -1243,6 +1277,7 @@ class HLEngine:
         await self._preseed_native_bars()
         if self._hip3_coins:
             self._recalibrate_hip3_z()
+        self._apply_z_overrides()
 
         log.info(
             "hl_bar_sources",
