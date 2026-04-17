@@ -371,7 +371,11 @@ class HyperliquidOrderManager:
                 dex_state = await asyncio.to_thread(
                     self._info.post,
                     "/info",
-                    {"type": "clearinghouseState", "user": self._wallet_address, "dex": dex},
+                    {
+                        "type": "clearinghouseState",
+                        "user": self._wallet_address,
+                        "dex": dex,
+                    },
                 )
                 asset_positions.extend(dex_state.get("assetPositions", []) or [])
             except Exception as exc:

@@ -483,7 +483,7 @@ class HLEngine:
         for key, val in os.environ.items():
             if not key.startswith(prefix):
                 continue
-            coin = key[len(prefix):]
+            coin = key[len(prefix) :]
             sym = self._coin_to_symbol.get(coin)
             if sym is None:
                 continue
@@ -492,7 +492,9 @@ class HLEngine:
                 if len(parts) != 4:
                     raise ValueError(f"expected 4 values, got {len(parts)}")
             except (ValueError, TypeError) as exc:
-                log.warning("z_override_parse_error", coin=coin, raw=val, error=str(exc))
+                log.warning(
+                    "z_override_parse_error", coin=coin, raw=val, error=str(exc)
+                )
                 continue
             self._signals.set_symbol_z(sym, parts[0], parts[1], parts[2], parts[3])
             log.info(
