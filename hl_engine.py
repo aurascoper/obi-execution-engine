@@ -47,6 +47,7 @@ import structlog
 from alpaca.trading.enums import OrderSide
 
 from config.settings import load as load_settings
+from control.server            import ControlPlaneServer
 from data.feed                 import LiveFeed
 from data.hl_feed              import HyperliquidFeed
 from execution.hl_manager      import HyperliquidOrderManager
@@ -251,6 +252,19 @@ class HLEngine:
         # Spike C will add a cancel/replace deadline; Spike E will escalate
         # stale entries to taker.
         self._pending_resting: dict[str, dict] = {}
+
+        # ── Control plane (Phase 1: read-only) ──────────────────────────────
+        self._control = ControlPlaneServer(
+            signals=self._signals,
+            engine_meta={
+                "coins":     self._hl_coins,
+                "leverage":  self._default_leverage,
+                "notional":  self._per_pair_notional,
+                "tag":       STRATEGY_TAG,
+                "style":     EXECUTION_STYLE,
+                "mode":      self._cfg.execution_mode.value,
+            },
+        )
 
     # ── Boot: seed in-memory state from on-chain positions ───────────────────
     async def _reconcile_startup(self) -> None:
@@ -950,10 +964,12 @@ class HLEngine:
                 tg.create_task(self._bar_synthesizer(), name="native_bars")
             if EXECUTION_STYLE == "maker":
                 tg.create_task(self._maker_watchdog(), name="maker_watchdog")
+            tg.create_task(self._control.serve(), name="control_plane")
 
     def stop(self) -> None:
         log.info("hl_engine_shutdown")
         self._running = False
+        self._control.stop()
         self._book.stop()
 
 
