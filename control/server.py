@@ -137,10 +137,10 @@ class ControlPlaneServer:
         data: dict[str, dict] = {}
         for sym, st in self._signals._state.items():
             data[sym] = {
-                "z_entry":       st.z_entry or self._signals._z_entry,
-                "z_exit":        st.z_exit or self._signals._z_exit,
+                "z_entry": st.z_entry or self._signals._z_entry,
+                "z_exit": st.z_exit or self._signals._z_exit,
                 "z_short_entry": st.z_short_entry or self._signals._z_short_entry,
-                "z_exit_short":  st.z_exit_short or self._signals._z_exit_short,
+                "z_exit_short": st.z_exit_short or self._signals._z_exit_short,
             }
         return {"ok": True, "data": data}
 
@@ -162,16 +162,16 @@ class ControlPlaneServer:
     def _symbol_detail(self, st) -> dict:
         """Full per-symbol state snapshot for get / snapshot commands."""
         return {
-            "symbol":        st.symbol,
-            "z_entry":       st.z_entry or self._signals._z_entry,
-            "z_exit":        st.z_exit or self._signals._z_exit,
+            "symbol": st.symbol,
+            "z_entry": st.z_entry or self._signals._z_entry,
+            "z_exit": st.z_exit or self._signals._z_exit,
             "z_short_entry": st.z_short_entry or self._signals._z_short_entry,
-            "z_exit_short":  st.z_exit_short or self._signals._z_exit_short,
-            "obi":           _safe_float(st.obi),
-            "best_bid":      _safe_float(st.best_bid),
-            "best_ask":      _safe_float(st.best_ask),
-            "positions":     dict(st.positions),
-            "entry_prices":  {k: _safe_float(v) for k, v in st.entry_prices.items()},
+            "z_exit_short": st.z_exit_short or self._signals._z_exit_short,
+            "obi": _safe_float(st.obi),
+            "best_bid": _safe_float(st.best_bid),
+            "best_ask": _safe_float(st.best_ask),
+            "positions": dict(st.positions),
+            "entry_prices": {k: _safe_float(v) for k, v in st.entry_prices.items()},
         }
 
     def _cleanup_socket(self) -> None:

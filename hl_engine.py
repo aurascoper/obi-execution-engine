@@ -47,11 +47,11 @@ import structlog
 from alpaca.trading.enums import OrderSide
 
 from config.settings import load as load_settings
-from control.server            import ControlPlaneServer
-from data.feed                 import LiveFeed
-from data.hl_feed              import HyperliquidFeed
-from execution.hl_manager      import HyperliquidOrderManager
-from strategy.signals          import SignalEngine
+from control.server import ControlPlaneServer
+from data.feed import LiveFeed
+from data.hl_feed import HyperliquidFeed
+from execution.hl_manager import HyperliquidOrderManager
+from strategy.signals import SignalEngine
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -78,7 +78,7 @@ log = structlog.get_logger("hl_engine")
 # Info.meta() probe so adding a new coin never drifts from the venue.
 #
 # STRATEGY_TAG is retained at module scope — the test harness imports it.
-STRATEGY_TAG    = "hl_z"
+STRATEGY_TAG = "hl_z"
 DEFAULT_UNIVERSE = "BTC,ETH"
 
 # Coins Alpaca CryptoDataStream actually delivers 1-min bars for. Any coin NOT
@@ -114,8 +114,8 @@ HIP3_TAKER_ESCALATION_Z = 3.0
 def _round_hl_price(px: float, sz_decimals: int) -> float:
     if px <= 0:
         return px
-    max_from_sz  = max(0, 6 - sz_decimals)
-    int_digits   = max(1, int(math.floor(math.log10(px))) + 1)
+    max_from_sz = max(0, 6 - sz_decimals)
+    int_digits = max(1, int(math.floor(math.log10(px))) + 1)
     max_from_sig = max(0, 5 - int_digits)
     return round(px, min(max_from_sz, max_from_sig))
 
@@ -126,7 +126,7 @@ def _round_hl_size(qty: float, sz_decimals: int) -> float:
     # breach MAX_ORDER_NOTIONAL or margin.
     if qty <= 0:
         return qty
-    factor = 10 ** sz_decimals
+    factor = 10**sz_decimals
     return math.floor(qty * factor) / factor
 
 
@@ -148,12 +148,14 @@ class HLEngine:
         hip3_dexs_raw = os.environ.get("HIP3_DEXS", "").strip()
         self._hip3_dexs: list[str] = (
             [d.strip() for d in hip3_dexs_raw.split(",") if d.strip()]
-            if hip3_dexs_raw else []
+            if hip3_dexs_raw
+            else []
         )
         hip3_universe_raw = os.environ.get("HIP3_UNIVERSE", "").strip()
         hip3_coins_raw = (
             [t.strip() for t in hip3_universe_raw.split(",") if t.strip()]
-            if hip3_universe_raw else []
+            if hip3_universe_raw
+            else []
         )
         hip3_coins: list[str] = []
         if self._hip3_dexs and hip3_coins_raw:
@@ -170,7 +172,8 @@ class HLEngine:
         shadow_raw = os.environ.get("SHADOW_COINS", "").strip()
         self._shadow_coins: set[str] = (
             {t.strip() for t in shadow_raw.split(",") if t.strip()}
-            if shadow_raw else set()
+            if shadow_raw
+            else set()
         )
 
         # ── Combined universe ────────────────────────────────────────────────
@@ -198,12 +201,12 @@ class HLEngine:
 
         self._hl = HyperliquidOrderManager(
             self._cfg,
-            strategy_tag     = STRATEGY_TAG,
-            default_leverage = self._default_leverage,
-            coins            = self._hl_coins,
-            is_cross         = True,
-            perp_dexs        = self._hip3_dexs or None,
-            leverage_map     = leverage_map,
+            strategy_tag=STRATEGY_TAG,
+            default_leverage=self._default_leverage,
+            coins=self._hl_coins,
+            is_cross=True,
+            perp_dexs=self._hip3_dexs or None,
+            leverage_map=leverage_map,
         )
 
         # Populate per-coin szDecimals from live meta() probes. Native coins
@@ -217,7 +220,7 @@ class HLEngine:
             if name:
                 try:
                     venue_sz_dec[name] = int(asset.get("szDecimals", 0))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
 
         # HIP-3 DEX meta probes — names already include dex prefix (e.g. "xyz:TSLA").
@@ -232,7 +235,7 @@ class HLEngine:
                     continue
                 try:
                     venue_sz_dec[coin_name] = int(asset.get("szDecimals", 0))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
 
         missing = [c for c in self._hl_coins if c not in venue_sz_dec]
@@ -240,24 +243,23 @@ class HLEngine:
             raise RuntimeError(
                 f"HL meta() missing szDecimals for requested coins: {missing}"
             )
-        self._sz_decimals: dict[str, int] = {
-            c: venue_sz_dec[c] for c in self._hl_coins
-        }
+        self._sz_decimals: dict[str, int] = {c: venue_sz_dec[c] for c in self._hl_coins}
         self._dust_caps: dict[str, float] = {
-            c: 1.5 * (10 ** -dec) for c, dec in self._sz_decimals.items()
+            c: 1.5 * (10**-dec) for c, dec in self._sz_decimals.items()
         }
 
         self._per_pair_notional = 250.0
 
         self._signals = SignalEngine(
-            symbols            = self._hl_symbols,
-            strategy_tag       = STRATEGY_TAG,
-            allow_short        = True,
-            notional_per_trade = self._per_pair_notional,
+            symbols=self._hl_symbols,
+            strategy_tag=STRATEGY_TAG,
+            allow_short=True,
+            notional_per_trade=self._per_pair_notional,
         )
 
         # Inject _QTY_DECIMALS for HIP-3 coins from venue meta (dynamic, not hardcoded).
         from strategy.signals import _QTY_DECIMALS
+
         for c in hip3_coins:
             sym = self._coin_to_symbol[c]
             _QTY_DECIMALS[sym] = self._sz_decimals[c]
@@ -274,6 +276,7 @@ class HLEngine:
 
         # HIP-3 equity perps: z-tiers assigned by asset class via screener logic.
         from screener_hip3 import classify, assign_z_tier
+
         for coin in hip3_coins:
             sym = self._coin_to_symbol[coin]
             cat = classify(coin)
@@ -291,10 +294,9 @@ class HLEngine:
         # Split universe: coins with Alpaca bar coverage vs native-bar coins.
         # All HIP-3 coins use native bars (no Alpaca coverage).
         self._alpaca_coins = [c for c in crypto_coins if c in ALPACA_BAR_COINS]
-        self._native_bar_coins = (
-            [c for c in crypto_coins if c not in ALPACA_BAR_COINS]
-            + hip3_coins
-        )
+        self._native_bar_coins = [
+            c for c in crypto_coins if c not in ALPACA_BAR_COINS
+        ] + hip3_coins
 
         alpaca_symbols = [self._coin_to_symbol[c] for c in self._alpaca_coins]
         if alpaca_symbols:
@@ -310,8 +312,8 @@ class HLEngine:
         self._book = HyperliquidFeed(
             self._hl_coins,
             self._hl_raw_q,
-            wallet    = self._cfg.hl_wallet_address or None,
-            perp_dexs = self._hip3_dexs or None,
+            wallet=self._cfg.hl_wallet_address or None,
+            perp_dexs=self._hip3_dexs or None,
         )
 
         self._running = True
@@ -322,14 +324,14 @@ class HLEngine:
         self._control = ControlPlaneServer(
             signals=self._signals,
             engine_meta={
-                "coins":        self._hl_coins,
-                "hip3_coins":   self._hip3_coins,
+                "coins": self._hl_coins,
+                "hip3_coins": self._hip3_coins,
                 "shadow_coins": sorted(self._shadow_coins),
                 "leverage_map": leverage_map,
-                "notional":     self._per_pair_notional,
-                "tag":          STRATEGY_TAG,
-                "style":        EXECUTION_STYLE,
-                "mode":         self._cfg.execution_mode.value,
+                "notional": self._per_pair_notional,
+                "tag": STRATEGY_TAG,
+                "style": EXECUTION_STYLE,
+                "mode": self._cfg.execution_mode.value,
             },
         )
 
@@ -342,7 +344,9 @@ class HLEngine:
             return
         log.info("hl_reconcile_ok", pos_count=len(positions))
         self._signals.reconcile_hl_positions(
-            positions, self._coin_to_symbol, self._dust_caps,
+            positions,
+            self._coin_to_symbol,
+            self._dust_caps,
         )
 
     # ── Pump: translate HL feed symbols onto the SignalEngine state keys ─────
@@ -353,7 +357,7 @@ class HLEngine:
             # Native coins are upper-cased ("BTC"); HIP-3 coins preserve dex
             # prefix case ("xyz:SP500"). Try exact match first, then upper-cased.
             coin = raw_coin if raw_coin in self._coin_to_symbol else raw_coin.upper()
-            sym  = self._coin_to_symbol.get(coin)
+            sym = self._coin_to_symbol.get(coin)
             if sym is None:
                 continue
             msg["symbol"] = sym
@@ -386,15 +390,15 @@ class HLEngine:
                     continue
                 sym = self._coin_to_symbol[coin]
                 bar = {
-                    "type":      "bar",
-                    "symbol":    sym,
-                    "open":      st["o"],
-                    "high":      st["h"],
-                    "low":       st["l"],
-                    "close":     st["c"],
-                    "volume":    0.0,
+                    "type": "bar",
+                    "symbol": sym,
+                    "open": st["o"],
+                    "high": st["h"],
+                    "low": st["l"],
+                    "close": st["c"],
+                    "volume": 0.0,
                     "timestamp": now_iso,
-                    "recv_ns":   time.perf_counter_ns(),
+                    "recv_ns": time.perf_counter_ns(),
                 }
                 await self._msg_q.put(bar)
                 st["o"] = st["h"] = st["l"] = st["c"] = st["c"]
@@ -419,7 +423,7 @@ class HLEngine:
             for c in candles:
                 try:
                     close = float(c["c"])
-                except (KeyError, TypeError, ValueError):
+                except KeyError, TypeError, ValueError:
                     continue
                 st.price_buf.push(close)
                 st.trend_buf.push(close)
@@ -430,6 +434,7 @@ class HLEngine:
         """Refine HIP-3 z-tiers using actual RMSD from pre-seeded price buffers."""
         import numpy as np
         from screener_hip3 import classify, assign_z_tier
+
         for coin in self._hip3_coins:
             sym = self._coin_to_symbol[coin]
             st = self._signals._state.get(sym)
@@ -443,8 +448,14 @@ class HLEngine:
             cat = classify(coin)
             z = assign_z_tier(cat, rmsd_pct)
             self._signals.set_symbol_z(sym, z[0], z[1], z[2], z[3])
-            log.info("hip3_z_recalibrated", coin=coin, cat=cat,
-                     rmsd_pct=round(rmsd_pct, 3), z_entry=z[0], z_exit=z[1])
+            log.info(
+                "hip3_z_recalibrated",
+                coin=coin,
+                cat=cat,
+                rmsd_pct=round(rmsd_pct, 3),
+                z_entry=z[0],
+                z_exit=z[1],
+            )
 
     # ── Sign-flip guard: live-state check against in-memory direction ────────
     async def _flip_guard_ok(self, sig: dict) -> bool:
@@ -455,7 +466,7 @@ class HLEngine:
         write, and return False so the engine loop skips this bar. Next
         qualifying bar will re-evaluate against reconciled state.
         """
-        sym  = sig["symbol"]
+        sym = sig["symbol"]
         coin = self._symbol_to_coin[sym]
 
         # Shadow coins have no real positions to check against.
@@ -465,8 +476,7 @@ class HLEngine:
         try:
             positions = await self._hl.get_positions()
         except Exception as exc:
-            log.warning("hl_flip_guard_query_failed",
-                        symbol=sym, error=str(exc))
+            log.warning("hl_flip_guard_query_failed", symbol=sym, error=str(exc))
             return False
 
         live_szi = 0.0
@@ -475,11 +485,11 @@ class HLEngine:
                 live_szi = float(p.get("szi", 0) or 0)
                 break
 
-        st           = self._signals._state[sym]
-        mem_szi      = st.open_qty(STRATEGY_TAG)
+        st = self._signals._state[sym]
+        mem_szi = st.open_qty(STRATEGY_TAG)
         pending_exit = st.pending_exits.get(STRATEGY_TAG, False)
 
-        is_entry = not pending_exit    # exit signals set pending_exits=True
+        is_entry = not pending_exit  # exit signals set pending_exits=True
 
         # Sub-lot dust tolerance: HL's minimum lot is 10^-szDecimals. A stray
         # residual smaller than ~1.5 lots (rounding / partial-fill leftovers /
@@ -487,9 +497,9 @@ class HLEngine:
         # this, one lot of dust (observed: −0.0001 ETH) deadlocks entries
         # indefinitely — each bar blocks, reconciles dust back in, and rolls
         # back. The 1.5× multiplier stays well below a genuine 2-lot position.
-        sz_dec     = self._sz_decimals.get(coin, 2)
-        dust_cap   = self._dust_caps.get(coin, 1.5 * (10 ** -sz_dec))
-        live_flat  = abs(live_szi) < dust_cap
+        sz_dec = self._sz_decimals.get(coin, 2)
+        dust_cap = self._dust_caps.get(coin, 1.5 * (10**-sz_dec))
+        live_flat = abs(live_szi) < dust_cap
 
         # Entry: memory should be pre-written with our intended signed qty;
         # live should be flat (the fill hasn't happened yet). Any live size
@@ -497,30 +507,34 @@ class HLEngine:
         # Exit: memory says non-zero; live should agree in sign. Live at-or-below
         # dust means the position was already closed elsewhere — skip.
         mismatch = False
-        reason   = ""
+        reason = ""
         if is_entry:
             if not live_flat:
                 mismatch = True
-                reason   = "entry_but_live_nonzero"
+                reason = "entry_but_live_nonzero"
         else:
             if live_flat:
                 mismatch = True
-                reason   = "exit_but_live_flat"
+                reason = "exit_but_live_flat"
             elif (live_szi * mem_szi) < 0:
                 mismatch = True
-                reason   = "exit_side_sign_mismatch"
+                reason = "exit_side_sign_mismatch"
 
         if mismatch:
             log.warning(
                 "hl_flip_guard_blocked",
-                symbol=sym, reason=reason,
-                mem_szi=mem_szi, live_szi=live_szi,
+                symbol=sym,
+                reason=reason,
+                mem_szi=mem_szi,
+                live_szi=live_szi,
                 pending_exit=pending_exit,
             )
             # Reconcile truth-on-chain → memory, then undo the optimistic write
             # for the blocked signal so evaluate() re-fires on the next bar.
             self._signals.reconcile_hl_positions(
-                positions, self._coin_to_symbol, self._dust_caps,
+                positions,
+                self._coin_to_symbol,
+                self._dust_caps,
             )
             if is_entry:
                 self._signals.rollback_entry(sym)
@@ -542,17 +556,20 @@ class HLEngine:
         best_bid/ask has drifted or is nan, we fall back to the signal's
         `limit_px` (strategy layer already computes a non-crossing limit).
         """
-        sym  = sig["symbol"]
+        sym = sig["symbol"]
         coin = self._symbol_to_coin[sym]
         side = "buy" if sig["side"] == OrderSide.BUY else "sell"
 
-        sz_dec      = self._sz_decimals.get(coin, 2)
-        raw_qty     = sig["qty"]
+        sz_dec = self._sz_decimals.get(coin, 2)
+        raw_qty = sig["qty"]
         rounded_qty = _round_hl_size(raw_qty, sz_dec)
         if rounded_qty <= 0:
             log.warning(
                 "hl_maker_qty_floored_to_zero",
-                symbol=sym, coin=coin, raw_qty=raw_qty, sz_decimals=sz_dec,
+                symbol=sym,
+                coin=coin,
+                raw_qty=raw_qty,
+                sz_decimals=sz_dec,
             )
             return None
 
@@ -566,39 +583,47 @@ class HLEngine:
         rounded_px = _round_hl_price(raw_px, sz_dec)
 
         cloid = f"0x{secrets.randbits(128):032x}"
-        cid   = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"
+        cid = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"
         log.info(
             "hl_maker_intent",
-            client_order_id=cid, cloid=cloid,
-            symbol=sym, coin=coin, side=side,
-            qty=rounded_qty, raw_qty=raw_qty,
-            limit_px=rounded_px, raw_limit_px=raw_px,
+            client_order_id=cid,
+            cloid=cloid,
+            symbol=sym,
+            coin=coin,
+            side=side,
+            qty=rounded_qty,
+            raw_qty=raw_qty,
+            limit_px=rounded_px,
+            raw_limit_px=raw_px,
             notional=sig.get("notional"),
         )
 
         hl_order = {
-            "symbol":      coin,
-            "side":        side,
-            "qty":         rounded_qty,
-            "limit_px":    rounded_px,
-            "tif":         "Alo",
+            "symbol": coin,
+            "side": side,
+            "qty": rounded_qty,
+            "limit_px": rounded_px,
+            "tif": "Alo",
             "reduce_only": False,
-            "cloid":       cloid,
+            "cloid": cloid,
         }
         result = await self._hl.submit_order(hl_order)
-        log.info("hl_maker_result", client_order_id=cid, cloid=cloid,
-                 result=result)
+        log.info("hl_maker_result", client_order_id=cid, cloid=cloid, result=result)
 
         # Detect immediate rejection — HL returns status=ok with an `error`
         # field inside the per-order status when Alo can't rest (e.g. would
         # cross). Treat as a taker-style rejection so the caller rolls back.
         try:
-            statuses = (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            statuses = (
+                (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            )
             for s in statuses:
                 if isinstance(s, dict) and s.get("error"):
                     log.warning(
                         "hl_maker_inner_rejection",
-                        client_order_id=cid, cloid=cloid, error=s["error"],
+                        client_order_id=cid,
+                        cloid=cloid,
+                        error=s["error"],
                     )
                     return None
         except Exception:
@@ -611,14 +636,14 @@ class HLEngine:
         st_now = self._signals._state[sym]
         is_entry = not st_now.pending_exits.get(STRATEGY_TAG, False)
         self._pending_resting[sym] = {
-            "cloid":         cloid.lower(),
-            "cid":           cid,
-            "side":          side,
-            "qty":           rounded_qty,
-            "last_px":       rounded_px,
+            "cloid": cloid.lower(),
+            "cid": cid,
+            "side": side,
+            "qty": rounded_qty,
+            "last_px": rounded_px,
             "reprice_count": 0,
-            "is_entry":      is_entry,
-            "submit_ts":     int(time.time()),
+            "is_entry": is_entry,
+            "submit_ts": int(time.time()),
         }
         return result
 
@@ -651,12 +676,16 @@ class HLEngine:
         pending = self._pending_resting.get(sym)
         if pending is None:
             return
-        coin  = self._symbol_to_coin[sym]
+        coin = self._symbol_to_coin[sym]
         cloid = pending["cloid"]
-        age   = round(time.time() - pending["submit_ts"], 2)
+        age = round(time.time() - pending["submit_ts"], 2)
         log.info(
             "hl_maker_giveup",
-            symbol=sym, coin=coin, reason=reason, cloid=cloid, age_s=age,
+            symbol=sym,
+            coin=coin,
+            reason=reason,
+            cloid=cloid,
+            age_s=age,
             reprice_count=pending.get("reprice_count", 0),
             is_entry=pending.get("is_entry"),
             is_hip3=":" in coin,
@@ -667,8 +696,12 @@ class HLEngine:
         try:
             resp = await self._hl.cancel_by_cloid(coin, cloid)
         except Exception as exc:
-            log.warning("hl_maker_giveup_cancel_exception",
-                        symbol=sym, cloid=cloid, error=str(exc))
+            log.warning(
+                "hl_maker_giveup_cancel_exception",
+                symbol=sym,
+                cloid=cloid,
+                error=str(exc),
+            )
             resp = None
 
         if self._cancel_ok(resp):
@@ -682,8 +715,9 @@ class HLEngine:
         # filled. Leave pending alone so the userFills WS event clears it
         # and fires on_fill. If the order is truly gone but we don't know,
         # the lifetime check on the next watchdog tick will pop it.
-        log.warning("hl_maker_giveup_cancel_unconfirmed",
-                    symbol=sym, cloid=cloid, resp=resp)
+        log.warning(
+            "hl_maker_giveup_cancel_unconfirmed", symbol=sym, cloid=cloid, resp=resp
+        )
 
     async def _reprice_pending(self, sym: str, new_px: float) -> None:
         """
@@ -694,39 +728,53 @@ class HLEngine:
         pending = self._pending_resting.get(sym)
         if pending is None:
             return
-        coin   = self._symbol_to_coin[sym]
+        coin = self._symbol_to_coin[sym]
         old_cl = pending["cloid"]
         try:
             cresp = await self._hl.cancel_by_cloid(coin, old_cl)
         except Exception as exc:
-            log.warning("hl_maker_reprice_cancel_exception",
-                        symbol=sym, cloid=old_cl, error=str(exc))
+            log.warning(
+                "hl_maker_reprice_cancel_exception",
+                symbol=sym,
+                cloid=old_cl,
+                error=str(exc),
+            )
             return
 
         if not self._cancel_ok(cresp):
             # The order filled (or is filling) while we were trying to
             # reprice. Leave pending alone — userFills will clean up.
-            log.info("hl_maker_reprice_skipped_cancel_failed",
-                     symbol=sym, cloid=old_cl, resp=cresp)
+            log.info(
+                "hl_maker_reprice_skipped_cancel_failed",
+                symbol=sym,
+                cloid=old_cl,
+                resp=cresp,
+            )
             return
 
         new_cloid = f"0x{secrets.randbits(128):032x}"
         log.info(
             "hl_maker_reprice",
-            symbol=sym, coin=coin, side=pending["side"],
-            qty=pending["qty"], old_px=pending["last_px"], new_px=new_px,
-            old_cloid=old_cl, new_cloid=new_cloid,
-            reprice_count=pending["reprice_count"] + 1, cid=pending["cid"],
+            symbol=sym,
+            coin=coin,
+            side=pending["side"],
+            qty=pending["qty"],
+            old_px=pending["last_px"],
+            new_px=new_px,
+            old_cloid=old_cl,
+            new_cloid=new_cloid,
+            reprice_count=pending["reprice_count"] + 1,
+            cid=pending["cid"],
         )
 
         hl_order = {
-            "symbol":      coin,
-            "side":        pending["side"],
-            "qty":         pending["qty"],
-            "limit_px":    new_px,
-            "tif":         "Alo",
+            "symbol": coin,
+            "side": pending["side"],
+            "qty": pending["qty"],
+            "limit_px": new_px,
+            "tif": "Alo",
             "reduce_only": False,
-            "cloid":       new_cloid,
+            "cloid": new_cloid,
         }
         result = await self._hl.submit_order(hl_order)
 
@@ -737,14 +785,17 @@ class HLEngine:
         # with the escalation.
         inner_ok = True
         try:
-            statuses = (result or {}).get("response", {}).get(
-                "data", {}).get("statuses", [])
+            statuses = (
+                (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            )
             for s in statuses:
                 if isinstance(s, dict) and s.get("error"):
                     inner_ok = False
                     log.warning(
                         "hl_maker_reprice_inner_rejection",
-                        symbol=sym, new_cloid=new_cloid, error=s["error"],
+                        symbol=sym,
+                        new_cloid=new_cloid,
+                        error=s["error"],
                     )
                     break
         except Exception:
@@ -758,8 +809,8 @@ class HLEngine:
 
         # Swap in the new cloid / px / counters. cid + side + qty + is_entry
         # + submit_ts (age baseline) all carry over unchanged.
-        pending["cloid"]        = new_cloid.lower()
-        pending["last_px"]      = new_px
+        pending["cloid"] = new_cloid.lower()
+        pending["last_px"] = new_px
         pending["reprice_count"] = pending["reprice_count"] + 1
 
     async def _maker_watchdog(self) -> None:
@@ -791,7 +842,9 @@ class HLEngine:
 
                 coin = self._symbol_to_coin.get(sym)
                 is_hip3 = coin and ":" in coin
-                max_life = HIP3_MAKER_MAX_LIFETIME_S if is_hip3 else MAKER_MAX_LIFETIME_S
+                max_life = (
+                    HIP3_MAKER_MAX_LIFETIME_S if is_hip3 else MAKER_MAX_LIFETIME_S
+                )
                 max_rep = HIP3_MAKER_MAX_REPRICES if is_hip3 else MAKER_MAX_REPRICES
 
                 age = now_ts - pending["submit_ts"]
@@ -809,34 +862,41 @@ class HLEngine:
                 sz_dec = self._sz_decimals.get(coin, 2)
 
                 side = pending["side"]
-                raw  = st.best_bid if side == "buy" else st.best_ask
+                raw = st.best_bid if side == "buy" else st.best_ask
                 if not math.isfinite(raw) or raw <= 0:
                     continue
                 new_px = _round_hl_price(raw, sz_dec)
                 cur_px = pending["last_px"]
 
-                behind = (side == "buy"  and new_px > cur_px) or \
-                         (side == "sell" and new_px < cur_px)
+                behind = (side == "buy" and new_px > cur_px) or (
+                    side == "sell" and new_px < cur_px
+                )
                 if behind:
                     await self._reprice_pending(sym, new_px)
 
     # ── Signal → HL order translation + CID logging ──────────────────────────
     async def _submit(self, sig: dict) -> dict | None:
         # Shadow filter: log the order intent + fire synthetic on_fill, skip exchange.
-        sym  = sig["symbol"]
+        sym = sig["symbol"]
         coin = self._symbol_to_coin.get(sym, "")
         if coin in self._shadow_coins:
             side = "buy" if sig["side"] == OrderSide.BUY else "sell"
-            cid  = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"
+            cid = f"{STRATEGY_TAG}_{coin}_{int(time.time())}"
             log.info(
                 "shadow_order",
-                client_order_id=cid, symbol=sym, coin=coin,
-                side=side, qty=sig["qty"], limit_px=sig["limit_px"],
+                client_order_id=cid,
+                symbol=sym,
+                coin=coin,
+                side=side,
+                qty=sig["qty"],
+                limit_px=sig["limit_px"],
                 notional=sig.get("notional"),
             )
             self._signals.on_fill(
-                client_order_id=cid, symbol=sym,
-                qty=sig["qty"], side=side,
+                client_order_id=cid,
+                symbol=sym,
+                qty=sig["qty"],
+                side=side,
             )
             return {"status": "shadow_filled", "coin": coin}
 
@@ -846,9 +906,7 @@ class HLEngine:
             is_hip3 = ":" in coin
             if is_hip3:
                 st = self._signals._state.get(sym)
-                is_exit = bool(
-                    st and st.pending_exits.get(STRATEGY_TAG, False)
-                )
+                is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
                 # HIP-3 exits always use IOC taker: mean-reversion exits fire
                 # while price snaps back to the mean — a resting Alo sits on
                 # the wrong side of the move and the only fills are adverse.
@@ -856,12 +914,19 @@ class HLEngine:
                     log.info("hip3_exit_taker", symbol=sym, coin=coin)
                     return await self._submit_taker(sig)
                 # HIP-3 entry escalation: extreme z-scores bypass maker.
-                z_abs = abs(sig.get("z", 0)) if sig.get("z") else (
-                    abs(st.price_buf.zscore(sig["limit_px"]) or 0) if st else 0
+                z_abs = (
+                    abs(sig.get("z", 0))
+                    if sig.get("z")
+                    else (abs(st.price_buf.zscore(sig["limit_px"]) or 0) if st else 0)
                 )
                 if z_abs >= HIP3_TAKER_ESCALATION_Z:
-                    log.info("hip3_taker_escalation", symbol=sym, coin=coin,
-                             z=round(z_abs, 3), threshold=HIP3_TAKER_ESCALATION_Z)
+                    log.info(
+                        "hip3_taker_escalation",
+                        symbol=sym,
+                        coin=coin,
+                        z=round(z_abs, 3),
+                        threshold=HIP3_TAKER_ESCALATION_Z,
+                    )
                     return await self._submit_taker(sig)
             return await self._submit_maker(sig)
         return await self._submit_taker(sig)
@@ -869,20 +934,23 @@ class HLEngine:
     async def _submit_taker(self, sig: dict) -> dict | None:
         """IOC cross-spread taker path. Used as default when EXECUTION_STYLE != maker,
         and as escalation target for HIP-3 extreme z-score signals."""
-        sym   = sig["symbol"]
-        coin  = self._symbol_to_coin[sym]
-        side  = "buy" if sig["side"] == OrderSide.BUY else "sell"
+        sym = sig["symbol"]
+        coin = self._symbol_to_coin[sym]
+        side = "buy" if sig["side"] == OrderSide.BUY else "sell"
 
-        raw_px      = sig["limit_px"]
-        sz_dec      = self._sz_decimals.get(coin, 2)
-        rounded_px  = _round_hl_price(raw_px, sz_dec)
-        raw_qty     = sig["qty"]
+        raw_px = sig["limit_px"]
+        sz_dec = self._sz_decimals.get(coin, 2)
+        rounded_px = _round_hl_price(raw_px, sz_dec)
+        raw_qty = sig["qty"]
         rounded_qty = _round_hl_size(raw_qty, sz_dec)
 
         if rounded_qty <= 0:
             log.warning(
                 "hl_order_qty_floored_to_zero",
-                symbol=sym, coin=coin, raw_qty=raw_qty, sz_decimals=sz_dec,
+                symbol=sym,
+                coin=coin,
+                raw_qty=raw_qty,
+                sz_decimals=sz_dec,
             )
             return None
 
@@ -890,25 +958,27 @@ class HLEngine:
         log.info(
             "hl_order_intent",
             client_order_id=cid,
-            symbol=sym, coin=coin, side=side,
-            qty=rounded_qty, raw_qty=raw_qty,
-            limit_px=rounded_px, raw_limit_px=raw_px,
+            symbol=sym,
+            coin=coin,
+            side=side,
+            qty=rounded_qty,
+            raw_qty=raw_qty,
+            limit_px=rounded_px,
+            raw_limit_px=raw_px,
             notional=sig.get("notional"),
             tif="Ioc",
         )
 
         st = self._signals._state.get(sym)
         is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
-        z_now = sig.get("z") or (
-            st.price_buf.zscore(raw_px) if st else None
-        )
+        z_now = sig.get("z") or (st.price_buf.zscore(raw_px) if st else None)
 
         hl_order = {
-            "symbol":      coin,
-            "side":        side,
-            "qty":         rounded_qty,
-            "limit_px":    rounded_px,
-            "tif":         "Ioc",
+            "symbol": coin,
+            "side": side,
+            "qty": rounded_qty,
+            "limit_px": rounded_px,
+            "tif": "Ioc",
             "reduce_only": False,
         }
         t0 = time.perf_counter_ns()
@@ -917,44 +987,56 @@ class HLEngine:
         log.info("hl_order_result", client_order_id=cid, result=result)
 
         try:
-            statuses = (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            statuses = (
+                (result or {}).get("response", {}).get("data", {}).get("statuses", [])
+            )
             for s in statuses:
                 if isinstance(s, dict) and s.get("error"):
                     log.warning(
                         "hl_order_inner_rejection",
-                        client_order_id=cid, error=s["error"],
-                        sent_px=rounded_px, raw_px=raw_px,
-                        sent_qty=rounded_qty, raw_qty=raw_qty,
+                        client_order_id=cid,
+                        error=s["error"],
+                        sent_px=rounded_px,
+                        raw_px=raw_px,
+                        sent_qty=rounded_qty,
+                        raw_qty=raw_qty,
                     )
                     return None
 
             for s in statuses:
                 if isinstance(s, dict) and "filled" in s:
                     try:
-                        fill_px  = float(s["filled"].get("avgPx", 0) or 0)
+                        fill_px = float(s["filled"].get("avgPx", 0) or 0)
                         filled_sz = float(s["filled"].get("totalSz", 0))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         fill_px, filled_sz = 0.0, 0.0
                     if filled_sz > 0:
-                        slip_bps = round(
-                            abs(fill_px - rounded_px) / rounded_px * 10000, 2
-                        ) if rounded_px else 0.0
+                        slip_bps = (
+                            round(abs(fill_px - rounded_px) / rounded_px * 10000, 2)
+                            if rounded_px
+                            else 0.0
+                        )
                         log.info(
                             "hl_taker_fill",
-                            client_order_id=cid, symbol=sym, coin=coin,
-                            side=side, is_exit=is_exit,
+                            client_order_id=cid,
+                            symbol=sym,
+                            coin=coin,
+                            side=side,
+                            is_exit=is_exit,
                             is_hip3=":" in coin,
-                            sent_px=rounded_px, fill_px=fill_px,
+                            sent_px=rounded_px,
+                            fill_px=fill_px,
                             slippage_bps=slip_bps,
-                            filled_sz=filled_sz, sent_qty=rounded_qty,
+                            filled_sz=filled_sz,
+                            sent_qty=rounded_qty,
                             z=round(z_now, 3) if z_now else None,
                             latency_ms=round(lat_ms, 1),
                         )
                         self._signals.on_fill(
-                            client_order_id = cid,
-                            symbol          = sym,
-                            qty             = filled_sz,
-                            side            = side,
+                            client_order_id=cid,
+                            symbol=sym,
+                            qty=filled_sz,
+                            side=side,
                         )
         except Exception:
             pass
@@ -972,7 +1054,7 @@ class HLEngine:
         in _submit) or out-of-band UI activity. Both cases are already
         reconciled by the startup + flip-guard reconcile paths.
         """
-        sym   = msg.get("symbol")
+        sym = msg.get("symbol")
         cloid = msg.get("cloid")
         if not (sym and cloid):
             return
@@ -984,32 +1066,36 @@ class HLEngine:
 
         try:
             filled_sz = float(msg["sz"])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             filled_sz = 0.0
         if filled_sz <= 0:
             return
 
         cumulative = pending.get("filled_qty", 0.0) + filled_sz
-        remaining  = pending["qty"] - cumulative
+        remaining = pending["qty"] - cumulative
         # Floor at half a lot — anything below is dust that HL can't match,
         # so treat as terminal.
-        coin       = self._symbol_to_coin.get(sym, "")
-        sz_dec     = self._sz_decimals.get(coin, 2)
-        dust_half  = 0.5 * (10 ** -sz_dec)
-        terminal   = remaining <= dust_half
+        coin = self._symbol_to_coin.get(sym, "")
+        sz_dec = self._sz_decimals.get(coin, 2)
+        dust_half = 0.5 * (10**-sz_dec)
+        terminal = remaining <= dust_half
 
         fill_px = float(msg.get("px", 0) or 0)
         sent_px = pending.get("last_px", 0)
-        slip_bps = round(
-            abs(fill_px - sent_px) / sent_px * 10000, 2
-        ) if sent_px else 0.0
+        slip_bps = (
+            round(abs(fill_px - sent_px) / sent_px * 10000, 2) if sent_px else 0.0
+        )
         age_s = round(time.time() - pending["submit_ts"], 2)
 
         log.info(
             "hl_maker_fill_matched",
-            symbol=sym, coin=coin, cloid=cloid_lc,
+            symbol=sym,
+            coin=coin,
+            cloid=cloid_lc,
             client_order_id=pending["cid"],
-            fill_sz=filled_sz, fill_px=fill_px, sent_px=sent_px,
+            fill_sz=filled_sz,
+            fill_px=fill_px,
+            sent_px=sent_px,
             slippage_bps=slip_bps,
             crossed=msg.get("crossed"),
             is_entry=pending.get("is_entry"),
@@ -1017,7 +1103,8 @@ class HLEngine:
             side=pending.get("side"),
             age_s=age_s,
             reprice_count=pending.get("reprice_count", 0),
-            cumulative=cumulative, remaining=remaining,
+            cumulative=cumulative,
+            remaining=remaining,
             terminal=terminal,
         )
         # signals.on_fill overwrites (not accumulates) and clears pending_exits
@@ -1027,10 +1114,10 @@ class HLEngine:
         # multi-chunk exits resurrect a phantom position after the close.
         if terminal:
             self._signals.on_fill(
-                client_order_id = pending["cid"],
-                symbol          = sym,
-                qty             = cumulative,
-                side            = pending["side"],
+                client_order_id=pending["cid"],
+                symbol=sym,
+                qty=cumulative,
+                side=pending["side"],
             )
             del self._pending_resting[sym]
         else:
@@ -1095,10 +1182,12 @@ class HLEngine:
     async def run(self) -> None:
         log.info(
             "hl_engine_start",
-            symbols=self._hl_symbols, coins=self._hl_coins,
+            symbols=self._hl_symbols,
+            coins=self._hl_coins,
             hip3_coins=self._hip3_coins,
             shadow_coins=sorted(self._shadow_coins),
-            tag=STRATEGY_TAG, leverage=self._default_leverage,
+            tag=STRATEGY_TAG,
+            leverage=self._default_leverage,
             per_pair_notional=self._per_pair_notional,
             mode=self._cfg.execution_mode.value,
             execution_style=EXECUTION_STYLE,
@@ -1130,10 +1219,10 @@ class HLEngine:
 
         async with asyncio.TaskGroup() as tg:
             if self._bars is not None:
-                tg.create_task(self._bars.run(),       name="alpaca_bars")
-            tg.create_task(self._book.run(),       name="hl_orderbook")
-            tg.create_task(self._hl_obi_pump(),    name="hl_obi_pump")
-            tg.create_task(self._strategy_loop(),  name="strategy")
+                tg.create_task(self._bars.run(), name="alpaca_bars")
+            tg.create_task(self._book.run(), name="hl_orderbook")
+            tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
+            tg.create_task(self._strategy_loop(), name="strategy")
             if self._native_bar_coins:
                 tg.create_task(self._bar_synthesizer(), name="native_bars")
             if EXECUTION_STYLE == "maker":
@@ -1149,7 +1238,7 @@ class HLEngine:
 
 async def main() -> None:
     engine = HLEngine()
-    loop   = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     for s in (signal_lib.SIGINT, signal_lib.SIGTERM):
         loop.add_signal_handler(s, engine.stop)
     await engine.run()

@@ -41,8 +41,19 @@ from hyperliquid.utils import constants
 
 _INDICES = {"SP500", "XYZ100", "JP225", "KR200", "NDX", "DJI", "FTSE", "DAX"}
 _COMMODITIES = {
-    "GOLD", "SILVER", "CL", "COPPER", "NATGAS", "URANIUM", "ALUMINIUM",
-    "PLATINUM", "PALLADIUM", "BRENTOIL", "CORN", "WHEAT", "TTF",
+    "GOLD",
+    "SILVER",
+    "CL",
+    "COPPER",
+    "NATGAS",
+    "URANIUM",
+    "ALUMINIUM",
+    "PLATINUM",
+    "PALLADIUM",
+    "BRENTOIL",
+    "CORN",
+    "WHEAT",
+    "TTF",
 }
 _FX = {"JPY", "EUR", "DXY", "GBP", "AUD", "CHF", "CNY"}
 _ETFS = {"EWY", "EWJ", "XLE", "URNM", "USAR", "SPY", "QQQ", "IWM"}
@@ -68,8 +79,10 @@ def classify(coin: str) -> str:
 # Tighter z for low-RMSD assets (mean-reverts slowly); wider z for high-RMSD
 # assets (need to catch bigger dislocations). Thresholds calibrated to 4h RMSD.
 
+
 def assign_z_tier(
-    cat: str, rmsd_pct: float,
+    cat: str,
+    rmsd_pct: float,
 ) -> tuple[float, float, float, float]:
     """Returns (z_entry, z_exit, z_short_entry, z_exit_short)."""
     if cat == "INDEX":
@@ -135,9 +148,7 @@ def compute_scores(assets: list[dict]) -> list[dict]:
     # Normalize RMSD: log(1 + rmsd%) so 0.5% and 13% don't differ by 26×.
     max_log_rmsd = max(math.log1p(a["rmsd_pct"]) for a in assets)
     # Normalize liquidity: log(OI_usd * vol_usd + 1)
-    max_log_liq = max(
-        math.log1p(a["oi_usd"] * a["vol_usd"]) for a in assets
-    )
+    max_log_liq = max(math.log1p(a["oi_usd"] * a["vol_usd"]) for a in assets)
 
     cat_counts: dict[str, int] = {}
     for a in assets:
@@ -170,6 +181,7 @@ def compute_scores(assets: list[dict]) -> list[dict]:
 
 # ── Data fetching ────────────────────────────────────────────────────────────
 
+
 def fetch_universe(
     info: Info,
     dexs: list[str],
@@ -198,23 +210,25 @@ def fetch_universe(
                 oi_usd = mark * oi_coins
                 vol_usd = float(ctx.get("dayNtlVlm", 0))
                 funding = float(ctx.get("funding", 0))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
 
             if oi_usd < min_oi or vol_usd < min_vol:
                 continue
 
-            assets.append({
-                "coin": name,
-                "dex": dex,
-                "cat": classify(name),
-                "mark": mark,
-                "oi_usd": oi_usd,
-                "vol_usd": vol_usd,
-                "max_lev": max_lev,
-                "sz_dec": sz_dec,
-                "funding": funding,
-            })
+            assets.append(
+                {
+                    "coin": name,
+                    "dex": dex,
+                    "cat": classify(name),
+                    "mark": mark,
+                    "oi_usd": oi_usd,
+                    "vol_usd": vol_usd,
+                    "max_lev": max_lev,
+                    "sz_dec": sz_dec,
+                    "funding": funding,
+                }
+            )
     return assets
 
 
@@ -236,7 +250,7 @@ def fetch_rmsd(info: Info, assets: list[dict], lookback_days: int = 7) -> list[d
         for c in candles:
             try:
                 closes.append(float(c["c"]))
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 continue
 
         if len(closes) < 10:
@@ -252,8 +266,7 @@ def fetch_rmsd(info: Info, assets: list[dict], lookback_days: int = 7) -> list[d
 
         # 4h return stats
         rets = [
-            (closes[i] - closes[i - 1]) / closes[i - 1]
-            for i in range(1, len(closes))
+            (closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))
         ]
         avg_ret = sum(rets) / len(rets) if rets else 0
         max_ret = max(rets) if rets else 0
@@ -271,6 +284,7 @@ def fetch_rmsd(info: Info, assets: list[dict], lookback_days: int = 7) -> list[d
 
 # ── Output formatting ────────────────────────────────────────────────────────
 
+
 def print_table(ranked: list[dict], max_leverage: int) -> None:
     hdr = (
         f"{'#':>3} {'Coin':<18} {'Cat':<10} {'Price':>10} {'OI($M)':>8} "
@@ -284,9 +298,9 @@ def print_table(ranked: list[dict], max_leverage: int) -> None:
         z = assign_z_tier(a["cat"], a["rmsd_pct"])
         print(
             f"{i:>3} {a['coin']:<18} {a['cat']:<10} {a['mark']:>10.2f} "
-            f"{a['oi_usd']/1e6:>8.2f} {a['vol_usd']/1e6:>9.2f} "
+            f"{a['oi_usd'] / 1e6:>8.2f} {a['vol_usd'] / 1e6:>9.2f} "
             f"{a['rmsd_pct']:>7.3f} {a['composite']:>7.4f} {lev:>4}x "
-            f"{z[0]:>+8.2f} {z[1]:>+7.2f} {a['funding']*100:>7.4f}%"
+            f"{z[0]:>+8.2f} {z[1]:>+7.2f} {a['funding'] * 100:>7.4f}%"
         )
 
 
@@ -331,23 +345,25 @@ def print_json(ranked: list[dict], max_leverage: int) -> None:
     for a in ranked:
         lev = assign_leverage(a["cat"], a["max_lev"], max_leverage)
         z = assign_z_tier(a["cat"], a["rmsd_pct"])
-        out.append({
-            "coin": a["coin"],
-            "cat": a["cat"],
-            "mark": a["mark"],
-            "oi_usd": round(a["oi_usd"], 2),
-            "vol_usd": round(a["vol_usd"], 2),
-            "rmsd_pct": round(a["rmsd_pct"], 4),
-            "composite_score": a["composite"],
-            "leverage": lev,
-            "sz_decimals": a["sz_dec"],
-            "z_entry": z[0],
-            "z_exit": z[1],
-            "z_short_entry": z[2],
-            "z_exit_short": z[3],
-            "funding_rate": round(a["funding"] * 100, 6),
-            "n_4h_bars": a["n_bars"],
-        })
+        out.append(
+            {
+                "coin": a["coin"],
+                "cat": a["cat"],
+                "mark": a["mark"],
+                "oi_usd": round(a["oi_usd"], 2),
+                "vol_usd": round(a["vol_usd"], 2),
+                "rmsd_pct": round(a["rmsd_pct"], 4),
+                "composite_score": a["composite"],
+                "leverage": lev,
+                "sz_decimals": a["sz_dec"],
+                "z_entry": z[0],
+                "z_exit": z[1],
+                "z_short_entry": z[2],
+                "z_exit_short": z[3],
+                "funding_rate": round(a["funding"] * 100, 6),
+                "n_4h_bars": a["n_bars"],
+            }
+        )
     print(json.dumps(out, indent=2))
 
 
@@ -371,22 +387,45 @@ def print_engine_config(ranked: list[dict], max_leverage: int) -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="screener_hip3",
         description="HIP-3 perp DEX portfolio selector — scores assets by 4h RMSD, liquidity, and diversification.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--dex", default="xyz", help="Comma-separated DEX names (default: xyz)")
-    parser.add_argument("--top", type=int, default=0, help="Select top N assets (0 = all passing)")
-    parser.add_argument("--min-oi", type=float, default=1.0, help="Min OI in $M (default: 1)")
-    parser.add_argument("--min-vol", type=float, default=0.5, help="Min 24h volume in $M (default: 0.5)")
-    parser.add_argument("--max-leverage", type=int, default=10, help="Max leverage cap (default: 10)")
-    parser.add_argument("--lookback", type=int, default=7, help="RMSD lookback in days (default: 7)")
-    parser.add_argument("--apply", action="store_true", help="Print shell export block for engine launch")
+    parser.add_argument(
+        "--dex", default="xyz", help="Comma-separated DEX names (default: xyz)"
+    )
+    parser.add_argument(
+        "--top", type=int, default=0, help="Select top N assets (0 = all passing)"
+    )
+    parser.add_argument(
+        "--min-oi", type=float, default=1.0, help="Min OI in $M (default: 1)"
+    )
+    parser.add_argument(
+        "--min-vol", type=float, default=0.5, help="Min 24h volume in $M (default: 0.5)"
+    )
+    parser.add_argument(
+        "--max-leverage", type=int, default=10, help="Max leverage cap (default: 10)"
+    )
+    parser.add_argument(
+        "--lookback", type=int, default=7, help="RMSD lookback in days (default: 7)"
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Print shell export block for engine launch",
+    )
     parser.add_argument("--json", action="store_true", help="JSON output")
-    parser.add_argument("--config", action="store_true", help="Print Python config snippets")
-    parser.add_argument("--exclude", default="", help="Comma-separated coins to exclude (e.g. PURRDAT,BIRD)")
+    parser.add_argument(
+        "--config", action="store_true", help="Print Python config snippets"
+    )
+    parser.add_argument(
+        "--exclude",
+        default="",
+        help="Comma-separated coins to exclude (e.g. PURRDAT,BIRD)",
+    )
 
     args = parser.parse_args()
     dexs = [d.strip() for d in args.dex.split(",") if d.strip()]
@@ -395,14 +434,17 @@ def main() -> int:
     excludes = {e.strip().upper() for e in args.exclude.split(",") if e.strip()}
 
     url = getattr(
-        constants, "MAINNET_API_URL",
+        constants,
+        "MAINNET_API_URL",
         getattr(constants, "MAINNET", "https://api.hyperliquid.xyz"),
     )
     info = Info(url, skip_ws=True, perp_dexs=dexs)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"screener_hip3 — {ts}")
-    print(f"DEXs: {dexs}  OI>=${args.min_oi}M  Vol>=${args.min_vol}M  MaxLev={args.max_leverage}x  Lookback={args.lookback}d")
+    print(
+        f"DEXs: {dexs}  OI>=${args.min_oi}M  Vol>=${args.min_vol}M  MaxLev={args.max_leverage}x  Lookback={args.lookback}d"
+    )
     if excludes:
         print(f"Excluding: {', '.join(sorted(excludes))}")
     print()
@@ -413,10 +455,7 @@ def main() -> int:
 
     # Apply exclusions
     if excludes:
-        assets = [
-            a for a in assets
-            if a["coin"].split(":")[1] not in excludes
-        ]
+        assets = [a for a in assets if a["coin"].split(":")[1] not in excludes]
 
     print(f"  {len(assets)} assets pass OI/volume filters", file=sys.stderr)
 

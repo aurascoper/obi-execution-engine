@@ -35,32 +35,36 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 # ── Quality filters ────────────────────────────────────────────────────────────
-MIN_PRICE   = 20.0          # minimum last close ($)
-MIN_ADV     = 1_000_000     # minimum 30-day average daily volume (shares)
-Z_THRESHOLD = 1.25          # |z| threshold for entry/short zones
-WINDOW      = 60            # bars for z-score rolling window
-ADV_WINDOW  = 30            # bars for ADV calculation
-BATCH       = 100           # symbols per Alpaca API request
-SLEEP       = 0.3           # seconds between batches (rate limiting)
+MIN_PRICE = 20.0  # minimum last close ($)
+MIN_ADV = 1_000_000  # minimum 30-day average daily volume (shares)
+Z_THRESHOLD = 1.25  # |z| threshold for entry/short zones
+WINDOW = 60  # bars for z-score rolling window
+ADV_WINDOW = 30  # bars for ADV calculation
+BATCH = 100  # symbols per Alpaca API request
+SLEEP = 0.3  # seconds between batches (rate limiting)
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (research screen; contact: aurascoper@github)"}
 
 
 # ── Index fetchers ─────────────────────────────────────────────────────────────
 
+
 def _sp500() -> list[str]:
-    r  = requests.get(
+    r = requests.get(
         "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-        headers=HEADERS, timeout=15,
+        headers=HEADERS,
+        timeout=15,
     )
     df = pd.read_html(StringIO(r.text))[0]
     return df["Symbol"].str.replace(".", "-", regex=False).tolist()
 
 
 def _nasdaq100() -> list[str]:
-    r      = requests.get("https://en.wikipedia.org/wiki/Nasdaq-100", headers=HEADERS, timeout=15)
+    r = requests.get(
+        "https://en.wikipedia.org/wiki/Nasdaq-100", headers=HEADERS, timeout=15
+    )
     tables = pd.read_html(StringIO(r.text))
-    df     = next(t for t in tables if "Ticker" in t.columns)
+    df = next(t for t in tables if "Ticker" in t.columns)
     return df["Ticker"].tolist()
 
 
@@ -70,19 +74,21 @@ def _russell3000() -> tuple[list[str], dict[str, str]]:
         "https://www.ishares.com/us/products/239714/ishares-russell-3000-etf/"
         "1467271812596.ajax?fileType=csv&fileName=IWV_holdings&dataType=fund"
     )
-    r      = requests.get(url, headers=HEADERS, timeout=20)
+    r = requests.get(url, headers=HEADERS, timeout=20)
     df_raw = pd.read_csv(StringIO(r.text), skiprows=9, on_bad_lines="skip")
     df_raw.columns = df_raw.columns.str.strip()
     equities = df_raw[
-        (df_raw["Asset Class"] == "Equity") &
-        (df_raw["Ticker"].notna()) &
-        (~df_raw["Ticker"].str.contains(r"\s|-", na=True))
+        (df_raw["Asset Class"] == "Equity")
+        & (df_raw["Ticker"].notna())
+        & (~df_raw["Ticker"].str.contains(r"\s|-", na=True))
     ].copy()
-    tickers    = equities["Ticker"].str.strip().unique().tolist()
-    sector_map = dict(zip(
-        equities["Ticker"].str.strip(),
-        equities["Sector"].str.strip(),
-    ))
+    tickers = equities["Ticker"].str.strip().unique().tolist()
+    sector_map = dict(
+        zip(
+            equities["Ticker"].str.strip(),
+            equities["Sector"].str.strip(),
+        )
+    )
     return tickers, sector_map
 
 
@@ -115,6 +121,7 @@ def build_universe() -> tuple[list[str], dict[str, str]]:
 
 # ── Bar fetcher ────────────────────────────────────────────────────────────────
 
+
 def fetch_bars(
     tickers: list[str],
     api_key: str,
@@ -123,16 +130,16 @@ def fetch_bars(
 ) -> pd.DataFrame:
     """Fetch daily OHLCV bars for all tickers via IEX feed (free tier)."""
     client = StockHistoricalDataClient(api_key, api_secret)
-    now    = datetime.now(timezone.utc)
-    start  = now - timedelta(days=lookback_days)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=lookback_days)
 
     n_batches = (len(tickers) + BATCH - 1) // BATCH
-    all_rows  = []
+    all_rows = []
 
     for i in range(0, len(tickers), BATCH):
-        batch = tickers[i:i + BATCH]
+        batch = tickers[i : i + BATCH]
         try:
-            req   = StockBarsRequest(
+            req = StockBarsRequest(
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
                 start=start,
@@ -156,11 +163,12 @@ def fetch_bars(
 
 # ── Signal computation ─────────────────────────────────────────────────────────
 
+
 def compute_signals(
-    bars:        pd.DataFrame,
-    sector_map:  dict[str, str],
-    min_price:   float = MIN_PRICE,
-    min_adv:     float = MIN_ADV,
+    bars: pd.DataFrame,
+    sector_map: dict[str, str],
+    min_price: float = MIN_PRICE,
+    min_adv: float = MIN_ADV,
     z_threshold: float = Z_THRESHOLD,
     sector_filter: str | None = None,
 ) -> tuple[list[tuple], list[tuple]]:
@@ -172,15 +180,15 @@ def compute_signals(
     longs, shorts = [], []
 
     for sym, grp in bars.groupby("symbol"):
-        grp    = grp.sort_values("timestamp")
+        grp = grp.sort_values("timestamp")
         closes = grp["close"].values
-        vols   = grp["volume"].values
+        vols = grp["volume"].values
 
         if len(closes) < max(WINDOW, ADV_WINDOW):
             continue
 
         last_close = closes[-1]
-        adv_30     = float(np.mean(vols[-ADV_WINDOW:]))
+        adv_30 = float(np.mean(vols[-ADV_WINDOW:]))
 
         # ── Quality filters ────────────────────────────────────────────────
         if last_close < min_price:
@@ -205,69 +213,95 @@ def compute_signals(
         elif z > z_threshold:
             shorts.append(row)
 
-    longs.sort()                          # most negative first
-    shorts.sort(key=lambda x: -x[0])     # most positive first
+    longs.sort()  # most negative first
+    shorts.sort(key=lambda x: -x[0])  # most positive first
     return longs, shorts
 
 
 # ── Printer ────────────────────────────────────────────────────────────────────
 
+
 def _fmt_adv(adv: float) -> str:
     if adv >= 1_000_000:
-        return f"{adv/1_000_000:.1f}M"
-    return f"{adv/1_000:.0f}K"
+        return f"{adv / 1_000_000:.1f}M"
+    return f"{adv / 1_000:.0f}K"
 
 
 def print_results(
-    longs:        list[tuple],
-    shorts:       list[tuple],
-    already_in:   set[str],
-    new_only:     bool,
+    longs: list[tuple],
+    shorts: list[tuple],
+    already_in: set[str],
+    new_only: bool,
     scanned_date: str,
 ) -> None:
     def _print_zone(rows, label, flag):
         visible = [r for r in rows if not new_only or r[1] not in already_in]
-        tag     = "(new only)" if new_only else ""
+        tag = "(new only)" if new_only else ""
         print(f"\n=== {label}  {tag}  ({len(visible)} stocks) ===")
         print(f"  {'SYM':<8} {'z':>7}   {'Price':>9}   {'ADV':>7}   Sector")
-        print(f"  {'─'*8} {'─'*7}   {'─'*9}   {'─'*7}   {'─'*24}")
+        print(f"  {'─' * 8} {'─' * 7}   {'─' * 9}   {'─' * 7}   {'─' * 24}")
         for z, sym, px, adv, sec in visible:
             engine_tag = "" if sym not in already_in else "  ✓"
-            print(f"  {sym:<8} {z:+.3f}σ   ${px:>8.2f}   {_fmt_adv(adv):>7}   {sec}{engine_tag}")
+            print(
+                f"  {sym:<8} {z:+.3f}σ   ${px:>8.2f}   {_fmt_adv(adv):>7}   {sec}{engine_tag}"
+            )
 
-    print(f"\n{'═'*70}")
+    print(f"\n{'═' * 70}")
     print(f"  MEAN-REVERSION SCREEN  —  {scanned_date}")
-    print(f"  Filters: price > ${MIN_PRICE:.0f}  |  30-day ADV > {MIN_ADV/1e6:.0f}M shares")
+    print(
+        f"  Filters: price > ${MIN_PRICE:.0f}  |  30-day ADV > {MIN_ADV / 1e6:.0f}M shares"
+    )
     print(f"  Signal:  |z| > {Z_THRESHOLD}σ  over {WINDOW}-bar rolling window")
-    print(f"{'═'*70}")
-    _print_zone(longs,  "LONG ZONE   z < -1.25σ", "◀ LONG")
+    print(f"{'═' * 70}")
+    _print_zone(longs, "LONG ZONE   z < -1.25σ", "◀ LONG")
     _print_zone(shorts, "SHORT ZONE  z > +1.25σ", "◀ SHORT")
     print()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Mean-reversion universe screener")
-    ap.add_argument("--new-only",  action="store_true",
-                    help="Hide symbols already tracked by the equities engine")
-    ap.add_argument("--sector",    type=str, default=None,
-                    help="Filter output to a single sector (e.g. 'Financials')")
-    ap.add_argument("--min-z",     type=float, default=Z_THRESHOLD,
-                    help=f"Override z-score threshold (default {Z_THRESHOLD})")
-    ap.add_argument("--min-price", type=float, default=MIN_PRICE,
-                    help=f"Override minimum price filter (default ${MIN_PRICE:.0f})")
-    ap.add_argument("--min-adv",   type=float, default=MIN_ADV,
-                    help=f"Override minimum ADV filter (default {MIN_ADV/1e6:.0f}M)")
+    ap.add_argument(
+        "--new-only",
+        action="store_true",
+        help="Hide symbols already tracked by the equities engine",
+    )
+    ap.add_argument(
+        "--sector",
+        type=str,
+        default=None,
+        help="Filter output to a single sector (e.g. 'Financials')",
+    )
+    ap.add_argument(
+        "--min-z",
+        type=float,
+        default=Z_THRESHOLD,
+        help=f"Override z-score threshold (default {Z_THRESHOLD})",
+    )
+    ap.add_argument(
+        "--min-price",
+        type=float,
+        default=MIN_PRICE,
+        help=f"Override minimum price filter (default ${MIN_PRICE:.0f})",
+    )
+    ap.add_argument(
+        "--min-adv",
+        type=float,
+        default=MIN_ADV,
+        help=f"Override minimum ADV filter (default {MIN_ADV / 1e6:.0f}M)",
+    )
     args = ap.parse_args()
 
-    api_key    = os.environ["ALPACA_API_KEY_ID"]
+    api_key = os.environ["ALPACA_API_KEY_ID"]
     api_secret = os.environ["ALPACA_API_SECRET_KEY"]
 
     # Symbols currently tracked by equities engine (for tagging / --new-only)
     try:
         sys.path.insert(0, os.path.dirname(__file__))
         from equities_engine import SYMBOLS as ENGINE_SYMBOLS
+
         already_in = set(ENGINE_SYMBOLS)
     except Exception:
         already_in = set()
@@ -285,16 +319,18 @@ def main() -> None:
     longs, shorts = compute_signals(
         bars,
         sector_map,
-        min_price   = args.min_price,
-        min_adv     = args.min_adv,
-        z_threshold = args.min_z,
-        sector_filter = args.sector,
+        min_price=args.min_price,
+        min_adv=args.min_adv,
+        z_threshold=args.min_z,
+        sector_filter=args.sector,
     )
 
     print_results(
-        longs, shorts, already_in,
-        new_only     = args.new_only,
-        scanned_date = datetime.now().strftime("%Y-%m-%d %H:%M"),
+        longs,
+        shorts,
+        already_in,
+        new_only=args.new_only,
+        scanned_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
 

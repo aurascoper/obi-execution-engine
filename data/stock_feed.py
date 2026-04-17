@@ -33,8 +33,8 @@ from config.settings import Settings
 
 log = structlog.get_logger(__name__)
 
-_ET        = zoneinfo.ZoneInfo("America/New_York")
-_RTH_OPEN  = dtime(9, 30)
+_ET = zoneinfo.ZoneInfo("America/New_York")
+_RTH_OPEN = dtime(9, 30)
 _RTH_CLOSE = dtime(16, 0)
 
 
@@ -54,20 +54,20 @@ class LiveStockFeed:
 
     def __init__(
         self,
-        cfg:       Settings,
-        symbols:   list[str],
+        cfg: Settings,
+        symbols: list[str],
         msg_queue: asyncio.Queue,
     ):
-        self._symbols     = set(symbols)
-        self._queue       = msg_queue
+        self._symbols = set(symbols)
+        self._queue = msg_queue
 
         self._msg_counts: dict[str, int] = {"bar": 0, "quote": 0}
-        self._count_window_start: float  = time.monotonic()
+        self._count_window_start: float = time.monotonic()
 
         self._stream = StockDataStream(
-            api_key    = cfg.api_key,
-            secret_key = cfg.api_secret,
-            feed       = DataFeed.IEX,
+            api_key=cfg.api_key,
+            secret_key=cfg.api_secret,
+            feed=DataFeed.IEX,
         )
         # Daily bars: one bar per symbol per day, delivered at market close (~4 PM ET).
         # This matches the 60-day pre-seeded z-score window and prevents PDT violations —
@@ -75,7 +75,12 @@ class LiveStockFeed:
         # Intraday NBBO quotes still stream for a priority subset to keep OBI fresh
         # throughout the day; signal evaluation fires only on the daily bar.
         QUOTE_PRIORITY = {
-            "NKE", "INTC", "NFLX", "HPE", "SLB", "CSX",
+            "NKE",
+            "INTC",
+            "NFLX",
+            "HPE",
+            "SLB",
+            "CSX",
         }
         quote_syms = [s for s in symbols if s in QUOTE_PRIORITY]
 
@@ -104,7 +109,7 @@ class LiveStockFeed:
     def _tick_count(self, msg_type: str) -> None:
         """Increment per-type counter; flush to log every 60 seconds."""
         self._msg_counts[msg_type] += 1
-        now     = time.monotonic()
+        now = time.monotonic()
         elapsed = now - self._count_window_start
         if elapsed >= 60.0:
             log.info(
@@ -113,7 +118,7 @@ class LiveStockFeed:
                 bars_per_min=self._msg_counts["bar"],
                 quotes_per_min=self._msg_counts["quote"],
             )
-            self._msg_counts         = {"bar": 0, "quote": 0}
+            self._msg_counts = {"bar": 0, "quote": 0}
             self._count_window_start = now
 
     # ── SDK callbacks ──────────────────────────────────────────────────────────
@@ -125,17 +130,19 @@ class LiveStockFeed:
         # which falls outside the 09:30–16:00 window. The strategy layer is
         # responsible for any additional timing constraints it needs.
         self._tick_count("bar")
-        await self._queue.put({
-            "type":      "bar",
-            "symbol":    bar.symbol,
-            "open":      float(bar.open),
-            "high":      float(bar.high),
-            "low":       float(bar.low),
-            "close":     float(bar.close),
-            "volume":    float(bar.volume),
-            "timestamp": str(bar.timestamp),
-            "recv_ns":   time.perf_counter_ns(),
-        })
+        await self._queue.put(
+            {
+                "type": "bar",
+                "symbol": bar.symbol,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+                "timestamp": str(bar.timestamp),
+                "recv_ns": time.perf_counter_ns(),
+            }
+        )
 
     async def _on_quote(self, q: Quote) -> None:
         """
@@ -147,23 +154,25 @@ class LiveStockFeed:
         if not self._is_rth():
             return
         try:
-            bp  = float(q.bid_price)
-            bs  = float(q.bid_size)
-            ap  = float(q.ask_price)
+            bp = float(q.bid_price)
+            bs = float(q.bid_size)
+            ap = float(q.ask_price)
             as_ = float(q.ask_size)
-        except (TypeError, AttributeError):
+        except TypeError, AttributeError:
             return
         if bp <= 0 or ap <= 0:
             return
         self._tick_count("quote")
-        await self._queue.put({
-            "type":      "orderbook",
-            "symbol":    q.symbol,
-            "bids":      [[bp, bs]],
-            "asks":      [[ap, as_]],
-            "timestamp": str(q.timestamp),
-            "recv_ns":   time.perf_counter_ns(),
-        })
+        await self._queue.put(
+            {
+                "type": "orderbook",
+                "symbol": q.symbol,
+                "bids": [[bp, bs]],
+                "asks": [[ap, as_]],
+                "timestamp": str(q.timestamp),
+                "recv_ns": time.perf_counter_ns(),
+            }
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 

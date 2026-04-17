@@ -16,6 +16,7 @@ Fees: HL taker = 3.5 bps per side → charge abs(notional) * 0.00035 on each fil
 A "round trip" = consecutive entry+exit pair per symbol. If the session ends
 with an unclosed entry, it's reported as OPEN and excluded from realized net.
 """
+
 from __future__ import annotations
 
 import json
@@ -70,7 +71,7 @@ def extract_fills(events: list[dict]) -> list[dict]:
                     try:
                         px = float(f.get("avgPx"))
                         sz = float(f.get("totalSz"))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         continue
                     if sz <= 0:
                         continue
@@ -92,17 +93,19 @@ def extract_fills(events: list[dict]) -> list[dict]:
             side = ev.get("side", "")
             sign = 1.0 if side == "buy" else -1.0
             qty_signed = sign * pending_result["size"]
-            fills.append({
-                "ts": ev.get("timestamp"),
-                "symbol": ev.get("symbol"),
-                "tag": ev.get("tag"),
-                "role": ev.get("role"),
-                "side": side,
-                "qty_signed": qty_signed,
-                "price": pending_result["price"],
-                "oid": pending_result["oid"],
-                "cid": pending_result["cid"],
-            })
+            fills.append(
+                {
+                    "ts": ev.get("timestamp"),
+                    "symbol": ev.get("symbol"),
+                    "tag": ev.get("tag"),
+                    "role": ev.get("role"),
+                    "side": side,
+                    "qty_signed": qty_signed,
+                    "price": pending_result["price"],
+                    "oid": pending_result["oid"],
+                    "cid": pending_result["cid"],
+                }
+            )
             pending_result = None
 
     return fills
@@ -130,39 +133,41 @@ def pair_round_trips(fills: list[dict]) -> tuple[list[dict], list[dict]]:
                 unpaired.append(f)
                 continue
             entry_notional = entry["qty_signed"] * entry["price"]
-            exit_notional  = f["qty_signed"] * f["price"]
+            exit_notional = f["qty_signed"] * f["price"]
             # Close identity: signed qty flips sign on exit, so summing signed
             # notionals gives realized cash. Short: entry_qty<0 → entry_notional<0
             # (cash received), exit_qty>0 → exit_notional>0 (cash paid).
             # PnL = -(entry_notional + exit_notional).
             gross = -(entry_notional + exit_notional)
-            fees  = _fee(entry_notional) + _fee(exit_notional)
-            net   = gross - fees
+            fees = _fee(entry_notional) + _fee(exit_notional)
+            net = gross - fees
             direction = "long" if entry["qty_signed"] > 0 else "short"
-            trips.append({
-                "symbol": sym,
-                "direction": direction,
-                "qty": abs(entry["qty_signed"]),
-                "entry_px": entry["price"],
-                "exit_px":  f["price"],
-                "entry_ts": entry["ts"],
-                "exit_ts":  f["ts"],
-                "gross": gross,
-                "fees":  fees,
-                "net":   net,
-            })
+            trips.append(
+                {
+                    "symbol": sym,
+                    "direction": direction,
+                    "qty": abs(entry["qty_signed"]),
+                    "entry_px": entry["price"],
+                    "exit_px": f["price"],
+                    "entry_ts": entry["ts"],
+                    "exit_ts": f["ts"],
+                    "gross": gross,
+                    "fees": fees,
+                    "net": net,
+                }
+            )
 
     return trips, list(open_by_sym.values()) + unpaired
 
 
 def main() -> None:
     events = load_events()
-    fills  = extract_fills(events)
+    fills = extract_fills(events)
     trips, open_or_unpaired = pair_round_trips(fills)
 
-    print(f"{'─'*78}")
-    print(f"HL Engine Session Analyzer")
-    print(f"{'─'*78}")
+    print(f"{'─' * 78}")
+    print("HL Engine Session Analyzer")
+    print(f"{'─' * 78}")
     print(f"Events:  {len(events):>6}")
     print(f"Fills:   {len(fills):>6}")
     print(f"Trips:   {len(trips):>6}  (closed round-trips)")
@@ -172,10 +177,12 @@ def main() -> None:
         print("\nNo closed round-trips.")
         return
 
-    print(f"\n{'─'*78}")
-    print(f"{'#':>3}  {'sym':<8} {'dir':<6} {'qty':>10} "
-          f"{'entry':>11} {'exit':>11} {'gross':>9} {'fees':>7} {'net':>9}")
-    print(f"{'─'*78}")
+    print(f"\n{'─' * 78}")
+    print(
+        f"{'#':>3}  {'sym':<8} {'dir':<6} {'qty':>10} "
+        f"{'entry':>11} {'exit':>11} {'gross':>9} {'fees':>7} {'net':>9}"
+    )
+    print(f"{'─' * 78}")
 
     by_sym: dict[str, list[float]] = defaultdict(list)
     cum = 0.0
@@ -185,7 +192,7 @@ def main() -> None:
     for i, t in enumerate(trips, 1):
         cum += t["net"]
         gross_sum += t["gross"]
-        fees_sum  += t["fees"]
+        fees_sum += t["fees"]
         by_sym[t["symbol"]].append(t["net"])
         if t["net"] > 0:
             wins += 1
@@ -198,29 +205,34 @@ def main() -> None:
             f"{t['gross']:>+9.3f} {t['fees']:>7.3f} {t['net']:>+9.3f}"
         )
 
-    print(f"{'─'*78}")
-    print(f"Totals:")
+    print(f"{'─' * 78}")
+    print("Totals:")
     print(f"  gross      : ${gross_sum:+.3f}")
     print(f"  fees       : ${fees_sum:.3f}")
     print(f"  NET        : ${cum:+.3f}")
-    print(f"  win/loss   : {wins}W / {losses}L  "
-          f"(hit={wins/max(1,wins+losses)*100:.1f}%)")
+    print(
+        f"  win/loss   : {wins}W / {losses}L  "
+        f"(hit={wins / max(1, wins + losses) * 100:.1f}%)"
+    )
     if trips:
         avg = cum / len(trips)
         print(f"  avg/trip   : ${avg:+.4f}")
 
-    print(f"\nBy symbol:")
+    print("\nBy symbol:")
     for sym, pnls in sorted(by_sym.items()):
         tot = sum(pnls)
-        print(f"  {sym:<8} n={len(pnls):>3}  net=${tot:+.3f}  "
-              f"avg=${tot/len(pnls):+.4f}")
+        print(
+            f"  {sym:<8} n={len(pnls):>3}  net=${tot:+.3f}  avg=${tot / len(pnls):+.4f}"
+        )
 
     if open_or_unpaired:
-        print(f"\nDangling fills (not counted in net):")
+        print("\nDangling fills (not counted in net):")
         for f in open_or_unpaired:
-            print(f"  {f.get('ts','?')}  {f.get('symbol','?'):<8} "
-                  f"role={f.get('role','?')} qty={f.get('qty_signed',0):+.4f} "
-                  f"@ {f.get('price',0):.2f}")
+            print(
+                f"  {f.get('ts', '?')}  {f.get('symbol', '?'):<8} "
+                f"role={f.get('role', '?')} qty={f.get('qty_signed', 0):+.4f} "
+                f"@ {f.get('price', 0):.2f}"
+            )
 
 
 if __name__ == "__main__":

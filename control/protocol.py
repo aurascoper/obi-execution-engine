@@ -11,6 +11,7 @@ import json
 
 # ── Serialisation ─────────────────────────────────────────────────────────────
 
+
 def serialize(obj: dict) -> bytes:
     """Encode a dict as a newline-delimited JSON message."""
     return json.dumps(obj, default=str, separators=(",", ":")).encode() + b"\n"
@@ -23,6 +24,7 @@ def deserialize(data: bytes) -> dict:
 
 # ── Phase 2 param validation (shipped now, wired later) ──────────────────────
 
+
 def validate_params(params: dict) -> str | None:
     """
     Validate a proposed parameter update dict.
@@ -31,11 +33,11 @@ def validate_params(params: dict) -> str | None:
     Expected keys (all optional — only present keys are validated):
       z_entry, z_exit, z_short_entry, z_exit_short, notional
     """
-    z_entry       = params.get("z_entry")
-    z_exit        = params.get("z_exit")
+    z_entry = params.get("z_entry")
+    z_exit = params.get("z_exit")
     z_short_entry = params.get("z_short_entry")
-    z_exit_short  = params.get("z_exit_short")
-    notional      = params.get("notional")
+    z_exit_short = params.get("z_exit_short")
+    notional = params.get("notional")
 
     # ── z_entry: negative, [-5.0, -0.1] ──────────────────────────────────────
     if z_entry is not None:

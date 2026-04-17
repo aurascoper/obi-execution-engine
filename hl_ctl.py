@@ -36,8 +36,15 @@ def _print_symbol(sym: str, data: dict) -> None:
     """Pretty-print one symbol's data block."""
     print(f"\n  {sym}")
     print(f"  {'─' * 40}")
-    for key in ("z_entry", "z_exit", "z_short_entry", "z_exit_short",
-                "obi", "best_bid", "best_ask"):
+    for key in (
+        "z_entry",
+        "z_exit",
+        "z_short_entry",
+        "z_exit_short",
+        "obi",
+        "best_bid",
+        "best_ask",
+    ):
         if key in data:
             print(f"    {key:<18} {_fmt_value(data[key])}")
     if "positions" in data:
@@ -45,9 +52,11 @@ def _print_symbol(sym: str, data: dict) -> None:
         if pos:
             for tag, qty in pos.items():
                 px = data.get("entry_prices", {}).get(tag, None)
-                print(f"    position/{tag:<12} qty={_fmt_value(qty, 12)}  entry={_fmt_value(px)}")
+                print(
+                    f"    position/{tag:<12} qty={_fmt_value(qty, 12)}  entry={_fmt_value(px)}"
+                )
         else:
-            print(f"    positions          (flat)")
+            print("    positions          (flat)")
 
 
 def cmd_get(args: argparse.Namespace) -> int:
@@ -67,7 +76,9 @@ def cmd_get_all(args: argparse.Namespace) -> int:
         print(f"Error: {resp.get('error', 'unknown')}", file=sys.stderr)
         return 1
     print("\n  Z-Thresholds")
-    print(f"  {'Symbol':<12} {'z_entry':>10} {'z_exit':>10} {'z_short':>10} {'z_xs':>10}")
+    print(
+        f"  {'Symbol':<12} {'z_entry':>10} {'z_exit':>10} {'z_short':>10} {'z_xs':>10}"
+    )
     print(f"  {'─' * 54}")
     for sym, d in resp["data"].items():
         print(
@@ -102,6 +113,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     ts = data.get("ts")
     if ts:
         from datetime import datetime, timezone
+
         t = datetime.fromtimestamp(ts, tz=timezone.utc)
         print(f"\n  snapshot at {t.isoformat()}")
     return 0
@@ -121,7 +133,8 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--sock", default="/tmp/hl_engine.sock",
+        "--sock",
+        default="/tmp/hl_engine.sock",
         help="Path to the engine control socket (default: /tmp/hl_engine.sock)",
     )
     sub = parser.add_subparsers(dest="command", required=True)

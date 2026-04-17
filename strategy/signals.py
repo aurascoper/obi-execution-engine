@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import numpy as np
 import structlog
@@ -65,43 +65,51 @@ from config.risk_params import MAX_ORDER_NOTIONAL, SYMBOL_CAPS
 log = structlog.get_logger(__name__)
 
 # ── Strategy Parameters ────────────────────────────────────────────────────────
-SYMBOLS             = ["ETH/USD", "BTC/USD"]
-WINDOW              = 60       # rolling bars for z-score
-                               # Crypto engine:   60 one-minute bars = 60-min micro-structure window
-                               #                  (24/7 stream; no historical pre-seed; warmup ~60 min)
-                               # Equities engine: 60 daily bars = ~3-month macro window
-                               #                  (pre-seeded from IEX history at startup; warm on bar 1)
-Z_ENTRY             = -1.25   # enter long when z < Z_ENTRY (oversold)
-Z_EXIT              = -0.50   # exit long when z reverts above Z_EXIT
-Z_SHORT_ENTRY       = +1.25   # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
-Z_EXIT_SHORT        = +0.50   # cover short when z reverts below Z_EXIT_SHORT    — HL only
-STOP_LOSS_PCT       = 0.010   # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
-MAX_POSITION_SECS_RTH = 30 * 60   # time-stop during US RTH (M-F 09:30-16:00 ET)
-MAX_POSITION_SECS_OVN = 60 * 60   # time-stop overnight / weekends — slower reversion
-TREND_MA_WINDOW     = 240     # 240-bar (4h at 1-min) SMA for regime gate — block entries opposing trend
+SYMBOLS = ["ETH/USD", "BTC/USD"]
+WINDOW = 60  # rolling bars for z-score
+# Crypto engine:   60 one-minute bars = 60-min micro-structure window
+#                  (24/7 stream; no historical pre-seed; warmup ~60 min)
+# Equities engine: 60 daily bars = ~3-month macro window
+#                  (pre-seeded from IEX history at startup; warm on bar 1)
+Z_ENTRY = -1.25  # enter long when z < Z_ENTRY (oversold)
+Z_EXIT = -0.50  # exit long when z reverts above Z_EXIT
+Z_SHORT_ENTRY = +1.25  # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
+Z_EXIT_SHORT = +0.50  # cover short when z reverts below Z_EXIT_SHORT    — HL only
+STOP_LOSS_PCT = (
+    0.010  # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
+)
+MAX_POSITION_SECS_RTH = 30 * 60  # time-stop during US RTH (M-F 09:30-16:00 ET)
+MAX_POSITION_SECS_OVN = 60 * 60  # time-stop overnight / weekends — slower reversion
+TREND_MA_WINDOW = (
+    240  # 240-bar (4h at 1-min) SMA for regime gate — block entries opposing trend
+)
 _ET = ZoneInfo("America/New_York")
-OBI_THETA           = 0.00    # any net buy pressure confirms entry (bid depth > ask depth)
-OBI_LEVELS          = 20      # top N order-book levels (deepened from 5:
-                              # live burn-in on HL BTC/ETH showed OBI-5 captures
-                              # high-frequency MM flicker at the front row, with
-                              # 2.6–5.8× more std than OBI-20 and occasional sign
-                              # contradictions vs the deeper committed book —
-                              # specifically a "bid-side façade at levels 1-5
-                              # over an ask-heavy levels 6-20" trap on ETH.
-LIMIT_SLIPPAGE      = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE  = 750.0 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 2_000.0
+OBI_THETA = 0.00  # any net buy pressure confirms entry (bid depth > ask depth)
+OBI_LEVELS = 20  # top N order-book levels (deepened from 5:
+# live burn-in on HL BTC/ETH showed OBI-5 captures
+# high-frequency MM flicker at the front row, with
+# 2.6–5.8× more std than OBI-20 and occasional sign
+# contradictions vs the deeper committed book —
+# specifically a "bid-side façade at levels 1-5
+# over an ask-heavy levels 6-20" trap on ETH.
+LIMIT_SLIPPAGE = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
+NOTIONAL_PER_TRADE = (
+    750.0
+    if __import__("os").environ.get("EXECUTION_MODE", "PAPER").upper() == "LIVE"
+    else 2_000.0
+)
 
 # Alpaca minimum qty precision per symbol (fractional crypto)
 # BTC/ETH at current prices need 6+ decimals to express sub-$5 notional.
 # Alpaca supports up to 9 decimal places for crypto fractional orders.
 _QTY_DECIMALS: dict[str, int] = {
-    "ETH/USD":  6,   # 0.000001 ETH (~$0.002 at $2000)
-    "BTC/USD":  6,   # 0.000001 BTC (~$0.08 at $80000)
-    "SOL/USD":  4,   # 0.0001 SOL (~$0.01 at $130)
-    "DOGE/USD": 2,   # 0.01 DOGE (~$0.001 at $0.08)
-    "AVAX/USD": 4,   # 0.0001 AVAX (~$0.002 at $20)
-    "LINK/USD": 4,   # 0.0001 LINK (~$0.001 at $13)
-    "SHIB/USD": 0,   # whole SHIB units (~$0.000012/SHIB → ~1.25M units per $15)
+    "ETH/USD": 6,  # 0.000001 ETH (~$0.002 at $2000)
+    "BTC/USD": 6,  # 0.000001 BTC (~$0.08 at $80000)
+    "SOL/USD": 4,  # 0.0001 SOL (~$0.01 at $130)
+    "DOGE/USD": 2,  # 0.01 DOGE (~$0.001 at $0.08)
+    "AVAX/USD": 4,  # 0.0001 AVAX (~$0.002 at $20)
+    "LINK/USD": 4,  # 0.0001 LINK (~$0.001 at $13)
+    "SHIB/USD": 0,  # whole SHIB units (~$0.000012/SHIB → ~1.25M units per $15)
 }
 
 
@@ -121,10 +129,10 @@ class _RollingBuffer:
     __slots__ = ("_buf", "_idx", "_count", "_size")
 
     def __init__(self, size: int) -> None:
-        self._buf   = np.empty(size, dtype=np.float64)
-        self._idx   = 0
+        self._buf = np.empty(size, dtype=np.float64)
+        self._idx = 0
         self._count = 0
-        self._size  = size
+        self._size = size
 
     def push(self, val: float) -> None:
         """Write new value; wraps around when full."""
@@ -148,10 +156,10 @@ class _RollingBuffer:
         """
         if not self.is_full:
             return None
-        a   = self._active()                  # contiguous float64 view
-        mu  = np.mean(a)                      # single SIMD pass
-        sig = np.std(a, ddof=1)               # second SIMD pass
-        if sig < 1e-10:                       # flat price — no signal
+        a = self._active()  # contiguous float64 view
+        mu = np.mean(a)  # single SIMD pass
+        sig = np.std(a, ddof=1)  # second SIMD pass
+        if sig < 1e-10:  # flat price — no signal
             return None
         return float((current - mu) / sig)
 
@@ -173,36 +181,36 @@ class _SymbolState:
 
     __slots__ = (
         "symbol",
-        "price_buf",      # _RollingBuffer of close prices (WINDOW bars, z-score)
-        "trend_buf",      # _RollingBuffer of close prices (TREND_MA_WINDOW bars, regime gate)
-        "obi",            # latest ρ_t scalar (updated by update_orderbook)
-        "best_ask",       # latest best ask (taker aggressive limit)
-        "best_bid",       # latest best bid (maker passive limit)
-        "positions",      # dict[str, float]  tag → open qty
-        "entry_prices",   # dict[str, float]  tag → entry price
-        "entry_ts",       # dict[str, int]    tag → epoch-sec at entry (for time-stop)
+        "price_buf",  # _RollingBuffer of close prices (WINDOW bars, z-score)
+        "trend_buf",  # _RollingBuffer of close prices (TREND_MA_WINDOW bars, regime gate)
+        "obi",  # latest ρ_t scalar (updated by update_orderbook)
+        "best_ask",  # latest best ask (taker aggressive limit)
+        "best_bid",  # latest best bid (maker passive limit)
+        "positions",  # dict[str, float]  tag → open qty
+        "entry_prices",  # dict[str, float]  tag → entry price
+        "entry_ts",  # dict[str, int]    tag → epoch-sec at entry (for time-stop)
         "pending_exits",  # dict[str, bool]   tag → sell order submitted, awaiting fill
-        "z_entry",        # per-symbol override (None = use engine default)
+        "z_entry",  # per-symbol override (None = use engine default)
         "z_exit",
         "z_short_entry",
         "z_exit_short",
     )
 
     def __init__(self, symbol: str, window: int) -> None:
-        self.symbol         = symbol
-        self.price_buf      = _RollingBuffer(window)
-        self.trend_buf      = _RollingBuffer(TREND_MA_WINDOW)
-        self.obi            = 0.0
-        self.best_ask       = float("nan")
-        self.best_bid       = float("nan")
-        self.positions      : dict[str, float] = {}
-        self.entry_prices   : dict[str, float] = {}
-        self.entry_ts       : dict[str, int]   = {}
-        self.pending_exits  : dict[str, bool]  = {}
-        self.z_entry:        float | None = None
-        self.z_exit:         float | None = None
-        self.z_short_entry:  float | None = None
-        self.z_exit_short:   float | None = None
+        self.symbol = symbol
+        self.price_buf = _RollingBuffer(window)
+        self.trend_buf = _RollingBuffer(TREND_MA_WINDOW)
+        self.obi = 0.0
+        self.best_ask = float("nan")
+        self.best_bid = float("nan")
+        self.positions: dict[str, float] = {}
+        self.entry_prices: dict[str, float] = {}
+        self.entry_ts: dict[str, int] = {}
+        self.pending_exits: dict[str, bool] = {}
+        self.z_entry: float | None = None
+        self.z_exit: float | None = None
+        self.z_short_entry: float | None = None
+        self.z_exit_short: float | None = None
 
     # ── Tag-aware helpers ──────────────────────────────────────────────────────
 
@@ -260,27 +268,27 @@ class SignalEngine:
 
     def __init__(
         self,
-        symbols:            list[str] = SYMBOLS,
-        window:             int       = WINDOW,
-        z_entry:            float     = Z_ENTRY,
-        z_exit:             float     = Z_EXIT,
-        z_short_entry:      float     = Z_SHORT_ENTRY,
-        z_exit_short:       float     = Z_EXIT_SHORT,
-        obi_theta:          float     = OBI_THETA,
-        obi_levels:         int       = OBI_LEVELS,
-        notional_per_trade: float     = NOTIONAL_PER_TRADE,
-        strategy_tag:       str       = "taker",
-        allow_short:        bool      = False,
+        symbols: list[str] = SYMBOLS,
+        window: int = WINDOW,
+        z_entry: float = Z_ENTRY,
+        z_exit: float = Z_EXIT,
+        z_short_entry: float = Z_SHORT_ENTRY,
+        z_exit_short: float = Z_EXIT_SHORT,
+        obi_theta: float = OBI_THETA,
+        obi_levels: int = OBI_LEVELS,
+        notional_per_trade: float = NOTIONAL_PER_TRADE,
+        strategy_tag: str = "taker",
+        allow_short: bool = False,
     ) -> None:
-        self._z_entry            = z_entry
-        self._z_exit             = z_exit
-        self._z_short_entry      = z_short_entry
-        self._z_exit_short       = z_exit_short
-        self._obi_theta          = obi_theta
-        self._obi_levels         = obi_levels
+        self._z_entry = z_entry
+        self._z_exit = z_exit
+        self._z_short_entry = z_short_entry
+        self._z_exit_short = z_exit_short
+        self._obi_theta = obi_theta
+        self._obi_levels = obi_levels
         self._notional_per_trade = notional_per_trade
-        self.strategy_tag        = strategy_tag
-        self._allow_short        = allow_short
+        self.strategy_tag = strategy_tag
+        self._allow_short = allow_short
 
         self._state: dict[str, _SymbolState] = {
             s: _SymbolState(s, window) for s in symbols
@@ -297,10 +305,10 @@ class SignalEngine:
         st = self._state.get(symbol)
         if st is None:
             return
-        st.z_entry       = z_entry
-        st.z_exit        = z_exit
+        st.z_entry = z_entry
+        st.z_exit = z_exit
         st.z_short_entry = z_short_entry
-        st.z_exit_short  = z_exit_short
+        st.z_exit_short = z_exit_short
 
     # ── Bar Update (primary path) ─────────────────────────────────────────────
     def evaluate(self, bar: dict) -> dict | None:
@@ -316,7 +324,7 @@ class SignalEngine:
         if sym not in self._state:
             return None
 
-        st    = self._state[sym]
+        st = self._state[sym]
         close = float(bar["close"])
 
         # 1. Feed the rolling price buffers
@@ -346,8 +354,8 @@ class SignalEngine:
             if st.pending_exits.get(tag, False):
                 return None
 
-            cur_qty  = st.open_qty(tag)     # signed: +long, −short
-            is_long  = cur_qty > 0
+            cur_qty = st.open_qty(tag)  # signed: +long, −short
+            is_long = cur_qty > 0
             entry_px = st.entry_prices.get(tag, float("nan"))
 
             # Trending-regime safety net: exit on adverse-move stop OR time-stop.
@@ -355,35 +363,42 @@ class SignalEngine:
             # stop breach still closes the position (z-revert would also fire).
             stop_reason: str | None = None
             if not math.isnan(entry_px) and entry_px > 0:
-                adverse = ((entry_px - close) / entry_px) if is_long \
-                          else ((close - entry_px) / entry_px)
+                adverse = (
+                    ((entry_px - close) / entry_px)
+                    if is_long
+                    else ((close - entry_px) / entry_px)
+                )
                 if adverse >= STOP_LOSS_PCT:
                     stop_reason = f"stop_loss_{adverse:.4f}"
             entry_ts = st.entry_ts.get(tag, 0)
             if entry_ts > 0:
                 age_s = int(time.time()) - entry_ts
                 now_et = datetime.now(_ET)
-                is_rth = (now_et.weekday() < 5
-                          and 930 <= now_et.hour * 100 + now_et.minute < 1600)
+                is_rth = (
+                    now_et.weekday() < 5
+                    and 930 <= now_et.hour * 100 + now_et.minute < 1600
+                )
                 max_secs = MAX_POSITION_SECS_RTH if is_rth else MAX_POSITION_SECS_OVN
                 if age_s >= max_secs:
                     stop_reason = stop_reason or f"time_stop_{age_s}s"
 
             _z_exit = st.z_exit if st.z_exit is not None else self._z_exit
-            _z_exit_short = st.z_exit_short if st.z_exit_short is not None else self._z_exit_short
+            _z_exit_short = (
+                st.z_exit_short if st.z_exit_short is not None else self._z_exit_short
+            )
             z_revert = (z > _z_exit) if is_long else (z < _z_exit_short)
             if not (z_revert or stop_reason):
                 return None
 
             exit_side = OrderSide.SELL if is_long else OrderSide.BUY
-            exit_qty  = abs(cur_qty)
-            exit_px   = self._limit_px(st, close, exit_side)
-            notional  = round(exit_qty * close, 2)
+            exit_qty = abs(cur_qty)
+            exit_px = self._limit_px(st, close, exit_side)
+            notional = round(exit_qty * close, 2)
             if not math.isnan(entry_px) and entry_px > 0:
-                raw_pnl   = (close - entry_px) if is_long else (entry_px - close)
-                pnl_est   = round(raw_pnl / entry_px * 100, 3)
+                raw_pnl = (close - entry_px) if is_long else (entry_px - close)
+                pnl_est = round(raw_pnl / entry_px * 100, 3)
             else:
-                pnl_est   = float("nan")
+                pnl_est = float("nan")
             log.info(
                 "exit_signal",
                 symbol=sym,
@@ -399,21 +414,21 @@ class SignalEngine:
             )
             st.pending_exits[tag] = True
             return {
-                "symbol":   sym,
-                "side":     exit_side,
-                "qty":      exit_qty,
+                "symbol": sym,
+                "side": exit_side,
+                "qty": exit_qty,
                 "limit_px": exit_px,
                 "notional": notional,
             }
 
         # 4. Entry path — long xor short (both conditions must hold)
         _z_entry = st.z_entry if st.z_entry is not None else self._z_entry
-        _z_short_entry = st.z_short_entry if st.z_short_entry is not None else self._z_short_entry
-        long_entry  = (z < _z_entry)       and (st.obi >  self._obi_theta)
+        _z_short_entry = (
+            st.z_short_entry if st.z_short_entry is not None else self._z_short_entry
+        )
+        long_entry = (z < _z_entry) and (st.obi > self._obi_theta)
         short_entry = (
-            self._allow_short
-            and (z > _z_short_entry)
-            and (st.obi < -self._obi_theta)
+            self._allow_short and (z > _z_short_entry) and (st.obi < -self._obi_theta)
         )
         if not (long_entry or short_entry):
             return None
@@ -423,16 +438,28 @@ class SignalEngine:
         if st.trend_buf.is_full:
             trend_sma = float(np.mean(st.trend_buf._active()))
             if long_entry and close < trend_sma:
-                log.info("trend_gate_blocked", symbol=sym, direction="long",
-                         z=round(z, 4), close=close, sma=round(trend_sma, 2))
+                log.info(
+                    "trend_gate_blocked",
+                    symbol=sym,
+                    direction="long",
+                    z=round(z, 4),
+                    close=close,
+                    sma=round(trend_sma, 2),
+                )
                 return None
             if short_entry and close > trend_sma:
-                log.info("trend_gate_blocked", symbol=sym, direction="short",
-                         z=round(z, 4), close=close, sma=round(trend_sma, 2))
+                log.info(
+                    "trend_gate_blocked",
+                    symbol=sym,
+                    direction="short",
+                    z=round(z, 4),
+                    close=close,
+                    sma=round(trend_sma, 2),
+                )
                 return None
 
         entry_side = OrderSide.BUY if long_entry else OrderSide.SELL
-        direction  = "long" if long_entry else "short"
+        direction = "long" if long_entry else "short"
 
         # 5. Size the order (absolute qty; sign applied to positions below)
         qty, notional = self._size_order(sym, close)
@@ -454,14 +481,14 @@ class SignalEngine:
             limit_px=limit_px,
             notional=notional,
         )
-        st.positions[tag]    = qty if long_entry else -qty
+        st.positions[tag] = qty if long_entry else -qty
         st.entry_prices[tag] = close
-        st.entry_ts[tag]     = int(time.time())
+        st.entry_ts[tag] = int(time.time())
 
         return {
-            "symbol":   sym,
-            "side":     entry_side,
-            "qty":      qty,
+            "symbol": sym,
+            "side": entry_side,
+            "qty": qty,
             "limit_px": limit_px,
             "notional": notional,
         }
@@ -501,12 +528,12 @@ class SignalEngine:
             count=min(n, len(asks)),
         )
 
-        vb  = bid_sizes.sum()
-        va  = ask_sizes.sum()
-        rho = (vb - va) / (vb + va + 1e-8)   # epsilon guards /0 on empty book
+        vb = bid_sizes.sum()
+        va = ask_sizes.sum()
+        rho = (vb - va) / (vb + va + 1e-8)  # epsilon guards /0 on empty book
 
-        st      = self._state[sym]
-        st.obi  = float(rho)
+        st = self._state[sym]
+        st.obi = float(rho)
 
         # Cache best ask (taker limit) and best bid (maker limit)
         if asks:
@@ -518,9 +545,9 @@ class SignalEngine:
     def on_fill(
         self,
         client_order_id: str,
-        symbol:          str,
-        qty:             float,
-        side:            str,
+        symbol: str,
+        qty: float,
+        side: str,
     ) -> None:
         """
         Called by OrderManager when a fill arrives on the TradingStream.
@@ -540,7 +567,7 @@ class SignalEngine:
         # prefix + trailing underscore uniquely identifies this engine's fills
         # and tolerates multi-underscore tags like "hl_z".
         if not client_order_id.startswith(self.strategy_tag + "_"):
-            return   # fill belongs to a different engine instance
+            return  # fill belongs to a different engine instance
 
         fill_tag = self.strategy_tag
         side_l = side.lower()
@@ -548,12 +575,18 @@ class SignalEngine:
         # that arrives while the flag is set is the cover/close, regardless of
         # side (SELL covers long, BUY covers short).
         if st.pending_exits.get(fill_tag, False):
-            st.positions[fill_tag]     = 0.0
-            st.entry_prices[fill_tag]  = float("nan")
-            st.entry_ts[fill_tag]      = 0
+            st.positions[fill_tag] = 0.0
+            st.entry_prices[fill_tag] = float("nan")
+            st.entry_ts[fill_tag] = 0
             st.pending_exits[fill_tag] = False
-            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
-                     qty=0.0, side=side_l, role="exit")
+            log.info(
+                "fill_recorded",
+                symbol=symbol,
+                tag=fill_tag,
+                qty=0.0,
+                side=side_l,
+                role="exit",
+            )
             return
 
         # Entry fill — sign the recorded qty by side.
@@ -562,21 +595,34 @@ class SignalEngine:
         # short position in memory.
         if side_l in ("buy", "b"):
             st.positions[fill_tag] = qty
-            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
-                     qty=qty, side=side_l, role="entry")
+            log.info(
+                "fill_recorded",
+                symbol=symbol,
+                tag=fill_tag,
+                qty=qty,
+                side=side_l,
+                role="entry",
+            )
         elif self._allow_short:
             st.positions[fill_tag] = -qty
-            log.info("fill_recorded", symbol=symbol, tag=fill_tag,
-                     qty=-qty, side=side_l, role="entry")
+            log.info(
+                "fill_recorded",
+                symbol=symbol,
+                tag=fill_tag,
+                qty=-qty,
+                side=side_l,
+                role="entry",
+            )
         else:
             # Long-only engine received a SELL fill we didn't author as an
             # exit. Treat as a force-close (old behaviour) and flag it.
-            st.positions[fill_tag]     = 0.0
-            st.entry_prices[fill_tag]  = float("nan")
-            st.entry_ts[fill_tag]      = 0
+            st.positions[fill_tag] = 0.0
+            st.entry_prices[fill_tag] = float("nan")
+            st.entry_ts[fill_tag] = 0
             st.pending_exits[fill_tag] = False
-            log.warning("untracked_sell_treated_as_close",
-                        symbol=symbol, tag=fill_tag, qty=qty)
+            log.warning(
+                "untracked_sell_treated_as_close", symbol=symbol, tag=fill_tag, qty=qty
+            )
 
     # ── Position state rollback ───────────────────────────────────────────────
     def rollback_entry(self, symbol: str) -> None:
@@ -586,18 +632,22 @@ class SignalEngine:
         engine can retry on the next qualifying bar.
         """
         tag = self.strategy_tag
-        st  = self._state.get(symbol)
+        st = self._state.get(symbol)
         if st and st.is_open(tag):
-            log.warning("entry_rollback", symbol=symbol, tag=tag,
-                        reason="order_blocked_or_failed")
-            st.positions[tag]    = 0.0
+            log.warning(
+                "entry_rollback",
+                symbol=symbol,
+                tag=tag,
+                reason="order_blocked_or_failed",
+            )
+            st.positions[tag] = 0.0
             st.entry_prices[tag] = float("nan")
-            st.entry_ts[tag]     = 0
+            st.entry_ts[tag] = 0
 
     def reconcile_positions(
         self,
         alpaca_positions: list,
-        alpaca_orders:    list,
+        alpaca_orders: list,
     ) -> None:
         """
         Seed position state from Alpaca's open positions on engine startup.
@@ -617,33 +667,38 @@ class SignalEngine:
         cid_by_sym: dict[str, str] = {}
         for order in alpaca_orders:
             sym_norm = (getattr(order, "symbol", "") or "").replace("/", "")
-            cid      = getattr(order, "client_order_id", "") or ""
+            cid = getattr(order, "client_order_id", "") or ""
             side_raw = getattr(order, "side", "")
-            side     = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
+            side = side_raw.value if hasattr(side_raw, "value") else str(side_raw)
             status_raw = getattr(order, "status", "")
-            status   = status_raw.value if hasattr(status_raw, "value") else str(status_raw)
+            status = (
+                status_raw.value if hasattr(status_raw, "value") else str(status_raw)
+            )
             if "buy" in side.lower() and "filled" in status.lower():
-                if sym_norm not in cid_by_sym:   # most-recent first
+                if sym_norm not in cid_by_sym:  # most-recent first
                     cid_by_sym[sym_norm] = cid
 
         # Build reverse map: "BTCUSD" → "BTC/USD" for our state keys
         norm_to_state = {s.replace("/", ""): s for s in self._state}
 
         for pos in alpaca_positions:
-            alpaca_sym = getattr(pos, "symbol", "")         # e.g. "BTCUSD"
-            state_sym  = norm_to_state.get(alpaca_sym)
+            alpaca_sym = getattr(pos, "symbol", "")  # e.g. "BTCUSD"
+            state_sym = norm_to_state.get(alpaca_sym)
             if state_sym is None:
-                continue                                     # not in our universe
+                continue  # not in our universe
 
-            qty       = float(getattr(pos, "qty",             0) or 0)
+            qty = float(getattr(pos, "qty", 0) or 0)
             avg_entry = float(getattr(pos, "avg_entry_price", 0) or 0)
             if qty <= 0:
                 continue
 
-            cid   = cid_by_sym.get(alpaca_sym, "")
+            cid = cid_by_sym.get(alpaca_sym, "")
             parts = cid.split("_", 1)
-            cid_tag = parts[0] if (len(parts) > 1 and parts[0] in ("taker", "maker")) \
-                               else None
+            cid_tag = (
+                parts[0]
+                if (len(parts) > 1 and parts[0] in ("taker", "maker"))
+                else None
+            )
 
             if cid_tag is not None and cid_tag != self.strategy_tag:
                 # Position belongs to the other engine — skip.
@@ -658,9 +713,11 @@ class SignalEngine:
                 continue
 
             st = self._state[state_sym]
-            st.positions[tag]    = qty
+            st.positions[tag] = qty
             st.entry_prices[tag] = avg_entry
-            st.entry_ts[tag]     = int(time.time())   # adopt-now: gives full time-stop budget
+            st.entry_ts[tag] = int(
+                time.time()
+            )  # adopt-now: gives full time-stop budget
             log.info(
                 "position_reconciled",
                 symbol=state_sym,
@@ -672,7 +729,7 @@ class SignalEngine:
 
     def reconcile_hl_positions(
         self,
-        hl_positions:  list[dict],
+        hl_positions: list[dict],
         coin_to_symbol: dict[str, str],
         dust_caps_by_coin: dict[str, float] | None = None,
     ) -> None:
@@ -692,7 +749,7 @@ class SignalEngine:
         dust_caps_by_coin = dust_caps_by_coin or {}
         live_open_syms: set[str] = set()
         for pos in hl_positions:
-            coin      = str(pos.get("coin", "")).upper()
+            coin = str(pos.get("coin", "")).upper()
             state_sym = coin_to_symbol.get(coin)
             if state_sym is None or state_sym not in self._state:
                 continue
@@ -703,17 +760,19 @@ class SignalEngine:
                 if szi != 0.0:
                     log.info(
                         "hl_reconcile_dust_skipped",
-                        symbol=state_sym, coin=coin,
-                        szi=szi, dust_cap=dust_cap,
+                        symbol=state_sym,
+                        coin=coin,
+                        szi=szi,
+                        dust_cap=dust_cap,
                     )
                 continue
             entry_px = float(pos.get("entry_px", 0) or 0)
 
             live_open_syms.add(state_sym)
             st = self._state[state_sym]
-            st.positions[self.strategy_tag]    = szi        # signed
+            st.positions[self.strategy_tag] = szi  # signed
             st.entry_prices[self.strategy_tag] = entry_px
-            st.entry_ts[self.strategy_tag]     = int(time.time())   # adopt-now
+            st.entry_ts[self.strategy_tag] = int(time.time())  # adopt-now
             log.info(
                 "hl_position_reconciled",
                 symbol=state_sym,
@@ -733,13 +792,14 @@ class SignalEngine:
                 continue
             if st.positions.get(tag, 0.0) != 0.0:
                 stale_qty = st.positions[tag]
-                st.positions[tag]     = 0.0
-                st.entry_prices[tag]  = float("nan")
-                st.entry_ts[tag]      = 0
+                st.positions[tag] = 0.0
+                st.entry_prices[tag] = float("nan")
+                st.entry_ts[tag] = 0
                 st.pending_exits[tag] = False
                 log.warning(
                     "hl_memory_wiped_stale",
-                    symbol=sym, tag=tag,
+                    symbol=sym,
+                    tag=tag,
                     stale_qty=stale_qty,
                     reason="mem_nonzero_but_live_flat",
                 )
@@ -753,10 +813,11 @@ class SignalEngine:
         the asset.
         """
         tag = self.strategy_tag
-        st  = self._state.get(symbol)
+        st = self._state.get(symbol)
         if st and st.pending_exits.get(tag, False):
-            log.warning("exit_rollback", symbol=symbol, tag=tag,
-                        reason="sell_blocked_or_failed")
+            log.warning(
+                "exit_rollback", symbol=symbol, tag=tag, reason="sell_blocked_or_failed"
+            )
             st.pending_exits[tag] = False
 
     # ── Private: Limit Price ──────────────────────────────────────────────────
@@ -765,9 +826,7 @@ class SignalEngine:
         """Dynamic decimal places so sub-penny assets never round to 0.00."""
         return max(2, -int(math.floor(math.log10(ref))) + 2) if ref > 0 else 2
 
-    def _limit_px(
-        self, st: _SymbolState, close: float, side: OrderSide
-    ) -> float:
+    def _limit_px(self, st: _SymbolState, close: float, side: OrderSide) -> float:
         """
         Compute the limit price for an order based on strategy tag and side.
 
@@ -782,12 +841,20 @@ class SignalEngine:
         """
         if self.strategy_tag == "maker":
             if side == OrderSide.BUY:
-                ref = st.best_bid if not math.isnan(st.best_bid) and st.best_bid > 0 else close
+                ref = (
+                    st.best_bid
+                    if not math.isnan(st.best_bid) and st.best_bid > 0
+                    else close
+                )
                 # No spread-crossing adjustment for maker orders
                 dec = self._price_decimals(ref)
                 return round(ref, dec)
             else:
-                ref = st.best_ask if not math.isnan(st.best_ask) and st.best_ask > 0 else close
+                ref = (
+                    st.best_ask
+                    if not math.isnan(st.best_ask) and st.best_ask > 0
+                    else close
+                )
                 dec = self._price_decimals(ref)
                 return round(ref, dec)
         else:  # taker
@@ -824,7 +891,7 @@ class SignalEngine:
         decimals = _QTY_DECIMALS.get(symbol, 6)
         # Floor (not round) so actual notional never exceeds cap.
         # round() can push qty × price above cap, causing circuit breaker rejection.
-        qty      = math.floor(cap / price * 10 ** decimals) / 10 ** decimals
+        qty = math.floor(cap / price * 10**decimals) / 10**decimals
 
         if qty <= 0.0:
             return 0.0, 0.0

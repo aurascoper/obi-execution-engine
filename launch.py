@@ -49,6 +49,7 @@ log = structlog.get_logger("launch")
 async def _reconcile(taker: "Engine", maker: "MakerEngine", client) -> None:
     """Seed both engines with any positions Alpaca already holds."""
     import asyncio
+
     positions = await asyncio.to_thread(client.get_all_positions)
     if not positions:
         log.info("reconcile_complete", open_positions=0)
@@ -108,17 +109,17 @@ async def main() -> None:
 
     async with asyncio.TaskGroup() as tg:
         # Shared feed — single WebSocket connection.
-        tg.create_task(feed.run(),                              name="feed")
+        tg.create_task(feed.run(), name="feed")
 
         # Taker tasks.
-        tg.create_task(taker._strategy_loop(),                  name="taker_strategy")
-        tg.create_task(taker._drawdown_watch(),                 name="taker_drawdown")
+        tg.create_task(taker._strategy_loop(), name="taker_strategy")
+        tg.create_task(taker._drawdown_watch(), name="taker_drawdown")
 
         # Maker tasks.
-        tg.create_task(maker._strategy_loop(),                  name="maker_strategy")
-        tg.create_task(maker._drawdown_watch(),                 name="maker_drawdown")
-        tg.create_task(maker._order_tracker_loop(),             name="maker_tracker")
-        tg.create_task(maker._orders.start_trade_updates(),     name="maker_fills")
+        tg.create_task(maker._strategy_loop(), name="maker_strategy")
+        tg.create_task(maker._drawdown_watch(), name="maker_drawdown")
+        tg.create_task(maker._order_tracker_loop(), name="maker_tracker")
+        tg.create_task(maker._orders.start_trade_updates(), name="maker_fills")
 
 
 if __name__ == "__main__":

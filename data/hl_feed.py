@@ -59,11 +59,11 @@ class HyperliquidFeed:
 
     def __init__(
         self,
-        coins:      Iterable[str],
+        coins: Iterable[str],
         msg_queues: asyncio.Queue | list[asyncio.Queue],
-        url:        str = HL_WS_URL,
-        wallet:     str | None = None,
-        perp_dexs:  list[str] | None = None,
+        url: str = HL_WS_URL,
+        wallet: str | None = None,
+        perp_dexs: list[str] | None = None,
     ):
         self._coins = list(coins)
         self._perp_dexs = perp_dexs or []
@@ -78,7 +78,7 @@ class HyperliquidFeed:
 
         # Debug counters, flushed once per 60 s — mirrors data/feed.py.
         self._msg_counts: dict[str, int] = {"l2Book": 0, "userFills": 0}
-        self._count_window_start: float  = time.monotonic()
+        self._count_window_start: float = time.monotonic()
 
     # ── Subscription ──────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ class HyperliquidFeed:
         """Send one l2Book subscription frame per coin."""
         for coin in self._coins:
             frame = {
-                "method":       "subscribe",
+                "method": "subscribe",
                 "subscription": {"type": "l2Book", "coin": coin},
             }
             await ws.send(json.dumps(frame))
@@ -102,7 +102,7 @@ class HyperliquidFeed:
         if not self._wallet:
             return
         frame = {
-            "method":       "subscribe",
+            "method": "subscribe",
             "subscription": {"type": "userFills", "user": self._wallet},
         }
         await ws.send(json.dumps(frame))
@@ -150,18 +150,18 @@ class HyperliquidFeed:
         try:
             bids = [[float(lvl["px"]), float(lvl["sz"])] for lvl in levels[0]]
             asks = [[float(lvl["px"]), float(lvl["sz"])] for lvl in levels[1]]
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return None
 
         # HL returns asks in ascending-px order and bids in descending-px order,
         # matching what SignalEngine expects (bids[0] = best bid, asks[0] = best ask).
         return {
-            "type":      "orderbook",
-            "symbol":    str(coin),
-            "bids":      bids,
-            "asks":      asks,
+            "type": "orderbook",
+            "symbol": str(coin),
+            "bids": bids,
+            "asks": asks,
             "timestamp": str(data.get("time", "")),
-            "recv_ns":   time.perf_counter_ns(),
+            "recv_ns": time.perf_counter_ns(),
         }
 
     def _normalize_userfill(self, fill: dict) -> dict | None:
@@ -177,10 +177,10 @@ class HyperliquidFeed:
         """
         try:
             coin = str(fill["coin"])
-            px   = float(fill["px"])
-            sz   = float(fill["sz"])
+            px = float(fill["px"])
+            sz = float(fill["sz"])
             raw_side = str(fill["side"]).upper()
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return None
 
         if raw_side == "B":
@@ -191,16 +191,16 @@ class HyperliquidFeed:
             return None
 
         return {
-            "type":      "hl_fill",
-            "symbol":    coin,
-            "side":      side,
-            "px":        px,
-            "sz":        sz,
-            "oid":       fill.get("oid"),
-            "cloid":     fill.get("cloid"),
-            "crossed":   bool(fill.get("crossed", True)),
-            "ts":        str(fill.get("time", "")),
-            "recv_ns":   time.perf_counter_ns(),
+            "type": "hl_fill",
+            "symbol": coin,
+            "side": side,
+            "px": px,
+            "sz": sz,
+            "oid": fill.get("oid"),
+            "cloid": fill.get("cloid"),
+            "crossed": bool(fill.get("crossed", True)),
+            "ts": str(fill.get("time", "")),
+            "recv_ns": time.perf_counter_ns(),
         }
 
     # ── Message router ───────────────────────────────────────────────────────
@@ -250,9 +250,12 @@ class HyperliquidFeed:
                 self._tick_count("userFills")
                 log.info(
                     "hl_fill_received",
-                    symbol=norm["symbol"], side=norm["side"],
-                    px=norm["px"], sz=norm["sz"],
-                    oid=norm["oid"], cloid=norm["cloid"],
+                    symbol=norm["symbol"],
+                    side=norm["side"],
+                    px=norm["px"],
+                    sz=norm["sz"],
+                    oid=norm["oid"],
+                    cloid=norm["cloid"],
                     crossed=norm["crossed"],
                 )
                 await self._put(norm)
@@ -290,12 +293,14 @@ class HyperliquidFeed:
             except asyncio.CancelledError:
                 raise
             except ConnectionClosed as exc:
-                log.warning("hl_feed_ws_closed",
-                            code=exc.code, reason=str(exc.reason),
-                            sleep_s=delay)
+                log.warning(
+                    "hl_feed_ws_closed",
+                    code=exc.code,
+                    reason=str(exc.reason),
+                    sleep_s=delay,
+                )
             except Exception as exc:
-                log.warning("hl_feed_reconnect",
-                            error=str(exc), sleep_s=delay)
+                log.warning("hl_feed_reconnect", error=str(exc), sleep_s=delay)
 
             await asyncio.sleep(delay)
             delay = min(delay * 2, 300)  # 5→10→20→…→300

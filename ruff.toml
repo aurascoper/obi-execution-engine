@@ -1,0 +1,16 @@
+target-version = "py314"
+exclude = ["venv"]
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E402",  # module-level import not at top — common in engine scripts with early env setup
+    "E501",  # line too long — structured log lines and formula expressions
+    "F841",  # local variable assigned but never used — false positives on unpacking
+]
+
+[lint.per-file-ignores]
+"launch.py" = ["F821"]  # MakerEngine forward-ref used as string annotation
+
+[format]
+quote-style = "double"

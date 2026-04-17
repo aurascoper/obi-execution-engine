@@ -10,6 +10,7 @@ Usage:
 
 Reads HL_WALLET_ADDRESS from env (or .env via dotenv). No engine imports.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,14 +23,16 @@ from pathlib import Path
 # Load .env if present (for HL_WALLET_ADDRESS)
 try:
     from dotenv import load_dotenv
+
     load_dotenv(Path(__file__).resolve().parent / ".env")
 except ImportError:
     pass
 
-POLL_INTERVAL_S      = 60
-MAX_DAILY_LOSS       = 50.0
-LOG_PATH             = Path(__file__).resolve().parent / "logs" / "hl_watchdog.log"
-ENGINE_SCRIPT        = "hl_engine.py"
+POLL_INTERVAL_S = 60
+MAX_DAILY_LOSS = 50.0
+LOG_PATH = Path(__file__).resolve().parent / "logs" / "hl_watchdog.log"
+ENGINE_SCRIPT = "hl_engine.py"
+
 
 def _log(msg: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -41,9 +44,11 @@ def _log(msg: str) -> None:
     except OSError:
         pass
 
+
 def _find_engine_pid() -> int | None:
     """Find the PID of a running hl_engine.py process."""
     import subprocess
+
     try:
         out = subprocess.check_output(
             ["pgrep", "-f", ENGINE_SCRIPT], text=True, stderr=subprocess.DEVNULL
@@ -52,17 +57,21 @@ def _find_engine_pid() -> int | None:
             pid = int(line.strip())
             if pid != os.getpid():
                 return pid
-    except (subprocess.CalledProcessError, ValueError):
+    except subprocess.CalledProcessError, ValueError:
         pass
     return None
 
+
 def _get_account_value(info, addr: str) -> float:
     s = info.user_state(addr)
-    balances = info.post("/info", {"type": "spotClearinghouseState", "user": addr}).get("balances", [])
+    balances = info.post("/info", {"type": "spotClearinghouseState", "user": addr}).get(
+        "balances", []
+    )
     for b in balances:
         if b["coin"] == "USDC":
             return float(b["total"])
     return float(s["marginSummary"]["accountValue"])
+
 
 def main() -> int:
     addr = os.environ.get("HL_WALLET_ADDRESS")
@@ -93,7 +102,9 @@ def main() -> int:
         _log(f"poll  current=${current:.2f}  delta=${delta:+.2f}")
 
         if delta <= -MAX_DAILY_LOSS:
-            _log(f"CIRCUIT BREAKER TRIPPED  delta=${delta:.2f}  threshold=-${MAX_DAILY_LOSS}")
+            _log(
+                f"CIRCUIT BREAKER TRIPPED  delta=${delta:.2f}  threshold=-${MAX_DAILY_LOSS}"
+            )
             pid = _find_engine_pid()
             if pid:
                 _log(f"sending SIGTERM to PID {pid}")
@@ -106,6 +117,7 @@ def main() -> int:
             return 2
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

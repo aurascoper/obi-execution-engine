@@ -23,13 +23,13 @@ sys.path.insert(0, ".")
 # Provide a minimal config.risk_params so signals.py can import it
 # (values here are display-only; MAX_ORDER_NOTIONAL is the live $5 cap)
 _risk = types.ModuleType("config.risk_params")
-_risk.MAX_ORDER_NOTIONAL  = 5.00
-_risk.SYMBOL_CAPS         = {"ETH/USD": 3_000.0, "BTC/USD": 5_000.0}
+_risk.MAX_ORDER_NOTIONAL = 5.00
+_risk.SYMBOL_CAPS = {"ETH/USD": 3_000.0, "BTC/USD": 5_000.0}
 _cfg_pkg = types.ModuleType("config")
 sys.modules.setdefault("config", _cfg_pkg)
 sys.modules.setdefault("config.risk_params", _risk)
 
-from strategy.signals import SignalEngine, WINDOW   # noqa: E402
+from strategy.signals import SignalEngine, WINDOW  # noqa: E402
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -47,22 +47,22 @@ st.caption(
 # ── Sidebar controls ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Price Series")
-    base_price  = st.slider("Base price (μ)",          500,  5000, 2100, step=50)
-    noise_sigma = st.slider("Noise σ (price volatility)", 1,   100,   15, step=1)
-    crash_sigma = st.slider("Crash depth (× σ below μ)",  0.0,  6.0,  3.0, step=0.1)
-    rng_seed    = st.slider("Random seed",                 0,    99,   42, step=1)
+    base_price = st.slider("Base price (μ)", 500, 5000, 2100, step=50)
+    noise_sigma = st.slider("Noise σ (price volatility)", 1, 100, 15, step=1)
+    crash_sigma = st.slider("Crash depth (× σ below μ)", 0.0, 6.0, 3.0, step=0.1)
+    rng_seed = st.slider("Random seed", 0, 99, 42, step=1)
 
     st.divider()
     st.header("Signal Thresholds")
-    z_entry   = st.slider("Z_ENTRY (enter when z <)",  -4.0, -0.5, -1.25, step=0.05)
-    z_exit    = st.slider("Z_EXIT  (exit when z >)",   -2.0,  0.5, -0.50, step=0.05)
-    obi_theta = st.slider("OBI_THETA (min buy pressure)", 0.0,  0.9,  0.10, step=0.01)
-    obi_levels = st.slider("OBI depth levels (N)",        1,    10,    5,   step=1)
+    z_entry = st.slider("Z_ENTRY (enter when z <)", -4.0, -0.5, -1.25, step=0.05)
+    z_exit = st.slider("Z_EXIT  (exit when z >)", -2.0, 0.5, -0.50, step=0.05)
+    obi_theta = st.slider("OBI_THETA (min buy pressure)", 0.0, 0.9, 0.10, step=0.01)
+    obi_levels = st.slider("OBI depth levels (N)", 1, 10, 5, step=1)
 
     st.divider()
     st.header("Order Book")
-    bid_qty = st.slider("Bid depth (top N total)",  1,  1000, 300, step=10)
-    ask_qty = st.slider("Ask depth (top N total)",  1,  1000, 100, step=10)
+    bid_qty = st.slider("Bid depth (top N total)", 1, 1000, 300, step=10)
+    ask_qty = st.slider("Ask depth (top N total)", 1, 1000, 100, step=10)
 
     st.divider()
     st.header("Account")
@@ -74,47 +74,55 @@ rng = np.random.default_rng(rng_seed)
 # Build price series: WINDOW warmup bars at base_price±noise, then a crash
 n_warmup = WINDOW
 warmup_prices = base_price + rng.normal(0, noise_sigma, n_warmup)
-crash_price   = base_price - crash_sigma * noise_sigma
+crash_price = base_price - crash_sigma * noise_sigma
 recovery_prices = base_price + rng.normal(0, noise_sigma, 40)
 
 all_prices = np.concatenate([warmup_prices, [crash_price], recovery_prices])
-n_total    = len(all_prices)
+n_total = len(all_prices)
 
 # Run SignalEngine tick-by-tick
 eng = SignalEngine(
-    symbols            = ["ETH/USD"],
-    window             = WINDOW,
-    z_entry            = z_entry,
-    z_exit             = z_exit,
-    obi_theta          = obi_theta,
-    obi_levels         = obi_levels,
-    notional_per_trade = notional_per_trade,
+    symbols=["ETH/USD"],
+    window=WINDOW,
+    z_entry=z_entry,
+    z_exit=z_exit,
+    obi_theta=obi_theta,
+    obi_levels=obi_levels,
+    notional_per_trade=notional_per_trade,
 )
 
 # Inject OBI (same value held constant throughout — realistic for sandbox)
 rho = (bid_qty - ask_qty) / (bid_qty + ask_qty + 1e-8)
-eng.update_orderbook({
-    "type": "orderbook", "symbol": "ETH/USD",
-    "bids": [[base_price - 1, bid_qty]],
-    "asks": [[base_price + 1, ask_qty]],
-})
+eng.update_orderbook(
+    {
+        "type": "orderbook",
+        "symbol": "ETH/USD",
+        "bids": [[base_price - 1, bid_qty]],
+        "asks": [[base_price + 1, ask_qty]],
+    }
+)
 
-zscores       = []
+zscores = []
 signals_fired = []
-entries       = []
-exits         = []
+entries = []
+exits = []
 
 for i, px in enumerate(all_prices):
     bar = {
-        "type": "bar", "symbol": "ETH/USD",
-        "close": float(px), "open": float(px),
-        "high": float(px), "low": float(px),
-        "volume": 100, "timestamp": f"t{i}", "recv_ns": 0,
+        "type": "bar",
+        "symbol": "ETH/USD",
+        "close": float(px),
+        "open": float(px),
+        "high": float(px),
+        "low": float(px),
+        "volume": 100,
+        "timestamp": f"t{i}",
+        "recv_ns": 0,
     }
     sig = eng.evaluate(bar)
 
     buf = eng._state["ETH/USD"].price_buf
-    z   = buf.zscore(float(px))
+    z = buf.zscore(float(px))
     zscores.append(z)
 
     if sig is not None:
@@ -130,22 +138,35 @@ for i, px in enumerate(all_prices):
 col1, col2, col3, col4 = st.columns(4)
 
 obi_color = "normal" if rho > obi_theta else "inverse"
-col1.metric("OBI  ρ", f"{rho:.3f}", delta=f"threshold {obi_theta:.2f}",
-            delta_color=obi_color)
+col1.metric(
+    "OBI  ρ", f"{rho:.3f}", delta=f"threshold {obi_theta:.2f}", delta_color=obi_color
+)
 
-crash_z = zscores[n_warmup] if n_warmup < len(zscores) and zscores[n_warmup] is not None else None
-col2.metric("Crash bar z-score", f"{crash_z:.3f}" if crash_z else "N/A",
-            delta=f"entry gate {z_entry}",
-            delta_color="normal" if (crash_z is not None and crash_z < z_entry) else "inverse")
+crash_z = (
+    zscores[n_warmup]
+    if n_warmup < len(zscores) and zscores[n_warmup] is not None
+    else None
+)
+col2.metric(
+    "Crash bar z-score",
+    f"{crash_z:.3f}" if crash_z else "N/A",
+    delta=f"entry gate {z_entry}",
+    delta_color="normal" if (crash_z is not None and crash_z < z_entry) else "inverse",
+)
 
-col3.metric("Shadow orders fired", len(signals_fired),
-            delta="✓ triggered" if signals_fired else "✗ no trigger")
+col3.metric(
+    "Shadow orders fired",
+    len(signals_fired),
+    delta="✓ triggered" if signals_fired else "✗ no trigger",
+)
 
 if signals_fired and entries:
     _, entry_px, entry_sig = entries[0]
-    col4.metric("Shadow order size",
-                f"${entry_sig['notional']:.2f}",
-                delta=f"{entry_sig['qty']} ETH @ ${entry_sig['limit_px']:.2f}")
+    col4.metric(
+        "Shadow order size",
+        f"${entry_sig['notional']:.2f}",
+        delta=f"{entry_sig['qty']} ETH @ ${entry_sig['limit_px']:.2f}",
+    )
 else:
     col4.metric("Shadow order size", "—", delta="no fill")
 
@@ -155,7 +176,11 @@ gate2 = rho > obi_theta
 
 g1_icon = "🟢" if gate1 else "🔴"
 g2_icon = "🟢" if gate2 else "🔴"
-both    = "🟢 **BOTH GATES OPEN — order fires**" if (gate1 and gate2) else "🔴 **Gates not both open — no order**"
+both = (
+    "🟢 **BOTH GATES OPEN — order fires**"
+    if (gate1 and gate2)
+    else "🔴 **Gates not both open — no order**"
+)
 
 st.markdown(
     f"""
@@ -170,7 +195,8 @@ st.markdown(
 
 # ── Charts ────────────────────────────────────────────────────────────────────
 fig = make_subplots(
-    rows=2, cols=1,
+    rows=2,
+    cols=1,
     shared_xaxes=True,
     row_heights=[0.6, 0.4],
     subplot_titles=["ETH/USD Price", "Z-Score"],
@@ -180,39 +206,73 @@ fig = make_subplots(
 xs = list(range(n_total))
 
 # Price trace
-fig.add_trace(go.Scatter(
-    x=xs, y=all_prices.tolist(),
-    name="Close", line=dict(color="#4C9BE8", width=1.5),
-), row=1, col=1)
+fig.add_trace(
+    go.Scatter(
+        x=xs,
+        y=all_prices.tolist(),
+        name="Close",
+        line=dict(color="#4C9BE8", width=1.5),
+    ),
+    row=1,
+    col=1,
+)
 
 # Entry markers
 for idx, px, _ in entries:
-    fig.add_trace(go.Scatter(
-        x=[idx], y=[px],
-        mode="markers",
-        marker=dict(symbol="triangle-up", size=14, color="#00D46A"),
-        name="Entry",
-        showlegend=(idx == entries[0][0]),
-    ), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=[idx],
+            y=[px],
+            mode="markers",
+            marker=dict(symbol="triangle-up", size=14, color="#00D46A"),
+            name="Entry",
+            showlegend=(idx == entries[0][0]),
+        ),
+        row=1,
+        col=1,
+    )
 
 # Warmup / live boundary
-fig.add_vline(x=n_warmup - 1, line_dash="dash", line_color="gray",
-              annotation_text="warmup ends", row=1, col=1)
+fig.add_vline(
+    x=n_warmup - 1,
+    line_dash="dash",
+    line_color="gray",
+    annotation_text="warmup ends",
+    row=1,
+    col=1,
+)
 
 # Z-score trace
 z_vals = [z if z is not None else 0.0 for z in zscores]
-fig.add_trace(go.Scatter(
-    x=xs, y=z_vals,
-    name="z-score", line=dict(color="#F5A623", width=1.5),
-), row=2, col=1)
+fig.add_trace(
+    go.Scatter(
+        x=xs,
+        y=z_vals,
+        name="z-score",
+        line=dict(color="#F5A623", width=1.5),
+    ),
+    row=2,
+    col=1,
+)
 
 # Threshold lines on z-score panel
-fig.add_hline(y=z_entry, line_dash="dot", line_color="#FF4444",
-              annotation_text=f"Z_ENTRY ({z_entry})", row=2, col=1)
-fig.add_hline(y=z_exit, line_dash="dot", line_color="#00D46A",
-              annotation_text=f"Z_EXIT ({z_exit})",  row=2, col=1)
-fig.add_hline(y=0, line_dash="solid", line_color="rgba(255,255,255,0.15)",
-              row=2, col=1)
+fig.add_hline(
+    y=z_entry,
+    line_dash="dot",
+    line_color="#FF4444",
+    annotation_text=f"Z_ENTRY ({z_entry})",
+    row=2,
+    col=1,
+)
+fig.add_hline(
+    y=z_exit,
+    line_dash="dot",
+    line_color="#00D46A",
+    annotation_text=f"Z_EXIT ({z_exit})",
+    row=2,
+    col=1,
+)
+fig.add_hline(y=0, line_dash="solid", line_color="rgba(255,255,255,0.15)", row=2, col=1)
 
 fig.update_layout(
     height=520,

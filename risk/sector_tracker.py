@@ -42,12 +42,12 @@ class SectorExposureTracker:
 
     def __init__(
         self,
-        sector_map:   dict[str, str],
-        sector_caps:  dict[str, int],
-        default_cap:  int,
+        sector_map: dict[str, str],
+        sector_caps: dict[str, int],
+        default_cap: int,
     ) -> None:
-        self._sector_map  = sector_map
-        self._caps        = sector_caps
+        self._sector_map = sector_map
+        self._caps = sector_caps
         self._default_cap = default_cap
         self._exposure: dict[str, int] = defaultdict(int)
 
@@ -59,7 +59,7 @@ class SectorExposureTracker:
         Called before emitting a signal — does NOT modify state.
         """
         sector = self._sector_of(symbol)
-        cap    = self._caps.get(sector, self._default_cap)
+        cap = self._caps.get(sector, self._default_cap)
         return self._exposure[sector] < cap
 
     def open(self, symbol: str) -> None:

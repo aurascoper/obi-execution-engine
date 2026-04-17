@@ -83,24 +83,78 @@ SYMBOLS = [
     #   INTU  — AI disruption of TurboTax/QuickBooks
     #   CMCSA — structural cord-cutting value trap
     #   SMCI  — governance/accounting binary gap risk
-    "TSLA", "PODD", "VRSK", "ZS",   "NTAP", "CRM",
-    "DLTR", "DG",   "DDOG", "CTAS", "ISRG",
-    "PLTR", "GPN",  "GD",   "ULTA", "ORCL", "TEAM",
-    "CPRT", "SNOW", "CRWD",
+    "TSLA",
+    "PODD",
+    "VRSK",
+    "ZS",
+    "NTAP",
+    "CRM",
+    "DLTR",
+    "DG",
+    "DDOG",
+    "CTAS",
+    "ISRG",
+    "PLTR",
+    "GPN",
+    "GD",
+    "ULTA",
+    "ORCL",
+    "TEAM",
+    "CPRT",
+    "SNOW",
+    "CRWD",
     # ── Short zone  z > +1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ─────
     # 20 low-signal names dropped to stay under IEX 80-symbol bars+quotes cap.
     # Kept: all 5 currently active short signals + highest-conviction names.
-    "INTC", "MRVL", "KLAC", "MPWR", "LRCX", "WDC",  "ETN",  "COST",
-    "HUBB", "RL",   "GLW",  "TER",  "Q",    "HLT",  "WAB",
-    "LITE", "HPE",  "DELL", "SRE",  "DLR",  "TGT",  "KEYS", "CMI",
-    "NFLX", "ODFL", "WEC",  "MAR",  "NTRS",
-    "EME",  "VRT",  "EQIX", "GWW",  "FE",
-    "LYV",  "SLB",  "CSCO", "DTE",  "STZ",  "FCX",  "EIX",  "ED",
-    "TSN",  "CSX",  "DUK",
+    "INTC",
+    "MRVL",
+    "KLAC",
+    "MPWR",
+    "LRCX",
+    "WDC",
+    "ETN",
+    "COST",
+    "HUBB",
+    "RL",
+    "GLW",
+    "TER",
+    "Q",
+    "HLT",
+    "WAB",
+    "LITE",
+    "HPE",
+    "DELL",
+    "SRE",
+    "DLR",
+    "TGT",
+    "KEYS",
+    "CMI",
+    "NFLX",
+    "ODFL",
+    "WEC",
+    "MAR",
+    "NTRS",
+    "EME",
+    "VRT",
+    "EQIX",
+    "GWW",
+    "FE",
+    "LYV",
+    "SLB",
+    "CSCO",
+    "DTE",
+    "STZ",
+    "FCX",
+    "EIX",
+    "ED",
+    "TSN",
+    "CSX",
+    "DUK",
     # ── Dow additions ──────────────────────────────────────────────────────────
     "CAT",
     # ── Precious metals (commodity ETFs, price > $20, ADV > 1M) ──────────────
-    "GLD",  "SLV",
+    "GLD",
+    "SLV",
     # ── Energy commodities ────────────────────────────────────────────────────
     # ⚠️  MACRO WARNING (2026-04): Iran war risk → crude oil is a long-side hedge.
     # USO is capped at 1 (sector "Energy ETF"). Do NOT raise cap while Iran
@@ -113,18 +167,22 @@ SYMBOLS = [
 ]
 
 # ── Strategy parameters ────────────────────────────────────────────────────────
-WINDOW             = 60      # rolling daily bars ≈ 3 months (Avellaneda & Lee)
-Z_LONG_ENTRY       = -1.25   # long entry: price 1.25σ below rolling mean
-Z_LONG_EXIT        = -0.50   # long exit:  mean-reversion mostly complete
-Z_SHORT_ENTRY      =  1.25   # short entry: price 1.25σ above rolling mean
-Z_SHORT_EXIT       =  0.50   # short exit (cover): mean-reversion back toward mean
-OBI_THETA          = -0.001  # slightly negative: OBI=0.0 (no quote data) passes
-                             # the gate, so z-score alone fires for symbols outside
-                             # the QUOTE_PRIORITY set in stock_feed.py.
-EQUITY_NOTIONAL    = 15.00 if __import__("os").environ.get("EXECUTION_MODE","PAPER").upper()=="LIVE" else 1_500.00
+WINDOW = 60  # rolling daily bars ≈ 3 months (Avellaneda & Lee)
+Z_LONG_ENTRY = -1.25  # long entry: price 1.25σ below rolling mean
+Z_LONG_EXIT = -0.50  # long exit:  mean-reversion mostly complete
+Z_SHORT_ENTRY = 1.25  # short entry: price 1.25σ above rolling mean
+Z_SHORT_EXIT = 0.50  # short exit (cover): mean-reversion back toward mean
+OBI_THETA = -0.001  # slightly negative: OBI=0.0 (no quote data) passes
+# the gate, so z-score alone fires for symbols outside
+# the QUOTE_PRIORITY set in stock_feed.py.
+EQUITY_NOTIONAL = (
+    15.00
+    if __import__("os").environ.get("EXECUTION_MODE", "PAPER").upper() == "LIVE"
+    else 1_500.00
+)
 
-_ET        = zoneinfo.ZoneInfo("America/New_York")
-_RTH_OPEN  = dtime(9, 30)
+_ET = zoneinfo.ZoneInfo("America/New_York")
+_RTH_OPEN = dtime(9, 30)
 _RTH_CLOSE = dtime(16, 0)
 
 
@@ -143,20 +201,20 @@ class EquitiesSignalEngine(SignalEngine):
 
     def __init__(self, symbols: list[str], tracker: SectorExposureTracker) -> None:
         super().__init__(
-            symbols            = symbols,
-            window             = WINDOW,
-            z_entry            = Z_LONG_ENTRY,
-            z_exit             = Z_LONG_EXIT,
-            obi_theta          = OBI_THETA,
-            notional_per_trade = EQUITY_NOTIONAL,
+            symbols=symbols,
+            window=WINDOW,
+            z_entry=Z_LONG_ENTRY,
+            z_exit=Z_LONG_EXIT,
+            obi_theta=OBI_THETA,
+            notional_per_trade=EQUITY_NOTIONAL,
         )
         self._tracker = tracker
         # Short position tracking (parallel to parent's in_position / entry_px)
-        self._short:     dict[str, bool]  = {s: False       for s in symbols}
-        self._short_px:  dict[str, float] = {s: float("nan") for s in symbols}
-        self._short_qty: dict[str, float] = {s: 0.0         for s in symbols}
+        self._short: dict[str, bool] = {s: False for s in symbols}
+        self._short_px: dict[str, float] = {s: float("nan") for s in symbols}
+        self._short_qty: dict[str, float] = {s: 0.0 for s in symbols}
         # Long exit needs the entry qty (stored when long entry fires)
-        self._long_qty:  dict[str, float] = {s: 0.0         for s in symbols}
+        self._long_qty: dict[str, float] = {s: 0.0 for s in symbols}
 
     # ── Pre-seed ───────────────────────────────────────────────────────────────
 
@@ -198,7 +256,7 @@ class EquitiesSignalEngine(SignalEngine):
         if sym not in self._state:
             return None
 
-        st       = self._state[sym]
+        st = self._state[sym]
         was_long = st.in_position  # snapshot before parent mutates
 
         # --- Parent handles: buffer push, z-score, long entry/exit ---
@@ -212,10 +270,10 @@ class EquitiesSignalEngine(SignalEngine):
         # (Equities does not use TradingStream fills for position clearing.)
         if long_signal is not None and long_signal.get("side") == OrderSide.SELL:
             tag = self.strategy_tag
-            st.pending_exits[tag]  = False
-            st.positions[tag]      = 0.0
-            st.entry_prices[tag]   = float("nan")
-            long_signal            = None
+            st.pending_exits[tag] = False
+            st.positions[tag] = 0.0
+            st.entry_prices[tag] = float("nan")
+            long_signal = None
 
         # 1. Long entry fired — check sector cap before committing
         if long_signal is not None:
@@ -229,7 +287,7 @@ class EquitiesSignalEngine(SignalEngine):
                     exposure=self._tracker.snapshot().get(sector, 0),
                     cap=SECTOR_CAPS.get(sector, MAX_SECTOR_EXPOSURE),
                 )
-                self.rollback_entry(sym)   # undo in_position=True set by parent
+                self.rollback_entry(sym)  # undo in_position=True set by parent
                 return None
             self._long_qty[sym] = long_signal["qty"]
             long_signal["action"] = "enter_long"
@@ -237,18 +295,18 @@ class EquitiesSignalEngine(SignalEngine):
 
         # 2. Long exit: parent reset in_position without emitting an order
         if was_long and not st.in_position:
-            close    = float(bar["close"])
-            qty      = self._long_qty.get(sym, 0.0)
+            close = float(bar["close"])
+            qty = self._long_qty.get(sym, 0.0)
             limit_px = self._sell_limit(close, st)
             if qty > 0.0 and limit_px > 0.0:
                 log.info("long_exit_order", symbol=sym, qty=qty, limit_px=limit_px)
                 return {
-                    "symbol":   sym,
-                    "side":     OrderSide.SELL,
-                    "qty":      qty,
+                    "symbol": sym,
+                    "side": OrderSide.SELL,
+                    "qty": qty,
                     "limit_px": limit_px,
                     "notional": round(qty * close, 2),
-                    "action":   "exit_long",
+                    "action": "exit_long",
                 }
             return None
 
@@ -257,7 +315,7 @@ class EquitiesSignalEngine(SignalEngine):
             return None
 
         close = float(bar["close"])
-        z     = st.price_buf.zscore(close)   # buffer already updated by parent
+        z = st.price_buf.zscore(close)  # buffer already updated by parent
         if z is None:
             return None
 
@@ -272,7 +330,7 @@ class EquitiesSignalEngine(SignalEngine):
         # 3. Short exit (cover) — z reverted back below exit threshold
         if self._short[sym]:
             if z < Z_SHORT_EXIT:
-                qty      = self._short_qty.get(sym, 0.0)
+                qty = self._short_qty.get(sym, 0.0)
                 limit_px = self._buy_limit(close, st)
                 log.info(
                     "short_exit_signal",
@@ -284,22 +342,22 @@ class EquitiesSignalEngine(SignalEngine):
                         (self._short_px[sym] - close) / self._short_px[sym] * 100, 3
                     ),
                 )
-                self._short[sym]    = False
+                self._short[sym] = False
                 self._short_px[sym] = float("nan")
                 if qty > 0.0 and limit_px > 0.0:
                     return {
-                        "symbol":   sym,
-                        "side":     OrderSide.BUY,
-                        "qty":      qty,
+                        "symbol": sym,
+                        "side": OrderSide.BUY,
+                        "qty": qty,
                         "limit_px": limit_px,
                         "notional": round(qty * close, 2),
-                        "action":   "cover_short",
+                        "action": "cover_short",
                     }
-            return None   # short still live — no new entries
+            return None  # short still live — no new entries
 
         # 4. Short entry — overbought + sell-side OBI pressure
-        overbought    = z > Z_SHORT_ENTRY
-        sell_pressure = st.obi < -OBI_THETA   # theta=0: any net ask imbalance
+        overbought = z > Z_SHORT_ENTRY
+        sell_pressure = st.obi < -OBI_THETA  # theta=0: any net ask imbalance
         if not (overbought and sell_pressure):
             return None
 
@@ -334,16 +392,16 @@ class EquitiesSignalEngine(SignalEngine):
             limit_px=limit_px,
             notional=notional,
         )
-        self._short[sym]     = True
-        self._short_px[sym]  = close
+        self._short[sym] = True
+        self._short_px[sym] = close
         self._short_qty[sym] = qty
         return {
-            "symbol":   sym,
-            "side":     OrderSide.SELL,
-            "qty":      qty,
+            "symbol": sym,
+            "side": OrderSide.SELL,
+            "qty": qty,
             "limit_px": limit_px,
             "notional": notional,
-            "action":   "enter_short",
+            "action": "enter_short",
         }
 
     # ── Rollbacks ──────────────────────────────────────────────────────────────
@@ -351,10 +409,11 @@ class EquitiesSignalEngine(SignalEngine):
     def rollback_short(self, symbol: str) -> None:
         """Called by engine when a short-entry order is blocked after state was set."""
         if self._short.get(symbol):
-            log.warning("short_rollback", symbol=symbol,
-                        reason="order_blocked_or_failed")
-            self._short[symbol]     = False
-            self._short_px[symbol]  = float("nan")
+            log.warning(
+                "short_rollback", symbol=symbol, reason="order_blocked_or_failed"
+            )
+            self._short[symbol] = False
+            self._short_px[symbol] = float("nan")
             self._short_qty[symbol] = 0.0
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -364,12 +423,12 @@ class EquitiesSignalEngine(SignalEngine):
         2-decimal fractional share sizing for equities.
         Parent defaults to 6-decimal crypto precision; equities use 2.
         """
-        cap      = min(
+        cap = min(
             self._notional_per_trade,
             SYMBOL_CAPS.get(symbol, self._notional_per_trade),
             MAX_ORDER_NOTIONAL,
         )
-        qty      = math.floor(cap / price * 100) / 100   # floor → never exceed cap
+        qty = math.floor(cap / price * 100) / 100  # floor → never exceed cap
         if qty <= 0.0:
             return 0.0, 0.0
         return qty, round(qty * price, 2)
@@ -397,18 +456,18 @@ class EquitiesSignalEngine(SignalEngine):
 # ── Token bucket ───────────────────────────────────────────────────────────────
 class _TokenBucket:
     def __init__(self, rate_per_minute: int):
-        self._tokens    = float(rate_per_minute)
-        self._max       = float(rate_per_minute)
-        self._interval  = 60.0 / rate_per_minute
+        self._tokens = float(rate_per_minute)
+        self._max = float(rate_per_minute)
+        self._interval = 60.0 / rate_per_minute
         self._last_fill = 0.0
 
     async def acquire(self) -> None:
         loop = asyncio.get_running_loop()
         while self._tokens < 1.0:
             await asyncio.sleep(self._interval)
-            now             = loop.time()
-            refill          = (now - self._last_fill) / self._interval
-            self._tokens    = min(self._max, self._tokens + refill)
+            now = loop.time()
+            refill = (now - self._last_fill) / self._interval
+            self._tokens = min(self._max, self._tokens + refill)
             self._last_fill = now
         self._tokens -= 1.0
 
@@ -416,24 +475,26 @@ class _TokenBucket:
 # ── Engine ─────────────────────────────────────────────────────────────────────
 class Engine:
     def __init__(self):
-        self._cfg     = load_settings()
-        self._client  = TradingClient(
+        self._cfg = load_settings()
+        self._client = TradingClient(
             self._cfg.api_key,
             self._cfg.api_secret,
             paper=self._cfg.paper,
         )
-        self._breaker  = CircuitBreaker(self._client)
-        self._orders   = OrderManager(self._client, self._breaker, self._cfg)
-        self._tracker  = SectorExposureTracker(SECTOR_MAP, SECTOR_CAPS, MAX_SECTOR_EXPOSURE)
-        self._signals  = EquitiesSignalEngine(symbols=SYMBOLS, tracker=self._tracker)
-        self._bucket   = _TokenBucket(MAX_ORDERS_PER_MINUTE)
-        self._msg_q    = asyncio.Queue(maxsize=2000)
-        self._feed     = LiveStockFeed(self._cfg, SYMBOLS, self._msg_q)
-        self._running  = True
+        self._breaker = CircuitBreaker(self._client)
+        self._orders = OrderManager(self._client, self._breaker, self._cfg)
+        self._tracker = SectorExposureTracker(
+            SECTOR_MAP, SECTOR_CAPS, MAX_SECTOR_EXPOSURE
+        )
+        self._signals = EquitiesSignalEngine(symbols=SYMBOLS, tracker=self._tracker)
+        self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
+        self._msg_q = asyncio.Queue(maxsize=2000)
+        self._feed = LiveStockFeed(self._cfg, SYMBOLS, self._msg_q)
+        self._running = True
 
     async def run(self) -> None:
         mode = self._cfg.execution_mode.value
-        tag  = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
+        tag = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
         log.info(
             "equities_engine_start",
             mode=tag,
@@ -457,10 +518,10 @@ class Engine:
         await self._reconcile_positions()
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._feed.run(),       name="stock_feed")
-            tg.create_task(self._strategy_loop(),  name="equities_strategy")
+            tg.create_task(self._feed.run(), name="stock_feed")
+            tg.create_task(self._strategy_loop(), name="equities_strategy")
             tg.create_task(self._drawdown_watch(), name="equities_drawdown")
-            tg.create_task(self._heartbeat(),      name="equities_heartbeat")
+            tg.create_task(self._heartbeat(), name="equities_heartbeat")
 
     # ── Startup position reconciliation ───────────────────────────────────────
     async def _reconcile_positions(self) -> None:
@@ -488,30 +549,39 @@ class Engine:
         self._signals.reconcile_positions(positions, orders)
 
         # Also seed equities-specific long/short tracking dicts
-        norm_to_sym = {s.replace("/", "").replace("-", ""): s
-                       for s in self._signals._state}
+        norm_to_sym = {
+            s.replace("/", "").replace("-", ""): s for s in self._signals._state
+        }
 
         for pos in positions:
             alpaca_sym = getattr(pos, "symbol", "")
-            state_sym  = norm_to_sym.get(alpaca_sym)
+            state_sym = norm_to_sym.get(alpaca_sym)
             if state_sym is None:
                 continue
 
-            qty       = float(getattr(pos, "qty", 0) or 0)
+            qty = float(getattr(pos, "qty", 0) or 0)
             avg_entry = float(getattr(pos, "avg_entry_price", 0) or 0)
 
             if qty > 0:
                 # Long position
                 self._signals._long_qty[state_sym] = qty
-                log.info("equities_long_reconciled",
-                         symbol=state_sym, qty=qty, avg_entry=avg_entry)
+                log.info(
+                    "equities_long_reconciled",
+                    symbol=state_sym,
+                    qty=qty,
+                    avg_entry=avg_entry,
+                )
             elif qty < 0:
                 # Short position
-                self._signals._short[state_sym]     = True
+                self._signals._short[state_sym] = True
                 self._signals._short_qty[state_sym] = abs(qty)
-                self._signals._short_px[state_sym]  = avg_entry
-                log.info("equities_short_reconciled",
-                         symbol=state_sym, qty=abs(qty), avg_entry=avg_entry)
+                self._signals._short_px[state_sym] = avg_entry
+                log.info(
+                    "equities_short_reconciled",
+                    symbol=state_sym,
+                    qty=abs(qty),
+                    avg_entry=avg_entry,
+                )
 
         log.info("equities_reconcile_complete", open_positions=len(positions))
 
@@ -528,16 +598,14 @@ class Engine:
         Falls back gracefully: if fetch fails (network, auth), logs a warning and
         continues — the engine will warm up from live 1-min bars instead (~60 min).
         """
-        hist_client = StockHistoricalDataClient(
-            self._cfg.api_key, self._cfg.api_secret
-        )
-        now   = datetime.now(timezone.utc)
+        hist_client = StockHistoricalDataClient(self._cfg.api_key, self._cfg.api_secret)
+        now = datetime.now(timezone.utc)
         start = now - timedelta(days=95)
 
         log.info("preseed_fetching", symbols=SYMBOLS, lookback_days=95, feed="iex")
 
         try:
-            req     = StockBarsRequest(
+            req = StockBarsRequest(
                 symbol_or_symbols=SYMBOLS,
                 timeframe=TimeFrame.Day,
                 start=start,
@@ -546,7 +614,7 @@ class Engine:
                 feed="iex",
             )
             bars_df = await asyncio.to_thread(hist_client.get_stock_bars, req)
-            df      = bars_df.df.reset_index()
+            df = bars_df.df.reset_index()
         except Exception as exc:
             log.error("preseed_failed", error=str(exc))
             print(
@@ -556,7 +624,7 @@ class Engine:
             return
 
         for sym in SYMBOLS:
-            rows   = df[df["symbol"] == sym].sort_values("timestamp")
+            rows = df[df["symbol"] == sym].sort_values("timestamp")
             closes = rows["close"].values[-WINDOW:]
             if len(closes) == 0:
                 log.warning("preseed_no_data", symbol=sym)
@@ -586,22 +654,30 @@ class Engine:
 
                 # Pop routing key before forwarding to submit_limit
                 action = signal.pop("action", "")
-                sym    = signal.get("symbol", "")
+                sym = signal.get("symbol", "")
 
                 # Live Alpaca accounts require shorting privileges to place SELL
                 # orders without an existing long position.  Skip short entries
                 # on LIVE and roll back the state set by evaluate() so the engine
                 # can cleanly re-evaluate on the next bar.
-                if action == "enter_short" and self._cfg.execution_mode == ExecutionMode.LIVE:
+                if (
+                    action == "enter_short"
+                    and self._cfg.execution_mode == ExecutionMode.LIVE
+                ):
                     self._signals.rollback_short(sym)
-                    log.warning("short_skipped_no_privilege", symbol=sym,
-                                mode=self._cfg.execution_mode.value)
+                    log.warning(
+                        "short_skipped_no_privilege",
+                        symbol=sym,
+                        mode=self._cfg.execution_mode.value,
+                    )
                     continue
 
                 await self._bucket.acquire()
                 # Alpaca requires DAY (not GTC) for fractional equity orders
                 try:
-                    result = await self._orders.submit_limit(**signal, tif=TimeInForce.DAY)
+                    result = await self._orders.submit_limit(
+                        **signal, tif=TimeInForce.DAY
+                    )
                 except Exception as exc:
                     # Transient network / Alpaca failure (e.g. ConnectionResetError).
                     # Treat like a blocked order: log, roll back, survive to next bar.
@@ -656,7 +732,7 @@ class Engine:
 # ── Entry point ────────────────────────────────────────────────────────────────
 async def main() -> None:
     engine = Engine()
-    loop   = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, engine.stop)
     await engine.run()

@@ -44,7 +44,8 @@ L2_RATE_LIMIT_SEC = 0.22  # ≈5 req/sec
 
 def _mainnet_url() -> str:
     return getattr(
-        constants, "MAINNET_API_URL",
+        constants,
+        "MAINNET_API_URL",
         getattr(constants, "MAINNET", "https://api.hyperliquid.xyz"),
     )
 
@@ -60,7 +61,7 @@ def _top_spread_bps(info: Info, coin: str) -> float | None:
     try:
         bid = float(bids[0]["px"])
         ask = float(asks[0]["px"])
-    except (KeyError, ValueError, TypeError):
+    except KeyError, ValueError, TypeError:
         return None
     if bid <= 0 or ask <= 0 or ask <= bid:
         return None
@@ -70,18 +71,28 @@ def _top_spread_bps(info: Info, coin: str) -> float | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1].strip())
-    ap.add_argument("--top", type=int, default=10,
-                    help="max candidates to write (default: 10)")
-    ap.add_argument("--min-vlm", type=float, default=0.0,
-                    help="min 24h notional volume in USD (default: 0)")
-    ap.add_argument("--apply", action="store_true",
-                    help="print suggested HL_UNIVERSE CSV for env.sh")
+    ap.add_argument(
+        "--top", type=int, default=10, help="max candidates to write (default: 10)"
+    )
+    ap.add_argument(
+        "--min-vlm",
+        type=float,
+        default=0.0,
+        help="min 24h notional volume in USD (default: 0)",
+    )
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="print suggested HL_UNIVERSE CSV for env.sh",
+    )
     args = ap.parse_args()
 
     info = Info(_mainnet_url(), skip_ws=True)
     meta_ctxs = info.meta_and_asset_ctxs()
     if not isinstance(meta_ctxs, list) or len(meta_ctxs) != 2:
-        raise SystemExit(f"[screener] unexpected meta_and_asset_ctxs shape: {type(meta_ctxs)}")
+        raise SystemExit(
+            f"[screener] unexpected meta_and_asset_ctxs shape: {type(meta_ctxs)}"
+        )
     meta, ctxs = meta_ctxs
     universe = meta.get("universe", [])
     if len(universe) != len(ctxs):
@@ -97,24 +108,26 @@ def main() -> None:
             continue
         try:
             max_lev = int(asset.get("maxLeverage", 0))
-            sz_dec  = int(asset.get("szDecimals", 0))
+            sz_dec = int(asset.get("szDecimals", 0))
             day_vlm = float(ctx.get("dayNtlVlm", 0) or 0)
-            mark    = float(ctx.get("markPx", 0) or 0)
-            oi      = float(ctx.get("openInterest", 0) or 0)
-        except (TypeError, ValueError):
+            mark = float(ctx.get("markPx", 0) or 0)
+            oi = float(ctx.get("openInterest", 0) or 0)
+        except TypeError, ValueError:
             continue
         if max_lev < MIN_MAX_LEVERAGE:
             continue
         if day_vlm < args.min_vlm:
             continue
-        candidates.append({
-            "coin":          name,
-            "sz_decimals":   sz_dec,
-            "max_leverage":  max_lev,
-            "day_vlm":       day_vlm,
-            "open_interest": oi,
-            "mark_px":       mark,
-        })
+        candidates.append(
+            {
+                "coin": name,
+                "sz_decimals": sz_dec,
+                "max_leverage": max_lev,
+                "day_vlm": day_vlm,
+                "open_interest": oi,
+                "mark_px": mark,
+            }
+        )
 
     if not candidates:
         raise SystemExit(
@@ -127,8 +140,11 @@ def main() -> None:
     for c in candidates:
         c["spread_bps"] = _top_spread_bps(info, c["coin"])
         time.sleep(L2_RATE_LIMIT_SEC)
-    surviving = [c for c in candidates
-                 if c["spread_bps"] is not None and c["spread_bps"] <= MAX_SPREAD_BPS]
+    surviving = [
+        c
+        for c in candidates
+        if c["spread_bps"] is not None and c["spread_bps"] <= MAX_SPREAD_BPS
+    ]
     if not surviving:
         rejected = [(c["coin"], c["spread_bps"]) for c in candidates]
         raise SystemExit(
@@ -140,22 +156,26 @@ def main() -> None:
     top = surviving[: args.top]
 
     # --- display ---
-    print(f"{'coin':<6} {'szDec':>6} {'maxLev':>7} {'dayVlm USD':>15} "
-          f"{'spreadBps':>10} {'mark':>12} {'OI':>14}")
+    print(
+        f"{'coin':<6} {'szDec':>6} {'maxLev':>7} {'dayVlm USD':>15} "
+        f"{'spreadBps':>10} {'mark':>12} {'OI':>14}"
+    )
     print("─" * 78)
     for c in top:
-        print(f"{c['coin']:<6} {c['sz_decimals']:>6} {c['max_leverage']:>7} "
-              f"{c['day_vlm']:>15,.0f} {c['spread_bps']:>10.2f} "
-              f"{c['mark_px']:>12.4f} {c['open_interest']:>14,.2f}")
+        print(
+            f"{c['coin']:<6} {c['sz_decimals']:>6} {c['max_leverage']:>7} "
+            f"{c['day_vlm']:>15,.0f} {c['spread_bps']:>10.2f} "
+            f"{c['mark_px']:>12.4f} {c['open_interest']:>14,.2f}"
+        )
 
     # --- persist ---
     out = {
         "generated_ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "filters": {
-            "alpaca_whitelist":   sorted(ALPACA_SUPPORTED - EXCLUDE_CORE),
-            "max_spread_bps":     MAX_SPREAD_BPS,
-            "min_max_leverage":   MIN_MAX_LEVERAGE,
-            "min_day_vlm":        args.min_vlm,
+            "alpaca_whitelist": sorted(ALPACA_SUPPORTED - EXCLUDE_CORE),
+            "max_spread_bps": MAX_SPREAD_BPS,
+            "min_max_leverage": MIN_MAX_LEVERAGE,
+            "min_day_vlm": args.min_vlm,
         },
         "candidates": top,
     }
@@ -166,7 +186,7 @@ def main() -> None:
 
     if args.apply:
         suggested = ",".join(["BTC", "ETH", *[c["coin"] for c in top]])
-        print(f"\nsuggested HL_UNIVERSE CSV:\n  export HL_UNIVERSE=\"{suggested}\"")
+        print(f'\nsuggested HL_UNIVERSE CSV:\n  export HL_UNIVERSE="{suggested}"')
 
 
 if __name__ == "__main__":
