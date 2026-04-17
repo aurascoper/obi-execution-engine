@@ -78,6 +78,13 @@ Z_EXIT_SHORT = +0.50  # cover short when z reverts below Z_EXIT_SHORT    — HL 
 STOP_LOSS_PCT = (
     0.010  # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
 )
+
+# ── Momentum / trend-following parameters ─────────────────────────────────────
+Z_MOMENTUM_ENTRY = +1.25  # enter momentum long when z > +1.25 (trending up)
+Z_MOMENTUM_SHORT_ENTRY = -1.25  # enter momentum short when z < -1.25 (trending down)
+Z_4H_MOMENTUM_THRESHOLD = 0.5  # macro regime confirmation: z_4h > 0.5 for longs
+MOMENTUM_STOP_PCT = 0.03  # wider stop for trend trades (3% vs 1% mean-reversion)
+MOMENTUM_TAG = "momentum"  # strategy tag — non-overlapping with mean-reversion tags
 MAX_POSITION_SECS_RTH = 30 * 60  # time-stop during US RTH (M-F 09:30-16:00 ET)
 MAX_POSITION_SECS_OVN = 60 * 60  # time-stop overnight / weekends — slower reversion
 TREND_MA_WINDOW = (
@@ -194,6 +201,8 @@ class _SymbolState:
         "z_exit",
         "z_short_entry",
         "z_exit_short",
+        "z_momentum_entry",  # per-symbol momentum override (None = use default)
+        "z_momentum_short_entry",
     )
 
     def __init__(self, symbol: str, window: int) -> None:
@@ -211,6 +220,8 @@ class _SymbolState:
         self.z_exit: float | None = None
         self.z_short_entry: float | None = None
         self.z_exit_short: float | None = None
+        self.z_momentum_entry: float | None = None
+        self.z_momentum_short_entry: float | None = None
 
     # ── Tag-aware helpers ──────────────────────────────────────────────────────
 
@@ -901,3 +912,217 @@ class SignalEngine:
 
         actual_notional = round(qty * price, 2)
         return qty, actual_notional
+
+    # ── Momentum / Trend-Following Overlay ────────────────────────────────────
+    def evaluate_momentum(self, bar: dict) -> dict | None:
+        """
+        Momentum signal path — called AFTER evaluate() on each bar.
+
+        Enters WITH the trend (inverted trend gate logic):
+          Long:  close > SMA_240 AND z_4h > 0.5 AND z > +1.25
+          Short: close < SMA_240 AND z_4h < -0.5 AND z < -1.25
+
+        Buffers are already pushed by evaluate(); this method only reads them.
+        Returns order dict with tag="momentum" or None.
+        """
+        sym = bar.get("symbol")
+        if sym not in self._state:
+            return None
+
+        st = self._state[sym]
+        close = float(bar["close"])
+        tag = MOMENTUM_TAG
+
+        # z-scores already computed by evaluate()'s push — just read
+        z = st.price_buf.zscore(close)
+        if z is None:
+            return None
+        z_4h = st.trend_buf.zscore(close)
+
+        # Need a warm trend buffer for SMA
+        if not st.trend_buf.is_full:
+            return None
+        trend_sma = float(np.mean(st.trend_buf._active()))
+
+        # ── Exit path (check before entry) ────────────────────────────────────
+        if st.is_open(tag):
+            if st.pending_exits.get(tag, False):
+                return None
+
+            cur_qty = st.open_qty(tag)
+            is_long = cur_qty > 0
+            entry_px = st.entry_prices.get(tag, float("nan"))
+
+            exit_reason: str | None = None
+
+            # 1. Trend break — most important for momentum
+            if is_long and close < trend_sma:
+                exit_reason = "trend_break"
+            elif not is_long and close > trend_sma:
+                exit_reason = "trend_break"
+
+            # 2. Momentum exhaustion — z_4h flips against position
+            if z_4h is not None:
+                if is_long and z_4h < 0:
+                    exit_reason = exit_reason or "z4h_exhaustion"
+                elif not is_long and z_4h > 0:
+                    exit_reason = exit_reason or "z4h_exhaustion"
+
+            # 3. Stop loss — wider than mean-reversion (3%)
+            if not math.isnan(entry_px) and entry_px > 0:
+                adverse = (
+                    ((entry_px - close) / entry_px)
+                    if is_long
+                    else ((close - entry_px) / entry_px)
+                )
+                if adverse >= MOMENTUM_STOP_PCT:
+                    exit_reason = exit_reason or f"stop_loss_{adverse:.4f}"
+
+            # 4. Time-stop — reuse RTH/OVN infrastructure
+            entry_ts = st.entry_ts.get(tag, 0)
+            if entry_ts > 0:
+                age_s = int(time.time()) - entry_ts
+                now_et = datetime.now(_ET)
+                is_rth = (
+                    now_et.weekday() < 5
+                    and 930 <= now_et.hour * 100 + now_et.minute < 1600
+                )
+                max_secs = MAX_POSITION_SECS_RTH if is_rth else MAX_POSITION_SECS_OVN
+                if age_s >= max_secs:
+                    exit_reason = exit_reason or f"time_stop_{age_s}s"
+
+            if not exit_reason:
+                return None
+
+            exit_side = OrderSide.SELL if is_long else OrderSide.BUY
+            exit_qty = abs(cur_qty)
+            exit_px = self._limit_px(st, close, exit_side)
+            notional = round(exit_qty * close, 2)
+            if not math.isnan(entry_px) and entry_px > 0:
+                raw_pnl = (close - entry_px) if is_long else (entry_px - close)
+                pnl_est = round(raw_pnl / entry_px * 100, 3)
+            else:
+                pnl_est = float("nan")
+            log.info(
+                "exit_signal",
+                symbol=sym,
+                z=round(z, 4),
+                tag=tag,
+                direction=("long" if is_long else "short"),
+                entry_px=entry_px,
+                close=close,
+                exit_px=exit_px,
+                qty=exit_qty,
+                pnl_est=pnl_est,
+                reason=exit_reason,
+            )
+            st.pending_exits[tag] = True
+            return {
+                "symbol": sym,
+                "side": exit_side,
+                "qty": exit_qty,
+                "limit_px": exit_px,
+                "notional": notional,
+            }
+
+        # ── Entry path ────────────────────────────────────────────────────────
+        # Per-symbol overrides
+        _z_mom = (
+            st.z_momentum_entry if st.z_momentum_entry is not None else Z_MOMENTUM_ENTRY
+        )
+        _z_mom_short = (
+            st.z_momentum_short_entry
+            if st.z_momentum_short_entry is not None
+            else Z_MOMENTUM_SHORT_ENTRY
+        )
+
+        # Momentum LONG: trending up + macro confirmation + short-term strength
+        long_entry = (
+            close > trend_sma
+            and z_4h is not None
+            and z_4h > Z_4H_MOMENTUM_THRESHOLD
+            and z > _z_mom
+        )
+        # Momentum SHORT: trending down + macro confirmation + short-term weakness
+        short_entry = (
+            self._allow_short
+            and close < trend_sma
+            and z_4h is not None
+            and z_4h < -Z_4H_MOMENTUM_THRESHOLD
+            and z < _z_mom_short
+        )
+
+        if not (long_entry or short_entry):
+            return None
+
+        entry_side = OrderSide.BUY if long_entry else OrderSide.SELL
+        direction = "long" if long_entry else "short"
+
+        qty, notional = self._size_order(sym, close)
+        if qty <= 0.0:
+            return None
+
+        limit_px = self._limit_px(st, close, entry_side)
+
+        log.info(
+            "entry_signal",
+            symbol=sym,
+            z=round(z, 4),
+            z_4h=round(z_4h, 4) if z_4h is not None else None,
+            obi=round(st.obi, 4),
+            tag=tag,
+            direction=direction,
+            qty=qty,
+            limit_px=limit_px,
+            notional=notional,
+            trend_sma=round(trend_sma, 2),
+        )
+        st.positions[tag] = qty if long_entry else -qty
+        st.entry_prices[tag] = close
+        st.entry_ts[tag] = int(time.time())
+
+        return {
+            "symbol": sym,
+            "side": entry_side,
+            "qty": qty,
+            "limit_px": limit_px,
+            "notional": notional,
+        }
+
+    def rollback_momentum_entry(self, symbol: str) -> None:
+        """Undo evaluate_momentum() entry state when order fails."""
+        tag = MOMENTUM_TAG
+        st = self._state.get(symbol)
+        if st and st.is_open(tag):
+            log.warning(
+                "entry_rollback",
+                symbol=symbol,
+                tag=tag,
+                reason="order_blocked_or_failed",
+            )
+            st.positions[tag] = 0.0
+            st.entry_prices[tag] = float("nan")
+            st.entry_ts[tag] = 0
+
+    def rollback_momentum_exit(self, symbol: str) -> None:
+        """Clear pending_exits flag when momentum exit order fails."""
+        tag = MOMENTUM_TAG
+        st = self._state.get(symbol)
+        if st and st.pending_exits.get(tag, False):
+            log.warning(
+                "exit_rollback", symbol=symbol, tag=tag, reason="sell_blocked_or_failed"
+            )
+            st.pending_exits[tag] = False
+
+    def set_symbol_momentum_z(
+        self,
+        symbol: str,
+        z_momentum_entry: float,
+        z_momentum_short_entry: float,
+    ) -> None:
+        """Per-symbol overrides for momentum entry thresholds."""
+        st = self._state.get(symbol)
+        if st is None:
+            return
+        st.z_momentum_entry = z_momentum_entry
+        st.z_momentum_short_entry = z_momentum_short_entry

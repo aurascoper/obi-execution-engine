@@ -51,7 +51,7 @@ from control.server import ControlPlaneServer
 from data.feed import LiveFeed
 from data.hl_feed import HyperliquidFeed
 from execution.hl_manager import HyperliquidOrderManager
-from strategy.signals import SignalEngine
+from strategy.signals import SignalEngine, MOMENTUM_TAG
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -175,6 +175,27 @@ class HLEngine:
             if shadow_raw
             else set()
         )
+
+        # ── Momentum coins (must NOT overlap mean-reversion universe) ──────
+        momentum_raw = os.environ.get("MOMENTUM_COINS", "").strip()
+        self._momentum_coins: set[str] = set()
+        if momentum_raw:
+            for token in momentum_raw.split(","):
+                c = token.strip()
+                if c:
+                    self._momentum_coins.add(c)
+            mr_set = set(crypto_coins) | set(hip3_coins_raw) | set(hip3_coins)
+            overlap = self._momentum_coins & mr_set
+            if overlap:
+                raise RuntimeError(
+                    f"MOMENTUM_COINS overlaps mean-reversion universe: {overlap}. "
+                    "Momentum and mean-reversion must use non-overlapping coins."
+                )
+            # Add momentum coins to the tracked universe
+            for c in sorted(self._momentum_coins):
+                if c not in seen:
+                    seen.add(c)
+                    hip3_coins.append(c) if ":" in c else crypto_coins.append(c)
 
         # ── Combined universe ────────────────────────────────────────────────
         coins = crypto_coins + hip3_coins
@@ -508,7 +529,7 @@ class HLEngine:
             )
 
     # ── Sign-flip guard: live-state check against in-memory direction ────────
-    async def _flip_guard_ok(self, sig: dict) -> bool:
+    async def _flip_guard_ok(self, sig: dict, tag: str = STRATEGY_TAG) -> bool:
         """
         Returns True if live HL state is consistent with our intent.
 
@@ -536,8 +557,8 @@ class HLEngine:
                 break
 
         st = self._signals._state[sym]
-        mem_szi = st.open_qty(STRATEGY_TAG)
-        pending_exit = st.pending_exits.get(STRATEGY_TAG, False)
+        mem_szi = st.open_qty(tag)
+        pending_exit = st.pending_exits.get(tag, False)
 
         is_entry = not pending_exit  # exit signals set pending_exits=True
 
@@ -586,10 +607,16 @@ class HLEngine:
                 self._coin_to_symbol,
                 self._dust_caps,
             )
-            if is_entry:
-                self._signals.rollback_entry(sym)
+            if tag == MOMENTUM_TAG:
+                if is_entry:
+                    self._signals.rollback_momentum_entry(sym)
+                else:
+                    self._signals.rollback_momentum_exit(sym)
             else:
-                self._signals.rollback_exit(sym)
+                if is_entry:
+                    self._signals.rollback_entry(sym)
+                else:
+                    self._signals.rollback_exit(sym)
             return False
 
         return True
@@ -1220,28 +1247,36 @@ class HLEngine:
             if msg.get("symbol") in self._pending_resting:
                 continue
 
-            sig = self._signals.evaluate(msg)
+            bar_sym = msg.get("symbol", "")
+            bar_coin = self._symbol_to_coin.get(bar_sym, "")
+            is_momentum = bar_coin in self._momentum_coins
+
+            if is_momentum:
+                # Push buffers via evaluate(), ignore mean-reversion signal
+                self._signals.evaluate(msg)
+                sig = self._signals.evaluate_momentum(msg)
+            else:
+                sig = self._signals.evaluate(msg)
+
             if sig is None:
                 continue
 
-            if not await self._flip_guard_ok(sig):
+            active_tag = MOMENTUM_TAG if is_momentum else STRATEGY_TAG
+
+            if not await self._flip_guard_ok(sig, tag=active_tag):
                 continue
 
             result = await self._submit(sig)
             if result is None:
                 # Order rejected by hl_manager (malformed / SDK error). Roll
                 # back the optimistic memory write so the next bar retries.
-                if sig.get("side") == OrderSide.BUY:
-                    # BUY is either a long entry or a short cover. Exits set
-                    # pending_exits[tag]=True, so check that to pick the right
-                    # rollback path.
-                    st = self._signals._state[sig["symbol"]]
-                    if st.pending_exits.get(STRATEGY_TAG, False):
-                        self._signals.rollback_exit(sig["symbol"])
+                st = self._signals._state[sig["symbol"]]
+                if is_momentum:
+                    if st.pending_exits.get(MOMENTUM_TAG, False):
+                        self._signals.rollback_momentum_exit(sig["symbol"])
                     else:
-                        self._signals.rollback_entry(sig["symbol"])
+                        self._signals.rollback_momentum_entry(sig["symbol"])
                 else:
-                    st = self._signals._state[sig["symbol"]]
                     if st.pending_exits.get(STRATEGY_TAG, False):
                         self._signals.rollback_exit(sig["symbol"])
                     else:
@@ -1254,12 +1289,18 @@ class HLEngine:
             symbols=self._hl_symbols,
             coins=self._hl_coins,
             hip3_coins=self._hip3_coins,
+            momentum_coins=sorted(self._momentum_coins),
             shadow_coins=sorted(self._shadow_coins),
             tag=STRATEGY_TAG,
             leverage=self._default_leverage,
             per_pair_notional=self._per_pair_notional,
             mode=self._cfg.execution_mode.value,
             execution_style=EXECUTION_STYLE,
+        )
+        mom_line = (
+            f"           Momentum coins: {sorted(self._momentum_coins)}\n"
+            if self._momentum_coins
+            else ""
         )
         print(
             f"\n[HL-ENGINE] Tag={STRATEGY_TAG}  Coins={self._hl_coins}  "
@@ -1268,6 +1309,7 @@ class HLEngine:
             f"Mode={self._cfg.execution_mode.value}  "
             f"Style={EXECUTION_STYLE}\n"
             f"           HIP-3 coins: {self._hip3_coins or '(none)'}\n"
+            f"{mom_line}"
             f"           Shadow coins: {sorted(self._shadow_coins) or '(none)'}\n"
             f"           Alpaca bars: {self._alpaca_coins or '(none)'}\n"
             f"           Native bars: {self._native_bar_coins or '(none)'}\n"

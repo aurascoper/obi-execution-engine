@@ -30,6 +30,9 @@ MAX_CONTRACTS_PER_TRADE = 1  # single contract per signal (small account)
 MAX_OPEN_POSITIONS = 10  # Total open positions allowed
 MAX_POSITION_PCT_EQUITY = 0.10  # No single position > 10% of equity
 
+# --- Momentum Strategy Caps ---
+MOMENTUM_MAX_POSITIONS = 5  # max concurrent momentum positions across all venues
+
 # --- Per-Symbol Caps ---
 SYMBOL_CAPS = {
     "BTC/USD": 5_000.0,
@@ -63,6 +66,12 @@ SYMBOL_CAPS = {
     "xyz:PLTR/USD": 100.0,
     "xyz:BRENTOIL/USD": 100.0,
     "xyz:INTC/USD": 100.0,
+    # ── Momentum / trend-following candidates (screened 2026-04-17) ────────
+    "AMZN": 1_500.0 if _is_live() else 1_500.0,
+    "NKE": 1_500.0 if _is_live() else 1_500.0,
+    "INTC": 1_500.0 if _is_live() else 1_500.0,
+    "HPE": 1_500.0 if _is_live() else 1_500.0,
+    "CSCO": 1_500.0 if _is_live() else 1_500.0,
 }
 
 # --- API Rate Limiting ---

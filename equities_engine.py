@@ -48,7 +48,7 @@ from risk.circuit_breaker import CircuitBreaker
 from risk.sector_tracker import SectorExposureTracker
 from data.stock_feed import LiveStockFeed
 from execution.order_manager import OrderManager
-from strategy.signals import SignalEngine, LIMIT_SLIPPAGE
+from strategy.signals import SignalEngine, LIMIT_SLIPPAGE, MOMENTUM_TAG
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -106,7 +106,7 @@ SYMBOLS = [
     # ── Short zone  z > +1.25σ (screened 2026-04-09, S&P500 ∪ NASDAQ100) ─────
     # 20 low-signal names dropped to stay under IEX 80-symbol bars+quotes cap.
     # Kept: all 5 currently active short signals + highest-conviction names.
-    "INTC",
+    # INTC — moved to momentum universe (2026-04-17: +3.21σ, 99% above SMA-240)
     "MRVL",
     "KLAC",
     "MPWR",
@@ -122,7 +122,7 @@ SYMBOLS = [
     "HLT",
     "WAB",
     "LITE",
-    "HPE",
+    # HPE — moved to momentum universe (2026-04-17: +2.18σ, 18% above SMA-240)
     "DELL",
     "SRE",
     "DLR",
@@ -141,7 +141,7 @@ SYMBOLS = [
     "FE",
     "LYV",
     "SLB",
-    "CSCO",
+    # CSCO — moved to momentum universe (2026-04-17: +1.72σ, 17% above SMA-240)
     "DTE",
     "STZ",
     "FCX",
@@ -185,6 +185,18 @@ _ET = zoneinfo.ZoneInfo("America/New_York")
 _RTH_OPEN = dtime(9, 30)
 _RTH_CLOSE = dtime(16, 0)
 
+# ── Momentum universe (must NOT overlap with SYMBOLS) ─────────────────────────
+# Default: screener --momentum results from 2026-04-17
+_MOMENTUM_DEFAULT = "NVDA,AMZN,NKE,INTC,HPE,CSCO"
+_momentum_raw = __import__("os").environ.get("MOMENTUM_EQUITIES", _MOMENTUM_DEFAULT)
+MOMENTUM_EQUITIES: set[str] = {s.strip() for s in _momentum_raw.split(",") if s.strip()}
+_overlap = MOMENTUM_EQUITIES & set(SYMBOLS)
+if _overlap:
+    raise RuntimeError(
+        f"MOMENTUM_EQUITIES overlaps mean-reversion SYMBOLS: {_overlap}. "
+        "Momentum and mean-reversion must use non-overlapping universes."
+    )
+
 
 # ── Equities Signal Engine ─────────────────────────────────────────────────────
 class EquitiesSignalEngine(SignalEngine):
@@ -220,8 +232,8 @@ class EquitiesSignalEngine(SignalEngine):
 
     def preseed(self, symbol: str, closes: list[float]) -> None:
         """
-        Bulk-load historical closes into the rolling buffer so zscore() returns
-        a valid value on the very first live bar (no warmup period required).
+        Bulk-load historical closes into BOTH rolling buffers so zscore() and
+        the trend gate / momentum overlay are valid on the very first live bar.
         Idempotent — safe to call multiple times; latest call wins.
         """
         st = self._state.get(symbol)
@@ -229,11 +241,13 @@ class EquitiesSignalEngine(SignalEngine):
             return
         for c in closes:
             st.price_buf.push(float(c))
+            st.trend_buf.push(float(c))
         log.info(
             "preseed_complete",
             symbol=symbol,
             bars_loaded=len(closes),
-            is_full=st.price_buf.is_full,
+            price_buf_full=st.price_buf.is_full,
+            trend_buf_full=st.trend_buf.is_full,
         )
 
     # ── Core evaluate — bi-directional ────────────────────────────────────────
@@ -486,10 +500,11 @@ class Engine:
         self._tracker = SectorExposureTracker(
             SECTOR_MAP, SECTOR_CAPS, MAX_SECTOR_EXPOSURE
         )
-        self._signals = EquitiesSignalEngine(symbols=SYMBOLS, tracker=self._tracker)
+        all_symbols = SYMBOLS + sorted(MOMENTUM_EQUITIES - set(SYMBOLS))
+        self._signals = EquitiesSignalEngine(symbols=all_symbols, tracker=self._tracker)
         self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
         self._msg_q = asyncio.Queue(maxsize=2000)
-        self._feed = LiveStockFeed(self._cfg, SYMBOLS, self._msg_q)
+        self._feed = LiveStockFeed(self._cfg, all_symbols, self._msg_q)
         self._running = True
 
     async def run(self) -> None:
@@ -499,16 +514,23 @@ class Engine:
             "equities_engine_start",
             mode=tag,
             symbols=SYMBOLS,
+            momentum_symbols=sorted(MOMENTUM_EQUITIES),
             paper=self._cfg.paper,
             bidirectional=True,
             z_long_entry=Z_LONG_ENTRY,
             z_short_entry=Z_SHORT_ENTRY,
         )
+        mom_line = (
+            f"  Momentum universe: {sorted(MOMENTUM_EQUITIES)}\n"
+            if MOMENTUM_EQUITIES
+            else ""
+        )
         print(
             f"\n[EQUITIES ENGINE] Mode={tag}  Universe={SYMBOLS}\n"
+            f"{mom_line}"
             f"  Long  entry z < {Z_LONG_ENTRY}σ  |  exit z > {Z_LONG_EXIT}σ\n"
             f"  Short entry z > {Z_SHORT_ENTRY}σ  |  cover z < {Z_SHORT_EXIT}σ\n"
-            f"  Pre-seeding {WINDOW}-bar buffers from historical daily closes...\n"
+            f"  Pre-seeding 240+60 bar buffers from historical daily closes...\n"
             f"  Logs → logs/equities_engine.jsonl\n"
             f"  Ctrl-C to stop cleanly.\n"
         )
@@ -588,21 +610,25 @@ class Engine:
     # ── Pre-seed: bulk-load 60 historical daily closes ─────────────────────────
     async def _preseed_from_history(self) -> None:
         """
-        Fetches WINDOW daily closes via StockHistoricalDataClient (IEX feed — paper
-        accounts cannot access SIP historical data) and pre-loads each symbol's
-        _RollingBuffer so zscore() is valid on the first live bar.
+        Fetches daily closes via StockHistoricalDataClient (IEX feed) and pre-loads
+        each symbol's price_buf (60 bars) AND trend_buf (240 bars) so both zscore()
+        and the 240-bar trend gate / momentum overlay are valid on the first live bar.
 
-        Fetches 95 calendar days to guarantee 60+ trading days across weekends
-        and holidays. Takes the last WINDOW closes per symbol.
+        Fetches 500 calendar days to guarantee 240+ trading days across weekends
+        and holidays. Both buffers are RollingBuffers, so overflow is handled
+        automatically — just push all available closes.
 
         Falls back gracefully: if fetch fails (network, auth), logs a warning and
-        continues — the engine will warm up from live 1-min bars instead (~60 min).
+        continues — the engine will warm up from live bars instead.
         """
         hist_client = StockHistoricalDataClient(self._cfg.api_key, self._cfg.api_secret)
         now = datetime.now(timezone.utc)
-        start = now - timedelta(days=95)
+        lookback_days = 500  # ~350 trading days, enough for 240-bar trend buffer
+        start = now - timedelta(days=lookback_days)
 
-        log.info("preseed_fetching", symbols=SYMBOLS, lookback_days=95, feed="iex")
+        log.info(
+            "preseed_fetching", symbols=SYMBOLS, lookback_days=lookback_days, feed="iex"
+        )
 
         try:
             req = StockBarsRequest(
@@ -625,7 +651,7 @@ class Engine:
 
         for sym in SYMBOLS:
             rows = df[df["symbol"] == sym].sort_values("timestamp")
-            closes = rows["close"].values[-WINDOW:]
+            closes = rows["close"].values  # all available — buffers handle overflow
             if len(closes) == 0:
                 log.warning("preseed_no_data", symbol=sym)
                 continue
@@ -647,10 +673,37 @@ class Engine:
                 continue
 
             if msg["type"] == "bar":
-                # Daily bars arrive after market close — no RTH guard needed.
-                signal = self._signals.evaluate(msg)
-                if signal is None:
-                    continue
+                sym = msg.get("symbol", "")
+
+                # Momentum-only symbols skip mean-reversion entirely
+                if sym in MOMENTUM_EQUITIES:
+                    # evaluate() pushes buffers; ignore its mean-reversion signal
+                    self._signals.evaluate(msg)
+                    st = self._signals._state.get(sym)
+                    was_open = st.is_open(MOMENTUM_TAG) if st else False
+                    signal = self._signals.evaluate_momentum(msg)
+                    if signal is None:
+                        continue
+                    # Determine action from position state transition
+                    if was_open:
+                        # Was in position → this is an exit
+                        signal["action"] = (
+                            "exit_long"
+                            if signal["side"] == OrderSide.SELL
+                            else "cover_short"
+                        )
+                    else:
+                        # Was flat → this is an entry
+                        signal["action"] = (
+                            "enter_long"
+                            if signal["side"] == OrderSide.BUY
+                            else "enter_short"
+                        )
+                else:
+                    # Daily bars arrive after market close — no RTH guard needed.
+                    signal = self._signals.evaluate(msg)
+                    if signal is None:
+                        continue
 
                 # Pop routing key before forwarding to submit_limit
                 action = signal.pop("action", "")
@@ -702,12 +755,17 @@ class Engine:
                         log.debug("sector_exposure_snapshot", exposure=snap)
                 else:
                     # Order blocked or errored — rollback position state so engine can retry
-                    if action == "enter_short":
+                    is_momentum = sym in MOMENTUM_EQUITIES
+                    if is_momentum and action in ("enter_long", "enter_short"):
+                        self._signals.rollback_momentum_entry(sym)
+                    elif is_momentum and action in ("exit_long", "cover_short"):
+                        self._signals.rollback_momentum_exit(sym)
+                    elif action == "enter_short":
                         self._signals.rollback_short(sym)
                     elif action == "enter_long":
                         self._signals.rollback_entry(sym)
-                    # exit_long / cover_short: state already reset before order was
-                    # attempted; no rollback available. Position stays open on Alpaca.
+                    # exit_long / cover_short (mean-reversion): state already reset
+                    # before order was attempted; no rollback available.
 
     # ── Drawdown watchdog — independent of strategy ────────────────────────────
     async def _drawdown_watch(self) -> None:

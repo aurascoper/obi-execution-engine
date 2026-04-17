@@ -13,11 +13,16 @@ Signal zones:
   LONG:  z < -1.25σ  (oversold — mean-reversion long candidate)
   SHORT: z > +1.25σ  (overbought — mean-reversion short candidate)
 
-Usage:
-  source env.sh && python3 screener.py
-  source env.sh && python3 screener.py --new-only   # hide symbols already in engine
-  source env.sh && python3 screener.py --sector Financials
-  source env.sh && python3 screener.py --min-z 1.5  # tighter threshold
+Modes:
+  Mean-reversion (default):
+    source env.sh && python3 screener.py
+    source env.sh && python3 screener.py --new-only   # hide symbols already in engine
+    source env.sh && python3 screener.py --sector Financials
+    source env.sh && python3 screener.py --min-z 1.5  # tighter threshold
+
+  Momentum / trend-following:
+    source env.sh && python3 screener.py --momentum
+    source env.sh && python3 screener.py --momentum --sector Technology
 """
 
 import os
@@ -42,6 +47,12 @@ WINDOW = 60  # bars for z-score rolling window
 ADV_WINDOW = 30  # bars for ADV calculation
 BATCH = 100  # symbols per Alpaca API request
 SLEEP = 0.3  # seconds between batches (rate limiting)
+
+# ── Momentum mode constants ───────────────────────────────────────────────────
+MOMENTUM_LOOKBACK_DAYS = 400  # ~260 trading days; IEX gaps can eat 10-15 days
+SMA_WINDOW = 240  # bars for trend SMA
+Z_4H_WINDOW = 240  # bars for macro z-score (reuses SMA window on daily bars)
+Z_4H_THRESHOLD = 0.5  # macro momentum confirmation
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (research screen; contact: aurascoper@github)"}
 
@@ -218,6 +229,76 @@ def compute_signals(
     return longs, shorts
 
 
+def compute_momentum_signals(
+    bars: pd.DataFrame,
+    sector_map: dict[str, str],
+    min_price: float = MIN_PRICE,
+    min_adv: float = MIN_ADV,
+    z_threshold: float = Z_THRESHOLD,
+    sector_filter: str | None = None,
+) -> tuple[list[tuple], list[tuple]]:
+    """
+    Momentum / trend-following screen.
+
+    LONG:  close > SMA_240 AND z_4h > 0.5 AND z_60 > +1.25  (trending up)
+    SHORT: close < SMA_240 AND z_4h < -0.5 AND z_60 < -1.25  (trending down)
+
+    Returns (longs, shorts) where each entry is:
+      (z, symbol, last_close, adv_30, sector, z_4h, sma_240, pct_above_sma)
+    """
+    longs, shorts = [], []
+
+    for sym, grp in bars.groupby("symbol"):
+        grp = grp.sort_values("timestamp")
+        closes = grp["close"].values
+        vols = grp["volume"].values
+
+        if len(closes) < max(SMA_WINDOW, WINDOW, ADV_WINDOW):
+            continue
+
+        last_close = closes[-1]
+        adv_30 = float(np.mean(vols[-ADV_WINDOW:]))
+
+        if last_close < min_price or adv_30 < min_adv:
+            continue
+
+        # 60-bar z-score (same as mean-reversion)
+        window_60 = closes[-WINDOW:]
+        mu60, sig60 = window_60.mean(), window_60.std(ddof=1)
+        if sig60 < 1e-10:
+            continue
+        z = (last_close - mu60) / sig60
+
+        # 240-bar z-score (macro momentum)
+        window_240 = closes[-Z_4H_WINDOW:]
+        mu240, sig240 = window_240.mean(), window_240.std(ddof=1)
+        if sig240 < 1e-10:
+            continue
+        z_4h = (last_close - mu240) / sig240
+
+        # 240-bar SMA (trend direction)
+        sma_240 = float(np.mean(closes[-SMA_WINDOW:]))
+        pct_above = (last_close - sma_240) / sma_240 * 100
+
+        sector = sector_map.get(sym, "Unknown")
+        if sector_filter and sector.lower() != sector_filter.lower():
+            continue
+
+        row = (z, sym, last_close, adv_30, sector, z_4h, sma_240, pct_above)
+
+        # Momentum LONG: trending up + macro confirmation + short-term strength
+        if last_close > sma_240 and z_4h > Z_4H_THRESHOLD and z > z_threshold:
+            longs.append(row)
+
+        # Momentum SHORT: trending down + macro confirmation + short-term weakness
+        elif last_close < sma_240 and z_4h < -Z_4H_THRESHOLD and z < -z_threshold:
+            shorts.append(row)
+
+    longs.sort(key=lambda x: -x[0])  # strongest momentum first
+    shorts.sort()  # most negative first
+    return longs, shorts
+
+
 # ── Printer ────────────────────────────────────────────────────────────────────
 
 
@@ -258,11 +339,55 @@ def print_results(
     print()
 
 
+def print_momentum_results(
+    longs: list[tuple],
+    shorts: list[tuple],
+    already_in: set[str],
+    new_only: bool,
+    scanned_date: str,
+) -> None:
+    def _print_zone(rows, label):
+        visible = [r for r in rows if not new_only or r[1] not in already_in]
+        tag = "(new only)" if new_only else ""
+        print(f"\n=== {label}  {tag}  ({len(visible)} stocks) ===")
+        print(
+            f"  {'SYM':<8} {'z':>7}  {'z_4h':>7}  {'%SMA':>7}  {'Price':>9}  {'ADV':>7}  Sector"
+        )
+        print(
+            f"  {'─' * 8} {'─' * 7}  {'─' * 7}  {'─' * 7}  {'─' * 9}  {'─' * 7}  {'─' * 24}"
+        )
+        for z, sym, px, adv, sec, z4h, _sma, pct in visible:
+            engine_tag = "" if sym not in already_in else "  ✓"
+            print(
+                f"  {sym:<8} {z:+.3f}σ  {z4h:+.3f}σ  {pct:+.1f}%  ${px:>8.2f}  {_fmt_adv(adv):>7}  {sec}{engine_tag}"
+            )
+
+    print(f"\n{'═' * 78}")
+    print(f"  MOMENTUM / TREND-FOLLOWING SCREEN  —  {scanned_date}")
+    print(
+        f"  Filters: price > ${MIN_PRICE:.0f}  |  30-day ADV > {MIN_ADV / 1e6:.0f}M shares"
+    )
+    print(
+        f"  Signal:  close vs SMA-{SMA_WINDOW}  |  z_4h {'>' if True else '<'} {Z_4H_THRESHOLD}σ  |  z {'>' if True else '<'} {Z_THRESHOLD}σ"
+    )
+    print(f"{'═' * 78}")
+    _print_zone(longs, "MOMENTUM LONG   ▲  (close > SMA, z_4h > 0.5, z > +1.25)")
+    _print_zone(shorts, "MOMENTUM SHORT  ▼  (close < SMA, z_4h < -0.5, z < -1.25)")
+    print()
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Mean-reversion universe screener")
+    ap = argparse.ArgumentParser(
+        description="Mean-reversion & momentum universe screener"
+    )
+    ap.add_argument(
+        "--momentum",
+        action="store_true",
+        help="Switch to momentum/trend-following mode (buy strength, sell weakness)",
+    )
     ap.add_argument(
         "--new-only",
         action="store_true",
@@ -308,30 +433,43 @@ def main() -> None:
 
     tickers, sector_map = build_universe()
 
-    print(f"Fetching {WINDOW}-day daily bars (IEX feed)...")
-    bars = fetch_bars(tickers, api_key, api_secret)
+    lookback = MOMENTUM_LOOKBACK_DAYS if args.momentum else 95
+    mode_label = "momentum" if args.momentum else "mean-reversion"
+    print(f"Fetching {lookback}-day daily bars for {mode_label} mode (IEX feed)...")
+    bars = fetch_bars(tickers, api_key, api_secret, lookback_days=lookback)
     if bars.empty:
         print("No bar data returned. Check API credentials.")
         sys.exit(1)
     print(f"Data returned for {bars['symbol'].nunique()} symbols\n")
 
-    print("Computing z-scores + applying quality filters...")
-    longs, shorts = compute_signals(
-        bars,
-        sector_map,
-        min_price=args.min_price,
-        min_adv=args.min_adv,
-        z_threshold=args.min_z,
-        sector_filter=args.sector,
-    )
+    scanned_date = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    print_results(
-        longs,
-        shorts,
-        already_in,
-        new_only=args.new_only,
-        scanned_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
-    )
+    if args.momentum:
+        print("Computing momentum signals (SMA-240 + z_4h + z)...")
+        longs, shorts = compute_momentum_signals(
+            bars,
+            sector_map,
+            min_price=args.min_price,
+            min_adv=args.min_adv,
+            z_threshold=args.min_z,
+            sector_filter=args.sector,
+        )
+        print_momentum_results(
+            longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+        )
+    else:
+        print("Computing z-scores + applying quality filters...")
+        longs, shorts = compute_signals(
+            bars,
+            sector_map,
+            min_price=args.min_price,
+            min_adv=args.min_adv,
+            z_threshold=args.min_z,
+            sector_filter=args.sector,
+        )
+        print_results(
+            longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+        )
 
 
 if __name__ == "__main__":
