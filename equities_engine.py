@@ -636,16 +636,24 @@ class Engine:
         )
 
         try:
-            req = StockBarsRequest(
-                symbol_or_symbols=self._all_symbols,
-                timeframe=TimeFrame.Day,
-                start=start,
-                end=now,
-                limit=10_000,
-                feed="iex",
-            )
-            bars_df = await asyncio.to_thread(hist_client.get_stock_bars, req)
-            df = bars_df.df.reset_index()
+            # Batch to avoid Alpaca's 10k row cap: 72 symbols × 350 days = 25k rows.
+            all_rows = []
+            batch_size = 25
+            for i in range(0, len(self._all_symbols), batch_size):
+                batch = self._all_symbols[i : i + batch_size]
+                req = StockBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=now,
+                    limit=10_000,
+                    feed="iex",
+                )
+                chunk = await asyncio.to_thread(hist_client.get_stock_bars, req)
+                all_rows.append(chunk.df.reset_index())
+            import pandas as pd
+
+            df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
         except Exception as exc:
             log.error("preseed_failed", error=str(exc))
             print(
