@@ -13,6 +13,7 @@ an accidental cross doesn't go unnoticed.
 
 Run:   venv/bin/python3 smoke_maker.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,25 +21,26 @@ import secrets
 import sys
 import time
 
-from config.settings     import load as load_settings
+from config.settings import load as load_settings
 from execution.hl_manager import HyperliquidOrderManager
 
 
-COIN          = "BTC"
-TARGET_NOTION = 20.0   # dollars
-TICK          = 1.0    # $1 tick for BTC — sz_decimals=5 gives 1-dollar max px precision
-WAIT_SEC      = 4
+COIN = "BTC"
+TARGET_NOTION = 20.0  # dollars
+TICK = 1.0  # $1 tick for BTC — sz_decimals=5 gives 1-dollar max px precision
+WAIT_SEC = 4
 
 
 async def main() -> int:
     cfg = load_settings()
-    mgr = HyperliquidOrderManager(cfg, strategy_tag="smoke_maker",
-                                  default_leverage=5, coins=[COIN], is_cross=True)
+    mgr = HyperliquidOrderManager(
+        cfg, strategy_tag="smoke_maker", default_leverage=5, coins=[COIN], is_cross=True
+    )
 
     # Snapshot top of book
     l2 = await asyncio.to_thread(mgr._info.l2_snapshot, COIN)
     levels = l2.get("levels", [[], []])
-    bids   = levels[0] if levels and len(levels) >= 2 else []
+    bids = levels[0] if levels and len(levels) >= 2 else []
     if not bids:
         print("no bids in l2_snapshot — aborting")
         return 1
@@ -49,20 +51,22 @@ async def main() -> int:
     # 1-tick offset showed an intermittent cross — HL Alo rejects rather than
     # fills, which is the safe direction but defeats the cancel test).
     passive_px = round(best_bid * 0.99, 0)
-    qty        = round(TARGET_NOTION / passive_px, 5)
-    cloid      = f"0x{secrets.randbits(128):032x}"
+    qty = round(TARGET_NOTION / passive_px, 5)
+    cloid = f"0x{secrets.randbits(128):032x}"
     print(f"submitting Alo buy {qty} @ {passive_px}  cloid={cloid}")
 
     t0 = time.perf_counter()
-    resp = await mgr.submit_order({
-        "symbol":      COIN,
-        "side":        "buy",
-        "qty":         qty,
-        "limit_px":    passive_px,
-        "tif":         "Alo",
-        "reduce_only": False,
-        "cloid":       cloid,
-    })
+    resp = await mgr.submit_order(
+        {
+            "symbol": COIN,
+            "side": "buy",
+            "qty": qty,
+            "limit_px": passive_px,
+            "tif": "Alo",
+            "reduce_only": False,
+            "cloid": cloid,
+        }
+    )
     lat = (time.perf_counter() - t0) * 1000
     print(f"submit latency={lat:.0f}ms  resp_status={(resp or {}).get('status')}")
     if not resp:

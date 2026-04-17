@@ -47,11 +47,13 @@ class HyperliquidOrderManager:
 
     def __init__(
         self,
-        cfg:               Settings,
-        strategy_tag:      str               = "hl_taker",
-        default_leverage:  int               = 2,
-        coins:             list[str] | None  = None,
-        is_cross:          bool              = True,
+        cfg: Settings,
+        strategy_tag: str = "hl_taker",
+        default_leverage: int = 2,
+        coins: list[str] | None = None,
+        is_cross: bool = True,
+        perp_dexs: list[str] | None = None,
+        leverage_map: dict[str, int] | None = None,
     ):
         if not cfg.hl_wallet_address or not cfg.hl_private_key:
             raise RuntimeError(
@@ -63,8 +65,8 @@ class HyperliquidOrderManager:
         # hyperliquid package to be installed.
         from eth_account import Account
         from hyperliquid.exchange import Exchange
-        from hyperliquid.info     import Info
-        from hyperliquid.utils    import constants
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
         from hyperliquid.utils.types import Cloid as _Cloid
 
         # Stash on the instance so submit_order / cancel_by_cloid can reuse
@@ -75,21 +77,30 @@ class HyperliquidOrderManager:
         # referred to this as "constants.MAINNET" — we resolve whichever the
         # installed SDK version exposes.
         mainnet_url = getattr(
-            constants, "MAINNET_API_URL",
+            constants,
+            "MAINNET_API_URL",
             getattr(constants, "MAINNET", "https://api.hyperliquid.xyz"),
         )
 
         wallet = Account.from_key(cfg.hl_private_key)
         self._wallet_address = cfg.hl_wallet_address
-        self._mode           = cfg.execution_mode
-        self.strategy_tag    = strategy_tag
+        self._mode = cfg.execution_mode
+        self.strategy_tag = strategy_tag
 
-        self._exchange = Exchange(
-            wallet,
-            mainnet_url,
-            account_address=cfg.hl_wallet_address,
-        )
-        self._info = Info(mainnet_url, skip_ws=True)
+        exchange_kwargs: dict[str, Any] = {
+            "account_address": cfg.hl_wallet_address,
+        }
+        info_kwargs: dict[str, Any] = {"skip_ws": True}
+        if perp_dexs:
+            # SDK convention: "" = native HyperCore perps, must be included
+            # alongside builder DEX names to keep BTC/ETH/etc. resolvable.
+            full_dexs = [""] + [d for d in perp_dexs if d != ""]
+            exchange_kwargs["perp_dexs"] = full_dexs
+            info_kwargs["perp_dexs"] = full_dexs
+
+        self._exchange = Exchange(wallet, mainnet_url, **exchange_kwargs)
+        self._info = Info(mainnet_url, **info_kwargs)
+        self._builder_dexs = [d for d in (perp_dexs or []) if d]
 
         log.info(
             "hl_manager_initialized",
@@ -104,30 +115,41 @@ class HyperliquidOrderManager:
         # contract is "strategy runs fully; orders logged but never submitted"
         # — orders cannot reach the exchange, so an unfunded perp account is a
         # valid burn-in state; demote to a warning.
+        self._leverage_map = leverage_map or {}
         if coins:
             for coin in coins:
-                resp   = self._exchange.update_leverage(
-                    default_leverage, coin.upper(), is_cross
-                )
+                lev = self._leverage_map.get(coin, default_leverage)
+                # HIP-3 builder-deployed assets (dex:NAME) only support isolated margin.
+                coin_cross = is_cross and ":" not in coin
+                resp = self._exchange.update_leverage(lev, coin, coin_cross)
                 status = (resp or {}).get("status")
+                resp_msg = str((resp or {}).get("response", ""))
                 if status == "ok":
                     log.info(
                         "hl_leverage_set",
-                        coin=coin.upper(),
-                        leverage=default_leverage,
-                        is_cross=is_cross,
+                        coin=coin,
+                        leverage=lev,
+                        is_cross=coin_cross,
+                    )
+                elif "sufficient margin" in resp_msg.lower():
+                    log.warning(
+                        "hl_leverage_pin_margin_constraint",
+                        coin=coin,
+                        leverage=lev,
+                        is_cross=coin_cross,
+                        response=resp,
                     )
                 elif self._mode == ExecutionMode.SHADOW:
                     log.warning(
                         "hl_leverage_pin_skipped_shadow",
-                        coin=coin.upper(),
-                        leverage=default_leverage,
+                        coin=coin,
+                        leverage=lev,
                         response=resp,
                     )
                 else:
                     raise RuntimeError(
                         f"hl update_leverage failed for {coin} "
-                        f"(leverage={default_leverage}, cross={is_cross}, "
+                        f"(leverage={lev}, cross={coin_cross}, "
                         f"mode={self._mode.value}): {resp}"
                     )
 
@@ -148,13 +170,13 @@ class HyperliquidOrderManager:
         Returns the SDK response dict, or None in SHADOW mode (logs a mock fill).
         """
         try:
-            symbol       = str(order["symbol"]).upper()
-            side         = str(order["side"]).lower()
-            qty          = float(order["qty"])
-            limit_px     = float(order["limit_px"])
-            tif          = str(order.get("tif", "Gtc"))
-            reduce_only  = bool(order.get("reduce_only", False))
-            cloid_raw    = order.get("cloid")  # optional; maker path sets it
+            symbol = str(order["symbol"])
+            side = str(order["side"]).lower()
+            qty = float(order["qty"])
+            limit_px = float(order["limit_px"])
+            tif = str(order.get("tif", "Gtc"))
+            reduce_only = bool(order.get("reduce_only", False))
+            cloid_raw = order.get("cloid")  # optional; maker path sets it
         except (KeyError, TypeError, ValueError) as exc:
             log.error("hl_order_malformed", order=order, error=str(exc))
             return None
@@ -163,7 +185,7 @@ class HyperliquidOrderManager:
             log.error("hl_order_bad_side", side=side)
             return None
 
-        is_buy = (side == "buy")
+        is_buy = side == "buy"
 
         # Build the SDK Cloid object once — passed through both the SHADOW
         # short-circuit response and the real submit. Invalid strings are
@@ -179,18 +201,23 @@ class HyperliquidOrderManager:
         if self._mode == ExecutionMode.SHADOW:
             log.warning(
                 "[SHADOW EXECUTION] hl mock order",
-                symbol=symbol, side=side, qty=qty, limit_px=limit_px,
-                tif=tif, reduce_only=reduce_only,
-                cloid=cloid_raw, tag=self.strategy_tag,
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                limit_px=limit_px,
+                tif=tif,
+                reduce_only=reduce_only,
+                cloid=cloid_raw,
+                tag=self.strategy_tag,
             )
             return {
-                "status":   "shadow_filled",
-                "symbol":   symbol,
-                "side":     side,
-                "qty":      qty,
+                "status": "shadow_filled",
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
                 "limit_px": limit_px,
-                "cloid":    cloid_raw,
-                "mode":     "SHADOW",
+                "cloid": cloid_raw,
+                "mode": "SHADOW",
             }
 
         order_type = {"limit": {"tif": tif}}
@@ -199,7 +226,7 @@ class HyperliquidOrderManager:
         try:
             resp = await asyncio.to_thread(
                 self._exchange.order,
-                symbol,          # coin / name
+                symbol,  # coin / name
                 is_buy,
                 qty,
                 limit_px,
@@ -210,16 +237,24 @@ class HyperliquidOrderManager:
         except Exception as exc:
             log.warning(
                 "hl_order_rejected",
-                symbol=symbol, side=side, qty=qty, limit_px=limit_px,
-                error=str(exc), tag=self.strategy_tag,
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                limit_px=limit_px,
+                error=str(exc),
+                tag=self.strategy_tag,
             )
             return None
 
         lat_ms = (time.perf_counter_ns() - t0) / 1e6
         log.info(
             "hl_order_submitted",
-            symbol=symbol, side=side, qty=qty, limit_px=limit_px,
-            tif=tif, reduce_only=reduce_only,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            limit_px=limit_px,
+            tif=tif,
+            reduce_only=reduce_only,
             cloid=cloid_raw,
             latency_ms=round(lat_ms, 3),
             resp_status=(resp or {}).get("status"),
@@ -230,9 +265,7 @@ class HyperliquidOrderManager:
 
     # ── Order cancellation ───────────────────────────────────────────────────
 
-    async def cancel_order(
-        self, symbol: str, oid: int
-    ) -> dict[str, Any] | None:
+    async def cancel_order(self, symbol: str, oid: int) -> dict[str, Any] | None:
         """
         Cancel a resting order by its on-chain oid (returned by HL inside the
         submit response `statuses[i].resting.oid`). Spike C uses this to walk
@@ -241,30 +274,31 @@ class HyperliquidOrderManager:
         if self._mode == ExecutionMode.SHADOW:
             log.warning(
                 "[SHADOW EXECUTION] hl mock cancel",
-                symbol=symbol, oid=oid, tag=self.strategy_tag,
+                symbol=symbol,
+                oid=oid,
+                tag=self.strategy_tag,
             )
             return {"status": "shadow_cancelled", "symbol": symbol, "oid": oid}
         try:
-            resp = await asyncio.to_thread(
-                self._exchange.cancel, symbol.upper(), int(oid)
-            )
+            resp = await asyncio.to_thread(self._exchange.cancel, symbol, int(oid))
         except Exception as exc:
             log.warning(
                 "hl_cancel_rejected",
-                symbol=symbol, oid=oid, error=str(exc),
+                symbol=symbol,
+                oid=oid,
+                error=str(exc),
             )
             return None
         log.info(
             "hl_order_cancelled",
-            symbol=symbol, oid=oid,
+            symbol=symbol,
+            oid=oid,
             resp_status=(resp or {}).get("status"),
             tag=self.strategy_tag,
         )
         return resp
 
-    async def cancel_by_cloid(
-        self, symbol: str, cloid: str
-    ) -> dict[str, Any] | None:
+    async def cancel_by_cloid(self, symbol: str, cloid: str) -> dict[str, Any] | None:
         """
         Cancel by client order id — matches the cloid we stamped at submit.
         Preferred in the maker loop because we track orders by cloid locally
@@ -273,7 +307,9 @@ class HyperliquidOrderManager:
         if self._mode == ExecutionMode.SHADOW:
             log.warning(
                 "[SHADOW EXECUTION] hl mock cancel_by_cloid",
-                symbol=symbol, cloid=cloid, tag=self.strategy_tag,
+                symbol=symbol,
+                cloid=cloid,
+                tag=self.strategy_tag,
             )
             return {"status": "shadow_cancelled", "symbol": symbol, "cloid": cloid}
         try:
@@ -283,17 +319,20 @@ class HyperliquidOrderManager:
             return None
         try:
             resp = await asyncio.to_thread(
-                self._exchange.cancel_by_cloid, symbol.upper(), cloid_obj
+                self._exchange.cancel_by_cloid, symbol, cloid_obj
             )
         except Exception as exc:
             log.warning(
                 "hl_cancel_by_cloid_rejected",
-                symbol=symbol, cloid=cloid, error=str(exc),
+                symbol=symbol,
+                cloid=cloid,
+                error=str(exc),
             )
             return None
         log.info(
             "hl_order_cancelled_by_cloid",
-            symbol=symbol, cloid=cloid,
+            symbol=symbol,
+            cloid=cloid,
             resp_status=(resp or {}).get("status"),
             tag=self.strategy_tag,
         )
@@ -306,9 +345,7 @@ class HyperliquidOrderManager:
         Raw user_state payload from Hyperliquid. Includes margin summary,
         open positions, withdrawable balance, and funding info.
         """
-        return await asyncio.to_thread(
-            self._info.user_state, self._wallet_address
-        )
+        return await asyncio.to_thread(self._info.user_state, self._wallet_address)
 
     async def get_positions(self) -> list[dict[str, Any]]:
         """
@@ -319,24 +356,51 @@ class HyperliquidOrderManager:
             "unrealized_pnl": float, "leverage": dict }
 
         szi is signed: positive = long, negative = short.
+
+        Queries both the native HyperCore clearinghouse and each builder DEX
+        clearinghouse (e.g. TradeXYZ for HIP-3 equity perps). The SDK's
+        user_state() only returns native positions; builder DEX positions live
+        in a separate clearinghouse and require an explicit dex parameter.
         """
         state = await self.get_user_state()
-        asset_positions = state.get("assetPositions", []) or []
+        asset_positions = list(state.get("assetPositions", []) or [])
+
+        # Builder DEX positions (HIP-3 etc.) are in separate clearinghouses.
+        for dex in self._builder_dexs:
+            try:
+                dex_state = await asyncio.to_thread(
+                    self._info.post,
+                    "/info",
+                    {
+                        "type": "clearinghouseState",
+                        "user": self._wallet_address,
+                        "dex": dex,
+                    },
+                )
+                asset_positions.extend(dex_state.get("assetPositions", []) or [])
+            except Exception as exc:
+                log.warning(
+                    "hl_builder_dex_state_failed",
+                    dex=dex,
+                    error=str(exc),
+                )
 
         out: list[dict[str, Any]] = []
         for ap in asset_positions:
             pos = ap.get("position", {}) if isinstance(ap, dict) else {}
             try:
                 szi = float(pos.get("szi", 0))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if szi == 0:
                 continue
-            out.append({
-                "coin":            pos.get("coin", ""),
-                "szi":             szi,
-                "entry_px":        float(pos.get("entryPx", 0) or 0),
-                "unrealized_pnl":  float(pos.get("unrealizedPnl", 0) or 0),
-                "leverage":        pos.get("leverage", {}),
-            })
+            out.append(
+                {
+                    "coin": pos.get("coin", ""),
+                    "szi": szi,
+                    "entry_px": float(pos.get("entryPx", 0) or 0),
+                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
+                    "leverage": pos.get("leverage", {}),
+                }
+            )
         return out

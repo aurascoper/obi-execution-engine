@@ -27,13 +27,13 @@ load_dotenv()
 
 async def main() -> None:
     wallet_address = os.getenv("HL_WALLET_ADDRESS")
-    private_key    = os.getenv("HL_PRIVATE_KEY")
+    private_key = os.getenv("HL_PRIVATE_KEY")
 
     if not wallet_address or not private_key:
         print("ERROR: HL_WALLET_ADDRESS or HL_PRIVATE_KEY not found in .env")
         return
 
-    account  = Account.from_key(private_key)
+    account = Account.from_key(private_key)
     exchange = Exchange(
         account,
         constants.MAINNET_API_URL,
@@ -49,7 +49,9 @@ async def main() -> None:
 
         if result.get("status") == "ok":
             print(f"SUCCESS: ${transfer_amount} moved to the Perp ledger.")
-            print("Next: re-run the balance check; accountValue should reflect the transfer.")
+            print(
+                "Next: re-run the balance check; accountValue should reflect the transfer."
+            )
         else:
             print(f"TRANSFER FAILED: {result}")
 

@@ -1,5 +1,5 @@
 # OBI + Mean-Reversion Execution Engine
-### Tri-Engine | Mean Reversion (Crypto Spot) + Statistical Arbitrage (Equities) + Bi-Directional Perps (Hyperliquid) | Async Python | Apple Silicon M4
+### Tri-Engine | Mean Reversion (Crypto Spot) + Statistical Arbitrage (Equities) + Bi-Directional Perps (Crypto + HIP-3 Equity/Commodity, Hyperliquid) | Async Python | Apple Silicon M4
 
 A production-grade algorithmic trading system implementing three architecturally distinct
 quantitative strategies across parallel execution engines, grounded in the survey of
@@ -9,7 +9,7 @@ quantitative strategies across parallel execution engines, grounded in the surve
 |--------|-------------------|---------|----------------|
 | `live_engine.py` (Alpaca Crypto Spot) | **High-Frequency Directional Mean Reversion** | 24/7 continuous tick loop | Long-only (spot market, broker-constrained) |
 | `equities_engine.py` (Alpaca Equities) | **Statistical Arbitrage & Mean Reversion** | US RTH 09:30–16:00 ET strictly | Fully bidirectional (long + short, margin) |
-| `hl_engine.py` (Hyperliquid Perps) | **Bi-Directional Z-Score Taker on Perp Futures** | 24/7 continuous tick loop | Fully bidirectional (long + short, 2x cross leverage) |
+| `hl_engine.py` (Hyperliquid Perps) | **Bi-Directional Z-Score Maker on Perp Futures** | 24/7 continuous tick loop | Fully bidirectional (long + short; native crypto 10× cross, HIP-3 equity perps 5× isolated) |
 
 Both engines share the same mathematical primitive — an **Ornstein–Uhlenbeck z-score** gated
 by **Order-Book Imbalance** — but differ fundamentally in their execution regime, hedging
@@ -193,35 +193,33 @@ Long-only — Alpaca's spot crypto API does not support short selling.
 
 *Excluded: TRUMP, WIF, HYPE, SKY, ONDO (illiquid/political meme); USDC, USDT, USDG (stablecoins).*
 
-### Engine 3 — Hyperliquid Perps (`hl_engine.py`) — Bi-Directional Z-Score Taker
+### Engine 3 — Hyperliquid Perps (`hl_engine.py`) — Bi-Directional Z-Score Maker
 
 Same mean-reversion primitive as Engine 1, but on a decentralized perp venue that permits
-shorting. Signal source is **Alpaca spot bars** — the Alpaca spot mid is treated as the
-"truer" mean for HL perps to revert against. Order book and execution go direct to
-Hyperliquid (L2 WebSocket + exchange POST). The engine runs against **real capital on HL
-mainnet** — Hyperliquid has no paper sandbox.
+shorting. The universe spans two asset classes on the same chain: **native HyperCore crypto
+perps** (BTC, ETH, SOL, …) and **HIP-3 builder-deployed equity/commodity perps** via
+TradeXYZ (TSLA, MSFT, CL, BRENTOIL, …). Bar sources are hybrid: Alpaca spot bars for
+coins Alpaca supports and HL-native synthesized bars for all others. Order book and
+execution go direct to Hyperliquid (L2 WebSocket + exchange POST). The engine runs against
+**real capital on HL mainnet** — Hyperliquid has no paper sandbox.
 
 | Property | Value |
 |----------|-------|
-| Strategy | Bi-Directional OBI-Gated Z-Score — dual-mode execution (taker / maker) |
-| Universe | BTC/USD, ETH/USD (perp) |
+| Strategy | Bi-Directional OBI-Gated Z-Score — dual-mode execution (taker / maker) with dynamic urgency routing |
+| Universe | 28 coins: 8 native crypto (`HL_UNIVERSE`) + 20 HIP-3 equity/commodity perps (`HIP3_UNIVERSE`); per-coin `szDecimals` + dust caps from `Info.meta()` + `Info.meta(dex=...)` at boot |
 | Session | **24/7** continuous — no market-hours gate |
-| Timeframe | 1-minute bars (from Alpaca CryptoDataStream) |
+| Timeframe | 1-minute bars (Alpaca CryptoDataStream for supported coins; HL-native L2 midprice synthesis for others) |
 | Z-score window | $W = 60$ bars = 60-minute rolling window |
-| Directionality | **Bi-directional** — long ($s_t < -1.25\sigma$) + short ($s_t > +1.25\sigma$) |
+| Z-score thresholds | **Per-coin tiers via RMSD calibration:** crypto majors ±1.25σ / ±0.50σ; crypto alts ±2.50σ / ±0.75σ; HIP-3 equities ±1.50σ / ±0.30σ; HIP-3 indices/ETFs ±1.75σ / ±0.40σ. Tiers auto-assigned by `screener_hip3.assign_z_tier()` based on 4h RMSD coefficient of variation, refined at boot by `_recalibrate_hip3_z()` over the preseed buffer. |
 | OBI source | HL L2 WebSocket @ 20 levels (`l2Book` channel) |
-| Leverage | 5x cross |
-| Notional/trade | \$100 LIVE / \$2,000 PAPER (auto-downsized for account size) |
-| Execution style | `EXECUTION_STYLE=taker` (default, `Ioc` cross-spread) or `maker` (`Alo` at best bid/ask, rests; see Phase 4.2) |
-| Strategy tag | `hl_taker_z` (retained for log-parser continuity across the taker→maker pivot) |
+| Leverage | Native crypto: 10× cross. HIP-3: 5× isolated (builder-deployed assets reject cross margin). Per-coin overrides via `leverage_map`. |
+| Notional/trade | \$250 (crypto) / \$100 (HIP-3, per SYMBOL\_CAPS) |
+| Execution style | `EXECUTION_STYLE=maker` — see dynamic urgency matrix below |
+| Strategy tag | `hl_z` |
+| Pre-seed | 240 × 1-min candles fetched from HL `candleSnapshot` API at boot for all coins — z-score buffer warm on bar 1 |
 | Logs | `logs/hl_engine.jsonl` |
 
-**Why the OBI depth differs from Engine 1 (N=5 → N=20):** live burn-in on HL BTC/ETH
-showed front-row market-maker flicker at levels 1–5 contradicts the deeper committed
-book — specifically a "bid-side façade at levels 1–5 over an ask-heavy 6–20" trap on
-ETH. Deepening to 20 levels improves OBI stability by 2.6–5.8×.
-
-**Venue precision rules** (both enforced by `hl_engine._submit`):
+**Venue precision rules** (enforced by `hl_engine._submit`):
 
 $$
 \text{Tick}: \quad \text{price decimals} \leq \max(6 - \text{szDecimals}, 0) \;\wedge\; \text{sigfigs} \leq 5
@@ -247,6 +245,18 @@ or manual UI trade deadlocked every subsequent exit ("`exit_but_live_flat`" bloc
 Sub-lot residuals (`|szi| ≤ 1.5 × 10⁻szDecimals`) are treated as flat — eliminates a
 deadlock observed on ETH where −0.0001 dust perpetually re-seeded the exit signal.
 
+**Universe expansion workflow.** Two screeners select candidates for each asset class:
+
+- `screener_hl.py` — ranks native HL crypto perps by volatility and liquidity.
+- `screener_hip3.py` — scores all TradeXYZ (HIP-3) equity/commodity perps by **4h RMSD × liquidity × diversification** across sector categories (stock, ETF, index, commodity). Outputs a top-N portfolio with z-tier and leverage assignments.
+
+```bash
+python3 screener_hip3.py --top 20 --apply   # prints shell export block for engine launch
+```
+
+The engine reads `HL_UNIVERSE` (native crypto CSV) and `HIP3_UNIVERSE` (prefixed HIP-3 CSV)
+from environment variables. Expansion is always an explicit, operator-reviewed change.
+
 #### Phase 4.2 — Maker Execution (`EXECUTION_STYLE=maker`)
 
 Live taker burn-in revealed transaction fees at **~210% of gross P&L** — the whitepaper
@@ -259,20 +269,66 @@ $$
 \text{Maker RT fee: } 2 \times (+0.5\ \text{bps}) = +1\ \text{bps}
 $$
 
-The maker path is built as three composable spikes (all shipped; unit-tested in
-`verify_maker_watchdog.py`):
+The maker path is built as three composable spikes (all shipped):
 
 | Spike | File | What it adds |
 |---|---|---|
-| **A** — userFills WS | `data/hl_feed.py` | Address-scoped `userFills` subscription; normalizes HL fill payloads into `{type: "hl_fill", cloid, side, ...}` on the engine queue. `isSnapshot` replay is skipped to avoid double-firing `on_fill` against reconciled startup state. |
-| **B** — Alo submit + cloid | `execution/hl_manager.py` | `Cloid` round-trip on `submit_order`; `cancel_by_cloid(coin, cloid)`; inner-rejection detection (HL's `status=ok` ⊕ `statuses[i].error` pattern). |
-| **C** — Reprice watchdog | `hl_engine.py::_maker_watchdog` | 1 s sweep over `_pending_resting`. Cancel+resubmit when the market moves *behind the queue* (buy: best\_bid > our\_px; sell: best\_ask < our\_px); give up after 30 s or 5 reprices. Partial-fill tolerant: cumulative fills track until remainder ≤ ½ lot. |
+| **A** — userFills WS | `data/hl_feed.py` | Address-scoped `userFills` subscription; normalizes HL fill payloads into `{type: "hl_fill", cloid, side, ...}` on the engine queue. `isSnapshot` replay skipped to avoid double-firing `on_fill`. |
+| **B** — Alo submit + cloid | `execution/hl_manager.py` | `Cloid` round-trip on `submit_order`; `cancel_by_cloid(coin, cloid)`; inner-rejection detection (HL's `status=ok` ⊕ `statuses[i].error` pattern). Supports `perp_dexs` passthrough and per-coin `leverage_map` for HIP-3 assets. |
+| **C** — Reprice watchdog | `hl_engine.py::_maker_watchdog` | 1 s sweep over `_pending_resting`. Cancel+resubmit when market moves behind the queue; give up after lifetime/reprice limits. Partial-fill tolerant: cumulative fills track until remainder ≤ ½ lot. |
 
-The strategy loop gates new signals on any symbol with a live pending intent, so
-concurrent bars don't dogpile orders while a quote chases fill. `cid` (client order id)
-persists across reprices so `SignalEngine.on_fill` routes a final fill to the original
-intent regardless of how many times the `cloid` rolled. Spike E (planned) will replace
-the watchdog's give-up rollback with a taker escalation when the queue truly won't fill.
+**Dynamic urgency routing.** Native crypto and HIP-3 equity perps have fundamentally
+different order book microstructures. The `_submit()` router branches on asset class
+and signal type:
+
+| Scenario | Order Type | Watchdog Limits | Rationale |
+|---|---|---|---|
+| Native crypto entry/exit | Maker (Alo) | 30 s / 5 reprices | Deep books, fast taker flow — tight leash prevents stale quotes |
+| HIP-3 entry, \|z\| < 3.0 | Maker (Alo) | 120 s / 15 reprices | Wider spreads, sparser takers — patience needed for organic fill |
+| HIP-3 entry, \|z\| ≥ 3.0 | **IOC taker** | — | Extreme signal — adverse selection risk too high to rest a quote |
+| HIP-3 exit (always) | **IOC taker** | — | Mean-reversion exits fire while price snaps to mean — Alo sits on wrong side of move |
+
+The exit-always-taker rule reflects a key mean-reversion asymmetry: an unfilled entry
+is a missed opportunity, but an unfilled exit is holding risk after the statistical edge
+has evaporated. At $100 notional per HIP-3 coin, the 3–4 bps taker fee is negligible
+vs. the slippage from a 120 s timeout while price reverts.
+
+`cid` (client order id) persists across reprices so `SignalEngine.on_fill` routes
+a final fill to the original intent regardless of how many times the `cloid` rolled.
+
+#### Phase 4.3 — Partial-Fill Accumulation Fix + Trending-Regime Safety Net
+
+Two corrections surfaced by the first day of live maker runs on the expanded universe.
+
+**Partial-fill accumulation (`hl_engine.py::_handle_hl_fill`).** `SignalEngine.on_fill`
+overwrites `positions[tag]` rather than accumulating, which is correct for a single-shot
+taker cross but incorrect for a maker order that fills in multiple chunks. A SOL short
+that filled in three chunks (0.38 + 0.20 + 5.27) left memory at the last chunk's size
+(−5.27) instead of the true total (−5.85). The subsequent exit sized 5.27, leaving 0.58
+on chain; a reconcile-driven exit then filled 0.57, leaving a 0.01 dust residual below
+the sub-lot dust cap that never got swept. Fix: call `on_fill` exactly once per order —
+on the terminal fill, with `cumulative` as the qty. Same fix also closes the inverse
+bug on multi-chunk exits where partials 2+ would resurrect a phantom entry.
+
+**Stop-loss + time-stop (`strategy/signals.py::evaluate`).** Mean-reversion has no
+theoretical floor on adverse drawdown in a trending regime; a live session with sustained
+upward drift produced a SOL short at −3.44% that the z-exit gate couldn't close because
+the z-score kept climbing. Added two independent safety valves:
+
+$$
+\text{Hard stop:} \quad \frac{|P_t - P_{\text{entry}}|}{P_{\text{entry}}} \geq 1\% \text{ against direction} \quad\Longrightarrow\quad \text{force exit}
+$$
+
+$$
+\text{Time stop:} \quad t - t_{\text{entry}} \geq \begin{cases} 30\ \text{min} & \text{US RTH (M-F 09:30–16:00 ET)} \\ 60\ \text{min} & \text{overnight / weekends} \end{cases} \quad\Longrightarrow\quad \text{force exit}
+$$
+
+Either condition triggers an `exit_signal` with `reason=stop_loss_<pnl>` or `reason=time_stop_<secs>`
+regardless of z-score state. Entry timestamp (`entry_ts`) is a new per-tag field on
+`_SymbolState`, populated at entry and at reconcile (adopt-now semantics → reconciled
+positions get the full budget before a time-stop fires). Constants live in `signals.py`:
+`STOP_LOSS_PCT=0.010`, `MAX_POSITION_SECS_RTH=1800`, `MAX_POSITION_SECS_OVN=3600`.
+No changes to `risk/` or `config/risk_params.py`.
 
 ### Engine 2 — Equities (`equities_engine.py`) — Statistical Arbitrage & Mean Reversion
 
@@ -403,7 +459,8 @@ live_trading/
 ├── equities_engine.py        Equities engine — TaskGroup(feed, strategy, drawdown, sector_guard)
 ├── hl_engine.py              Hyperliquid perps — TaskGroup(alpaca_bars, hl_orderbook, obi_pump, strategy)
 ├── fund_perp.py              One-shot HL spot→perp USDC transfer utility
-├── screener.py               Universe scanner (MIN_PRICE=$20, MIN_ADV=1M, CLI filters)
+├── screener.py               Equities universe scanner (MIN_PRICE=$20, MIN_ADV=1M)
+├── screener_hip3.py          HIP-3 portfolio selector (RMSD × liquidity × diversification)
 ├── config/
 │   ├── settings.py           Env-driven credentials (Alpaca + HL) via os.environ + .env
 │   ├── risk_params.py        Circuit breaker constants, notional caps (LIVE/PAPER ternary)
@@ -473,7 +530,7 @@ All thresholds are hardcoded constants in `config/risk_params.py`. `CircuitBreak
 | Daily drawdown halt | 2% equity | Hard stop — engine exits, feed closes |
 | Max order notional | \$100 LIVE / \$1,500 PAPER | Per-order cap (ternary on `EXECUTION_MODE`) |
 | Max daily loss | \$50 LIVE / \$500 PAPER | Hard halt on cumulative intraday loss |
-| Per-symbol cap | \$500–\$5,000 | `SYMBOL_CAPS` dict |
+| Per-symbol cap | \$500–\$5,000 (crypto/equities), \$100 (HIP-3) | `SYMBOL_CAPS` dict |
 | API rate limit | 30 orders/min | Token bucket (Alpaca allows 200/min) |
 | Sector exposure | 1–3 positions | `SectorExposureTracker` O(1) check |
 | Macro halt window | ±15 min | [Phase 3] FMP calendar, tier-1 events only |
@@ -504,10 +561,13 @@ nohup /path/to/venv/bin/python3 equities_engine.py >> logs/equities_engine.jsonl
 # 3b. Run Hyperliquid engine (mainnet — real capital)
 #     First time only: fund the perp clearinghouse
 python3 fund_perp.py
-#     Then launch. LIVE + live paired to pass the settings.py safety gate.
-#     EXECUTION_STYLE defaults to "taker" (Ioc); set to "maker" for Phase 4.2
-#     Alo resting orders with reprice watchdog (see README "Phase 4.2" section).
+#     28-coin hybrid launch: 8 native crypto + 20 HIP-3 equity/commodity perps.
+#     HIP3_DEXS enables the TradeXYZ builder DEX alongside native HyperCore.
 EXECUTION_MODE=LIVE ALPACA_TRADING_MODE=live EXECUTION_STYLE=maker \
+  HL_UNIVERSE="BTC,ETH,SOL,DOGE,AVAX,LINK,kSHIB,HYPE" \
+  HIP3_DEXS="xyz" \
+  HIP3_UNIVERSE="xyz:HIMS,xyz:HOOD,xyz:CRCL,xyz:ORCL,xyz:EWY,xyz:XYZ100,xyz:COIN,xyz:CRWV,xyz:TSLA,xyz:CL,xyz:SNDK,xyz:MSTR,xyz:SKHX,xyz:MSFT,xyz:MU,xyz:SP500,xyz:AMD,xyz:PLTR,xyz:BRENTOIL,xyz:INTC" \
+  HIP3_LEVERAGE=5 \
   nohup caffeinate -i venv/bin/python3 hl_engine.py &
 
 # 4. Screen for new signals (Alpaca universe only)
@@ -526,9 +586,9 @@ tail -f logs/hl_engine.jsonl | python3 -c \
 
 | `EXECUTION_MODE` | `ALPACA_TRADING_MODE` | Alpaca Orders | Alpaca Capital | Hyperliquid |
 |---|---|---|---|---|
-| `SHADOW` | `paper` | No | None | Subscribes to L2 + logs intent, does not submit |
+| `SHADOW` | `paper` | No | None | Subscribes to L2 + logs intent, does not submit. Per-coin shadow via `SHADOW_COINS` env var (HIP-3 burn-in). |
 | `PAPER` | `paper` | Yes | Paper only | **N/A** — HL has no paper sandbox |
-| `LIVE` | `live` | Yes | Real capital | Real capital on mainnet |
+| `LIVE` | `live` | Yes | Real capital | Real capital on mainnet (native crypto + HIP-3 equity perps) |
 
 `config/settings.py` enforces that `LIVE` mode requires `ALPACA_TRADING_MODE=live` —
 mismatched flags raise `RuntimeError` before any connection is made. The Hyperliquid
@@ -549,10 +609,11 @@ Built via a three-model pipeline:
    [`whitepaper.pdf`](whitepaper.pdf) drawing exact formulas and empirical thresholds from
    Avellaneda & Lee (2010), Cartea et al. (2018), and Cont & De Larrard (2013).
 
-3. **Implementation** — Claude Sonnet 4.6 (Claude Code) translated the whitepaper math into
-   `SignalEngine`, `_RollingBuffer`, and the sector/macro risk layers; extended the engine
-   from a 7-symbol crypto prototype to a 170-symbol dual-engine system; and designed the
-   Phase 3 maker-pivot architecture grounded in live taker execution data.
+3. **Implementation** — Claude (Sonnet 4.6 → Opus 4.6, Claude Code) translated the whitepaper
+   math into `SignalEngine`, `_RollingBuffer`, and the sector/macro risk layers; extended
+   from a 7-symbol crypto prototype to a 28-coin hybrid HL engine + 138-symbol equities
+   engine; designed the Phase 3 maker-pivot and Phase 4.2 dynamic urgency routing for
+   HIP-3 equity perps.
 
 ---
 

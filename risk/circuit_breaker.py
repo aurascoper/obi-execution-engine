@@ -2,6 +2,7 @@
 risk/circuit_breaker.py — Independent circuit breaker watchdog.
 No imports from strategy/ — intentional isolation.
 """
+
 import asyncio
 import structlog
 from alpaca.trading.client import TradingClient
@@ -20,8 +21,8 @@ log = structlog.get_logger(__name__)
 
 class CircuitBreaker:
     def __init__(self, client: TradingClient):
-        self._client       = client
-        self._halted       = False
+        self._client = client
+        self._halted = False
         self._equity_open: float | None = None
 
     @property
@@ -56,8 +57,8 @@ class CircuitBreaker:
                 exc_msg=str(exc)[:120],
             )
             return True
-        equity_now   = float(acct.equity)
-        daily_pnl    = equity_now - (self._equity_open or equity_now)
+        equity_now = float(acct.equity)
+        daily_pnl = equity_now - (self._equity_open or equity_now)
         drawdown_pct = daily_pnl / self._equity_open if self._equity_open else 0.0
 
         if daily_pnl < -MAX_DAILY_LOSS_DOLLARS:
@@ -70,11 +71,11 @@ class CircuitBreaker:
 
     def validate_order(
         self,
-        symbol:     str,
-        qty:        float,
-        notional:   float,
-        asset_class: str = "crypto",    # "equity" | "option" | "crypto"
-        side:        str = "buy",       # "buy" | "sell"
+        symbol: str,
+        qty: float,
+        notional: float,
+        asset_class: str = "crypto",  # "equity" | "option" | "crypto"
+        side: str = "buy",  # "buy" | "sell"
     ) -> bool:
         if self._halted:
             log.warning("order_blocked_halted", symbol=symbol)
@@ -86,13 +87,25 @@ class CircuitBreaker:
             else:
                 cap = MAX_ORDER_NOTIONAL
             if notional > cap:
-                log.warning("order_blocked_notional",
-                            symbol=symbol, notional=notional, cap=cap,
-                            asset_class=asset_class)
+                log.warning(
+                    "order_blocked_notional",
+                    symbol=symbol,
+                    notional=notional,
+                    cap=cap,
+                    asset_class=asset_class,
+                )
                 return False
-            if asset_class != "option" and symbol in SYMBOL_CAPS and notional > SYMBOL_CAPS[symbol]:
-                log.warning("order_blocked_symbol_cap",
-                            symbol=symbol, notional=notional, cap=SYMBOL_CAPS[symbol])
+            if (
+                asset_class != "option"
+                and symbol in SYMBOL_CAPS
+                and notional > SYMBOL_CAPS[symbol]
+            ):
+                log.warning(
+                    "order_blocked_symbol_cap",
+                    symbol=symbol,
+                    notional=notional,
+                    cap=SYMBOL_CAPS[symbol],
+                )
                 return False
         if asset_class == "option" and qty > MAX_CONTRACTS_PER_LEG:
             log.warning("order_blocked_contracts", symbol=symbol, qty=qty)

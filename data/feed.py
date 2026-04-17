@@ -32,8 +32,8 @@ log = structlog.get_logger(__name__)
 class LiveFeed:
     def __init__(
         self,
-        cfg:        Settings,
-        symbols:    list[str],
+        cfg: Settings,
+        symbols: list[str],
         msg_queues: asyncio.Queue | list[asyncio.Queue],
     ):
         self._symbols = symbols
@@ -44,16 +44,16 @@ class LiveFeed:
 
         # ── Per-type message counters (reset every 60 s) ──────────────────────
         self._msg_counts: dict[str, int] = {"bar": 0, "orderbook": 0, "quote": 0}
-        self._count_window_start: float  = time.monotonic()
+        self._count_window_start: float = time.monotonic()
 
         # Use paper credentials for the data stream — crypto market data is
         # identical for paper/live, and this preserves the live key's single
         # free-tier WebSocket connection slot for order submission only.
-        self._data_key    = cfg.data_key or cfg.api_key
+        self._data_key = cfg.data_key or cfg.api_key
         self._data_secret = cfg.data_secret or cfg.api_secret
-        self._stream  = CryptoDataStream(
-            api_key    = self._data_key,
-            secret_key = self._data_secret,
+        self._stream = CryptoDataStream(
+            api_key=self._data_key,
+            secret_key=self._data_secret,
         )
 
         # Register handlers — SDK calls these as async callbacks.
@@ -63,9 +63,12 @@ class LiveFeed:
         self._stream.subscribe_bars(self._on_bar, *symbols)
         self._stream.subscribe_orderbooks(self._on_orderbook, *symbols)
 
-        log.info("feed_subscribed", symbols=symbols,
-                 channels=["bars", "orderbooks"],
-                 endpoint="wss://stream.data.alpaca.markets/v1beta3/crypto/us")
+        log.info(
+            "feed_subscribed",
+            symbols=symbols,
+            channels=["bars", "orderbooks"],
+            endpoint="wss://stream.data.alpaca.markets/v1beta3/crypto/us",
+        )
 
     # ── Internal: debug counter ────────────────────────────────────────────────
 
@@ -82,7 +85,7 @@ class LiveFeed:
                 orderbooks_per_min=self._msg_counts["orderbook"],
                 quotes_per_min=self._msg_counts["quote"],
             )
-            self._msg_counts        = {"bar": 0, "orderbook": 0, "quote": 0}
+            self._msg_counts = {"bar": 0, "orderbook": 0, "quote": 0}
             self._count_window_start = now
 
     # ── Internal: fan-out put ─────────────────────────────────────────────────
@@ -96,17 +99,19 @@ class LiveFeed:
 
     async def _on_bar(self, bar: Bar) -> None:
         self._tick_count("bar")
-        await self._put({
-            "type":      "bar",
-            "symbol":    bar.symbol,
-            "open":      float(bar.open),
-            "high":      float(bar.high),
-            "low":       float(bar.low),
-            "close":     float(bar.close),
-            "volume":    float(bar.volume),
-            "timestamp": str(bar.timestamp),
-            "recv_ns":   time.perf_counter_ns(),
-        })
+        await self._put(
+            {
+                "type": "bar",
+                "symbol": bar.symbol,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+                "timestamp": str(bar.timestamp),
+                "recv_ns": time.perf_counter_ns(),
+            }
+        )
 
     async def _on_orderbook(self, ob: Orderbook) -> None:
         """
@@ -115,14 +120,16 @@ class LiveFeed:
         Converted to [[price, size], ...] to match SignalEngine.update_orderbook() contract.
         """
         self._tick_count("orderbook")
-        await self._put({
-            "type":      "orderbook",
-            "symbol":    ob.symbol,
-            "bids":      [[float(q.price), float(q.size)] for q in ob.bids],
-            "asks":      [[float(q.price), float(q.size)] for q in ob.asks],
-            "timestamp": str(ob.timestamp),
-            "recv_ns":   time.perf_counter_ns(),
-        })
+        await self._put(
+            {
+                "type": "orderbook",
+                "symbol": ob.symbol,
+                "bids": [[float(q.price), float(q.size)] for q in ob.bids],
+                "asks": [[float(q.price), float(q.size)] for q in ob.asks],
+                "timestamp": str(ob.timestamp),
+                "recv_ns": time.perf_counter_ns(),
+            }
+        )
 
     async def _on_quote(self, q: Quote) -> None:
         """
@@ -137,18 +144,20 @@ class LiveFeed:
             bs = float(q.bid_size)
             ap = float(q.ask_price)
             as_ = float(q.ask_size)
-        except (TypeError, AttributeError):
+        except TypeError, AttributeError:
             return
         if bp <= 0 or ap <= 0:
             return
-        await self._put({
-            "type":      "orderbook",
-            "symbol":    q.symbol,
-            "bids":      [[bp, bs]],
-            "asks":      [[ap, as_]],
-            "timestamp": str(q.timestamp),
-            "recv_ns":   time.perf_counter_ns(),
-        })
+        await self._put(
+            {
+                "type": "orderbook",
+                "symbol": q.symbol,
+                "bids": [[bp, bs]],
+                "asks": [[ap, as_]],
+                "timestamp": str(q.timestamp),
+                "recv_ns": time.perf_counter_ns(),
+            }
+        )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -191,8 +200,8 @@ class LiveFeed:
                     delay = 10  # reset on non-limit error
                 # Recreate stream so we get a fresh WebSocket object on retry.
                 self._stream = CryptoDataStream(
-                    api_key    = self._data_key,
-                    secret_key = self._data_secret,
+                    api_key=self._data_key,
+                    secret_key=self._data_secret,
                 )
                 self._stream.subscribe_bars(self._on_bar, *self._symbols)
                 self._stream.subscribe_orderbooks(self._on_orderbook, *self._symbols)

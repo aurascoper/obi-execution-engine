@@ -35,7 +35,6 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-import numpy as np
 import structlog
 from alpaca.trading.enums import OrderSide
 
@@ -50,36 +49,37 @@ from strategy.signals import _RollingBuffer
 log = structlog.get_logger(__name__)
 
 # ── Strategy parameters ────────────────────────────────────────────────────────
-WINDOW            = 60      # rolling bars (daily closes pre-seeded same as equities)
-Z_ENTRY_LONG      = -1.25   # z < this → bullish (oversold underlying)
-Z_EXIT_LONG       = -0.50   # z > this → close call (mean-reverted)
-Z_ENTRY_SHORT     = +1.25   # z > this → bearish (overbought underlying)
-Z_EXIT_SHORT      = +0.50   # z < this → close put
+WINDOW = 60  # rolling bars (daily closes pre-seeded same as equities)
+Z_ENTRY_LONG = -1.25  # z < this → bullish (oversold underlying)
+Z_EXIT_LONG = -0.50  # z > this → close call (mean-reverted)
+Z_ENTRY_SHORT = +1.25  # z > this → bearish (overbought underlying)
+Z_EXIT_SHORT = +0.50  # z < this → close put
 
-OBI_THETA_LONG    = 0.00    # any net buy pressure confirms long entry
-OBI_THETA_SHORT   = 0.00    # any net sell pressure confirms short entry
+OBI_THETA_LONG = 0.00  # any net buy pressure confirms long entry
+OBI_THETA_SHORT = 0.00  # any net sell pressure confirms short entry
 
-DTE_CLOSE_THRESH  = 2       # close options with ≤ 2 DTE (avoid expiry risk)
-NO_ENTRY_AFTER    = (15, 0) # (hour, minute) ET — no new entries after 3 PM
+DTE_CLOSE_THRESH = 2  # close options with ≤ 2 DTE (avoid expiry risk)
+NO_ENTRY_AFTER = (15, 0)  # (hour, minute) ET — no new entries after 3 PM
 
 # Delta target and premium budget per option leg
-TARGET_DELTA      = 0.45    # near-ATM
-SPREAD_WIDTH      = 5.0     # OTM leg offset for spreads ($5 default)
+TARGET_DELTA = 0.45  # near-ATM
+SPREAD_WIDTH = 5.0  # OTM leg offset for spreads ($5 default)
 
 
 @dataclass
 class _OptionPosition:
     """Tracks one open options position (one underlying = one direction at a time)."""
+
     contract_symbol: str
-    underlying:      str
-    qty:             int
-    entry_px:        float   # premium per share paid
-    expiry:          date
-    contract_type:   Literal["call", "put"]
-    action:          str     # e.g. "buy_call", "bull_call_spread"
+    underlying: str
+    qty: int
+    entry_px: float  # premium per share paid
+    expiry: date
+    contract_type: Literal["call", "put"]
+    action: str  # e.g. "buy_call", "bull_call_spread"
     # For spreads: short leg OSI symbol (empty string if single-leg)
     short_leg_symbol: str = field(default="")
-    short_entry_px:   float = field(default=float("nan"))
+    short_entry_px: float = field(default=float("nan"))
 
 
 class OptionsSignalEngine:
@@ -99,25 +99,25 @@ class OptionsSignalEngine:
 
     def __init__(
         self,
-        chain:           OptionsChainCache,
-        symbols:         list[str],
-        strategy_level:  int   = 2,
-        window:          int   = WINDOW,
-        strategy_tag:    str   = "options",
+        chain: OptionsChainCache,
+        symbols: list[str],
+        strategy_level: int = 2,
+        window: int = WINDOW,
+        strategy_tag: str = "options",
     ) -> None:
         if strategy_level not in (1, 2, 3):
             raise ValueError(f"strategy_level must be 1, 2, or 3; got {strategy_level}")
 
-        self._chain          = chain
-        self._level          = strategy_level
-        self._tag            = strategy_tag
-        self._symbols        = symbols
+        self._chain = chain
+        self._level = strategy_level
+        self._tag = strategy_tag
+        self._symbols = symbols
 
         # Per-underlying rolling buffers and OBI cache
         self._buffers: dict[str, _RollingBuffer] = {
             s: _RollingBuffer(window) for s in symbols
         }
-        self._obi:  dict[str, float | None] = {s: None for s in symbols}
+        self._obi: dict[str, float | None] = {s: None for s in symbols}
         self._best_bid: dict[str, float] = {s: float("nan") for s in symbols}
         self._best_ask: dict[str, float] = {s: float("nan") for s in symbols}
 
@@ -133,7 +133,7 @@ class OptionsSignalEngine:
         Returns list[dict] of order kwargs (1 element single-leg, 2 for spread),
         or None if no action required.
         """
-        sym   = bar.get("symbol", "")
+        sym = bar.get("symbol", "")
         if sym not in self._buffers:
             return None
 
@@ -171,8 +171,8 @@ class OptionsSignalEngine:
             return None
 
         # 3. Entry path — bypass OBI gate if no quote has arrived yet
-        bullish  = z < Z_ENTRY_LONG  and (not obi_ready or obi > OBI_THETA_LONG)
-        bearish  = z > Z_ENTRY_SHORT and (not obi_ready or obi < OBI_THETA_SHORT)
+        bullish = z < Z_ENTRY_LONG and (not obi_ready or obi > OBI_THETA_LONG)
+        bearish = z > Z_ENTRY_SHORT and (not obi_ready or obi < OBI_THETA_SHORT)
 
         if bullish:
             return self._enter_bullish(sym, close)
@@ -217,7 +217,7 @@ class OptionsSignalEngine:
                 # The engine passes 0.0 here; build_close_orders handles it.
                 contract = self._chain.get_by_osi(pos.contract_symbol)
                 close_px = contract.mid if contract else 0.0
-                orders   = self._build_close_orders(sym, pos, close_px)
+                orders = self._build_close_orders(sym, pos, close_px)
                 if orders:
                     to_close.append((sym, orders, close_px))
                     del self._positions[sym]
@@ -239,13 +239,13 @@ class OptionsSignalEngine:
         """For logging — returns a snapshot of open options positions."""
         return [
             {
-                "underlying":      sym,
-                "contract":        pos.contract_symbol,
-                "qty":             pos.qty,
-                "entry_px":        pos.entry_px,
-                "dte":             (pos.expiry - date.today()).days,
-                "action":          pos.action,
-                "short_leg":       pos.short_leg_symbol or None,
+                "underlying": sym,
+                "contract": pos.contract_symbol,
+                "qty": pos.qty,
+                "entry_px": pos.entry_px,
+                "dte": (pos.expiry - date.today()).days,
+                "action": pos.action,
+                "short_leg": pos.short_leg_symbol or None,
             }
             for sym, pos in self._positions.items()
         ]
@@ -267,9 +267,10 @@ class OptionsSignalEngine:
         return self._enter_bear_put_spread(sym, close)
 
     def _enter_long_call(self, sym: str, close: float) -> list[dict] | None:
-        max_per_share = MAX_OPTIONS_BUDGET / 100.0   # budget cap → max $/share
+        max_per_share = MAX_OPTIONS_BUDGET / 100.0  # budget cap → max $/share
         contract = self._chain.best_contract(
-            sym, "call",
+            sym,
+            "call",
             target_delta=TARGET_DELTA,
             min_premium=0.05,
             max_premium=max_per_share,
@@ -304,14 +305,22 @@ class OptionsSignalEngine:
             notional=notional,
             iv=round(contract.iv, 3) if not math.isnan(contract.iv) else None,
         )
-        return [{"symbol": contract.symbol, "side": OrderSide.BUY,
-                 "qty": qty, "limit_px": limit_px, "notional": notional,
-                 "action": "buy_call"}]
+        return [
+            {
+                "symbol": contract.symbol,
+                "side": OrderSide.BUY,
+                "qty": qty,
+                "limit_px": limit_px,
+                "notional": notional,
+                "action": "buy_call",
+            }
+        ]
 
     def _enter_long_put(self, sym: str, close: float) -> list[dict] | None:
         max_per_share = MAX_OPTIONS_BUDGET / 100.0
         contract = self._chain.best_contract(
-            sym, "put",
+            sym,
+            "put",
             target_delta=TARGET_DELTA,
             min_premium=0.05,
             max_premium=max_per_share,
@@ -345,15 +354,25 @@ class OptionsSignalEngine:
             limit_px=limit_px,
             notional=notional,
         )
-        return [{"symbol": contract.symbol, "side": OrderSide.BUY,
-                 "qty": qty, "limit_px": limit_px, "notional": notional,
-                 "action": "buy_put"}]
+        return [
+            {
+                "symbol": contract.symbol,
+                "side": OrderSide.BUY,
+                "qty": qty,
+                "limit_px": limit_px,
+                "notional": notional,
+                "action": "buy_put",
+            }
+        ]
 
     def _enter_bull_call_spread(self, sym: str, close: float) -> list[dict] | None:
         max_per_share = MAX_OPTIONS_BUDGET / 100.0
         long_leg = self._chain.best_contract(
-            sym, "call", target_delta=TARGET_DELTA,
-            min_premium=0.05, max_premium=max_per_share,
+            sym,
+            "call",
+            target_delta=TARGET_DELTA,
+            min_premium=0.05,
+            max_premium=max_per_share,
         )
         if long_leg is None:
             return None
@@ -362,26 +381,28 @@ class OptionsSignalEngine:
             # Fall back to single long call if no short leg found
             return self._enter_long_call(sym, close)
 
-        net_debit = long_leg.ask - short_leg.bid   # worst-case debit
+        net_debit = long_leg.ask - short_leg.bid  # worst-case debit
         if net_debit <= 0 or net_debit * 100 > MAX_OPTIONS_BUDGET:
             return self._enter_long_call(sym, close)
 
-        qty = min(MAX_CONTRACTS_PER_TRADE, max(1, int(MAX_OPTIONS_BUDGET / (net_debit * 100))))
+        qty = min(
+            MAX_CONTRACTS_PER_TRADE, max(1, int(MAX_OPTIONS_BUDGET / (net_debit * 100)))
+        )
 
-        buy_limit  = round(long_leg.ask,  2)
+        buy_limit = round(long_leg.ask, 2)
         sell_limit = round(short_leg.bid, 2)
-        notional   = round(net_debit * 100 * qty, 2)
+        notional = round(net_debit * 100 * qty, 2)
 
         self._positions[sym] = _OptionPosition(
-            contract_symbol  = long_leg.symbol,
-            underlying       = sym,
-            qty              = qty,
-            entry_px         = buy_limit,
-            expiry           = long_leg.expiry,
-            contract_type    = "call",
-            action           = "bull_call_spread",
-            short_leg_symbol = short_leg.symbol,
-            short_entry_px   = sell_limit,
+            contract_symbol=long_leg.symbol,
+            underlying=sym,
+            qty=qty,
+            entry_px=buy_limit,
+            expiry=long_leg.expiry,
+            contract_type="call",
+            action="bull_call_spread",
+            short_leg_symbol=short_leg.symbol,
+            short_entry_px=sell_limit,
         )
         log.info(
             "options_entry",
@@ -396,19 +417,32 @@ class OptionsSignalEngine:
             dte=long_leg.dte,
         )
         return [
-            {"symbol": long_leg.symbol,  "side": OrderSide.BUY,  "qty": qty,
-             "limit_px": buy_limit,  "notional": round(buy_limit  * 100 * qty, 2),
-             "action": "buy_call_spread_long"},
-            {"symbol": short_leg.symbol, "side": OrderSide.SELL, "qty": qty,
-             "limit_px": sell_limit, "notional": round(sell_limit * 100 * qty, 2),
-             "action": "sell_call_spread_short"},
+            {
+                "symbol": long_leg.symbol,
+                "side": OrderSide.BUY,
+                "qty": qty,
+                "limit_px": buy_limit,
+                "notional": round(buy_limit * 100 * qty, 2),
+                "action": "buy_call_spread_long",
+            },
+            {
+                "symbol": short_leg.symbol,
+                "side": OrderSide.SELL,
+                "qty": qty,
+                "limit_px": sell_limit,
+                "notional": round(sell_limit * 100 * qty, 2),
+                "action": "sell_call_spread_short",
+            },
         ]
 
     def _enter_bear_put_spread(self, sym: str, close: float) -> list[dict] | None:
         max_per_share = MAX_OPTIONS_BUDGET / 100.0
         long_leg = self._chain.best_contract(
-            sym, "put", target_delta=TARGET_DELTA,
-            min_premium=0.05, max_premium=max_per_share,
+            sym,
+            "put",
+            target_delta=TARGET_DELTA,
+            min_premium=0.05,
+            max_premium=max_per_share,
         )
         if long_leg is None:
             return None
@@ -420,22 +454,24 @@ class OptionsSignalEngine:
         if net_debit <= 0 or net_debit * 100 > MAX_OPTIONS_BUDGET:
             return self._enter_long_put(sym, close)
 
-        qty = min(MAX_CONTRACTS_PER_TRADE, max(1, int(MAX_OPTIONS_BUDGET / (net_debit * 100))))
+        qty = min(
+            MAX_CONTRACTS_PER_TRADE, max(1, int(MAX_OPTIONS_BUDGET / (net_debit * 100)))
+        )
 
-        buy_limit  = round(long_leg.ask,  2)
+        buy_limit = round(long_leg.ask, 2)
         sell_limit = round(short_leg.bid, 2)
-        notional   = round(net_debit * 100 * qty, 2)
+        notional = round(net_debit * 100 * qty, 2)
 
         self._positions[sym] = _OptionPosition(
-            contract_symbol  = long_leg.symbol,
-            underlying       = sym,
-            qty              = qty,
-            entry_px         = buy_limit,
-            expiry           = long_leg.expiry,
-            contract_type    = "put",
-            action           = "bear_put_spread",
-            short_leg_symbol = short_leg.symbol,
-            short_entry_px   = sell_limit,
+            contract_symbol=long_leg.symbol,
+            underlying=sym,
+            qty=qty,
+            entry_px=buy_limit,
+            expiry=long_leg.expiry,
+            contract_type="put",
+            action="bear_put_spread",
+            short_leg_symbol=short_leg.symbol,
+            short_entry_px=sell_limit,
         )
         log.info(
             "options_entry",
@@ -448,12 +484,22 @@ class OptionsSignalEngine:
             dte=long_leg.dte,
         )
         return [
-            {"symbol": long_leg.symbol,  "side": OrderSide.BUY,  "qty": qty,
-             "limit_px": buy_limit,  "notional": round(buy_limit  * 100 * qty, 2),
-             "action": "buy_put_spread_long"},
-            {"symbol": short_leg.symbol, "side": OrderSide.SELL, "qty": qty,
-             "limit_px": sell_limit, "notional": round(sell_limit * 100 * qty, 2),
-             "action": "sell_put_spread_short"},
+            {
+                "symbol": long_leg.symbol,
+                "side": OrderSide.BUY,
+                "qty": qty,
+                "limit_px": buy_limit,
+                "notional": round(buy_limit * 100 * qty, 2),
+                "action": "buy_put_spread_long",
+            },
+            {
+                "symbol": short_leg.symbol,
+                "side": OrderSide.SELL,
+                "qty": qty,
+                "limit_px": sell_limit,
+                "notional": round(sell_limit * 100 * qty, 2),
+                "action": "sell_put_spread_short",
+            },
         ]
 
     def _enter_csp(self, sym: str, close: float) -> list[dict] | None:
@@ -468,14 +514,18 @@ class OptionsSignalEngine:
         # CSP strike ≈ 2-3% below current price (slightly OTM)
         target_strike_pct_otm = 0.97
         contract = self._chain.best_contract(
-            sym, "put",
-            target_delta=0.30,      # slightly OTM for CSP
+            sym,
+            "put",
+            target_delta=0.30,  # slightly OTM for CSP
             min_premium=0.01,
             max_premium=close * 0.05,
         )
         if contract is None:
-            log.warning("options_no_csp_found", symbol=sym,
-                        note="account may be too small for cash-secured puts on this symbol")
+            log.warning(
+                "options_no_csp_found",
+                symbol=sym,
+                note="account may be too small for cash-secured puts on this symbol",
+            )
             return None
 
         # Check buying power: strike × 100 must be < MAX_OPTIONS_BUDGET
@@ -490,9 +540,9 @@ class OptionsSignalEngine:
             )
             return None
 
-        qty       = 1
-        limit_px  = round(contract.bid, 2)   # sell at bid
-        notional  = round(limit_px * 100 * qty, 2)
+        qty = 1
+        limit_px = round(contract.bid, 2)  # sell at bid
+        notional = round(limit_px * 100 * qty, 2)
 
         self._positions[sym] = _OptionPosition(
             contract_symbol=contract.symbol,
@@ -512,9 +562,16 @@ class OptionsSignalEngine:
             premium_received=limit_px,
             bp_required=bp_required,
         )
-        return [{"symbol": contract.symbol, "side": OrderSide.SELL,
-                 "qty": qty, "limit_px": limit_px, "notional": notional,
-                 "action": "sell_csp"}]
+        return [
+            {
+                "symbol": contract.symbol,
+                "side": OrderSide.SELL,
+                "qty": qty,
+                "limit_px": limit_px,
+                "notional": notional,
+                "action": "sell_csp",
+            }
+        ]
 
     # ── Private: Exit builders ─────────────────────────────────────────────────
 
@@ -539,27 +596,29 @@ class OptionsSignalEngine:
         contract = self._chain.get_by_osi(pos.contract_symbol)
         close_px = round(contract.bid if contract else pos.entry_px * 0.80, 2)
         if close_px <= 0:
-            close_px = 0.01   # floor to avoid zero-price order rejection
+            close_px = 0.01  # floor to avoid zero-price order rejection
 
         notional = round(close_px * 100 * pos.qty, 2)
 
         if pos.action == "sell_csp":
             # CSP was a short put — buy-to-close
-            close_side  = OrderSide.BUY
+            close_side = OrderSide.BUY
             close_action = "close_csp"
         else:
             # Long calls/puts — sell-to-close
-            close_side  = OrderSide.SELL
+            close_side = OrderSide.SELL
             close_action = f"close_{pos.contract_type}"
 
-        orders.append({
-            "symbol":   pos.contract_symbol,
-            "side":     close_side,
-            "qty":      pos.qty,
-            "limit_px": close_px,
-            "notional": notional,
-            "action":   close_action,
-        })
+        orders.append(
+            {
+                "symbol": pos.contract_symbol,
+                "side": close_side,
+                "qty": pos.qty,
+                "limit_px": close_px,
+                "notional": notional,
+                "action": close_action,
+            }
+        )
 
         # For spreads, also close the short leg (buy-to-close it)
         if pos.short_leg_symbol:
@@ -569,14 +628,16 @@ class OptionsSignalEngine:
             )
             if short_close_px <= 0:
                 short_close_px = 0.01
-            orders.append({
-                "symbol":   pos.short_leg_symbol,
-                "side":     OrderSide.BUY,   # buy-to-close the short leg
-                "qty":      pos.qty,
-                "limit_px": short_close_px,
-                "notional": round(short_close_px * 100 * pos.qty, 2),
-                "action":   "close_spread_short_leg",
-            })
+            orders.append(
+                {
+                    "symbol": pos.short_leg_symbol,
+                    "side": OrderSide.BUY,  # buy-to-close the short leg
+                    "qty": pos.qty,
+                    "limit_px": short_close_px,
+                    "notional": round(short_close_px * 100 * pos.qty, 2),
+                    "action": "close_spread_short_leg",
+                }
+            )
 
         log.info(
             "options_exit",
@@ -586,8 +647,8 @@ class OptionsSignalEngine:
             entry_px=pos.entry_px,
             close_px=close_px,
             pnl_est=round((close_px - pos.entry_px) * 100 * pos.qty, 2)
-                    if pos.action != "sell_csp"
-                    else round((pos.entry_px - close_px) * 100 * pos.qty, 2),
+            if pos.action != "sell_csp"
+            else round((pos.entry_px - close_px) * 100 * pos.qty, 2),
         )
         return orders
 
@@ -604,7 +665,7 @@ class OptionsSignalEngine:
         qty capped by MAX_CONTRACTS_PER_TRADE and MAX_OPTIONS_BUDGET.
         """
         limit_px = round(contract.ask, 2)
-        cost_per = limit_px * 100              # cost of 1 contract
+        cost_per = limit_px * 100  # cost of 1 contract
         if cost_per <= 0:
             return 0, 0.0, 0.0
         qty = min(

@@ -1,0 +1,53 @@
+{
+  "generated_ts": "2026-04-16T06:08:55+00:00",
+  "filters": {
+    "alpaca_whitelist": [
+      "AVAX",
+      "DOGE",
+      "LINK",
+      "SHIB",
+      "SOL"
+    ],
+    "max_spread_bps": 5.0,
+    "min_max_leverage": 3,
+    "min_day_vlm": 0.0
+  },
+  "candidates": [
+    {
+      "coin": "SOL",
+      "sz_decimals": 2,
+      "max_leverage": 20,
+      "day_vlm": 213384675.73875007,
+      "open_interest": 3560035.7599999984,
+      "mark_px": 85.45,
+      "spread_bps": 0.1170268166939414
+    },
+    {
+      "coin": "DOGE",
+      "sz_decimals": 0,
+      "max_leverage": 10,
+      "day_vlm": 17201858.775223996,
+      "open_interest": 327103784.0,
+      "mark_px": 0.096696,
+      "spread_bps": 0.10341528995072262
+    },
+    {
+      "coin": "LINK",
+      "sz_decimals": 1,
+      "max_leverage": 10,
+      "day_vlm": 5014643.40442,
+      "open_interest": 3023504.6,
+      "mark_px": 9.307,
+      "spread_bps": 0.10744543115140344
+    },
+    {
+      "coin": "AVAX",
+      "sz_decimals": 2,
+      "max_leverage": 10,
+      "day_vlm": 2594133.245826,
+      "open_interest": 4513874.599999999,
+      "mark_px": 9.5264,
+      "spread_bps": 0.6296634448872395
+    }
+  ]
+}

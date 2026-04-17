@@ -34,7 +34,6 @@ Usage:
 
 import asyncio
 import logging
-import math
 import os
 import signal
 import zoneinfo
@@ -85,17 +84,17 @@ log = structlog.get_logger("options_engine")
 #   cheapest qualifying contract exceeds the budget.
 SYMBOLS = [
     # Broad market — deepest options liquidity, always within budget on weeklies
-    "SPY",   # S&P 500 ETF; tightest spread in the market
-    "QQQ",   # Nasdaq 100 ETF; high beta, good for mean-reversion calls
+    "SPY",  # S&P 500 ETF; tightest spread in the market
+    "QQQ",  # Nasdaq 100 ETF; high beta, good for mean-reversion calls
     # Individual names — selected for relatively cheap premiums
     "INTC",  # ~$20-30 range; ATM 7-DTE call ~$0.40-0.80/share
     "CSCO",  # ~$50-60 range; ATM weeklies ~$0.60-1.20/share
-    "WDC",   # ~$30-50 range
-    "HPE",   # ~$15-20 range; cheapest premiums in the universe
+    "WDC",  # ~$30-50 range
+    "HPE",  # ~$15-20 range; cheapest premiums in the universe
     "SMCI",  # ~$30-50 range; high volatility, good mean-reversion signals
     "PLTR",  # ~$25-40 range; high beta, liquid options
     "CRWD",  # ~$300+ range; will typically exceed budget → skip gracefully
-    "AMD",   # ~$100-150 range; will typically exceed budget → skip gracefully
+    "AMD",  # ~$100-150 range; will typically exceed budget → skip gracefully
     # ── Short-zone adds from screener 2026-04-14 (puts on overbought) ─────────
     "WULF",  # ~$20 range; cheap weekly puts should fit $110 budget
     "AMZN",  # ~$246; usually budget-skipped, catch cheap OTM on IV spikes
@@ -107,35 +106,38 @@ SYMBOLS = [
 # nothing qualifies.
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-_ET                  = zoneinfo.ZoneInfo("America/New_York")
-_RTH_OPEN            = dtime(9, 30)
-_RTH_CLOSE           = dtime(16, 0)
-_NO_ENTRY_HOUR       = int(os.environ.get("OPTIONS_NO_ENTRY_HOUR", "15"))  # 3 PM default
-_STRATEGY_LEVEL      = int(os.environ.get("OPTIONS_LEVEL", "2"))
-_DTE_MONITOR_INTERVAL_S = 1800    # check for near-expiry positions every 30 min
+_ET = zoneinfo.ZoneInfo("America/New_York")
+_RTH_OPEN = dtime(9, 30)
+_RTH_CLOSE = dtime(16, 0)
+_NO_ENTRY_HOUR = int(os.environ.get("OPTIONS_NO_ENTRY_HOUR", "15"))  # 3 PM default
+_STRATEGY_LEVEL = int(os.environ.get("OPTIONS_LEVEL", "2"))
+_DTE_MONITOR_INTERVAL_S = 1800  # check for near-expiry positions every 30 min
+
 
 # ── Token bucket ───────────────────────────────────────────────────────────────
 class _TokenBucket:
     def __init__(self, rate_per_minute: int) -> None:
-        self._tokens   = float(rate_per_minute)
-        self._max      = float(rate_per_minute)
+        self._tokens = float(rate_per_minute)
+        self._max = float(rate_per_minute)
         self._interval = 60.0 / rate_per_minute
-        self._last     = 0.0
+        self._last = 0.0
 
     async def acquire(self) -> None:
         loop = asyncio.get_running_loop()
         while self._tokens < 1.0:
             await asyncio.sleep(self._interval)
-            now            = loop.time()
-            self._tokens   = min(self._max, self._tokens + (now - self._last) / self._interval)
-            self._last     = now
+            now = loop.time()
+            self._tokens = min(
+                self._max, self._tokens + (now - self._last) / self._interval
+            )
+            self._last = now
         self._tokens -= 1.0
 
 
 # ── Engine ─────────────────────────────────────────────────────────────────────
 class OptionsEngine:
     def __init__(self) -> None:
-        self._cfg    = load_settings()
+        self._cfg = load_settings()
         self._client = TradingClient(
             self._cfg.api_key,
             self._cfg.api_secret,
@@ -150,34 +152,41 @@ class OptionsEngine:
             secret_key=self._cfg.api_secret,
         )
         self._breaker = CircuitBreaker(self._client)
-        self._orders  = OrderManager(
-            self._client, self._breaker, self._cfg,
-            strategy_tag="options", asset_class="option",
+        self._orders = OrderManager(
+            self._client,
+            self._breaker,
+            self._cfg,
+            strategy_tag="options",
+            asset_class="option",
         )
-        self._chain  = OptionsChainCache(
-            trading_client = self._client,
-            data_client    = self._opt_data_client,
-            underlyings    = SYMBOLS,
-            min_dte        = 7,
-            max_dte        = 21,
+        self._chain = OptionsChainCache(
+            trading_client=self._client,
+            data_client=self._opt_data_client,
+            underlyings=SYMBOLS,
+            min_dte=7,
+            max_dte=21,
         )
         self._signals = OptionsSignalEngine(
-            chain          = self._chain,
-            symbols        = SYMBOLS,
-            strategy_level = _STRATEGY_LEVEL,
-            strategy_tag   = "options",
+            chain=self._chain,
+            symbols=SYMBOLS,
+            strategy_level=_STRATEGY_LEVEL,
+            strategy_tag="options",
         )
-        self._msg_q  = asyncio.Queue(maxsize=2000)
-        self._feed   = RestStockPoller(self._data_client, SYMBOLS, self._msg_q)
+        self._msg_q = asyncio.Queue(maxsize=2000)
+        self._feed = RestStockPoller(self._data_client, SYMBOLS, self._msg_q)
         self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
         self._running = True
 
     async def run(self) -> None:
         mode = self._cfg.execution_mode.value
-        tag  = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
-        log.info("options_engine_start",
-                 mode=tag, symbols=SYMBOLS, level=_STRATEGY_LEVEL,
-                 paper=self._cfg.paper)
+        tag = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
+        log.info(
+            "options_engine_start",
+            mode=tag,
+            symbols=SYMBOLS,
+            level=_STRATEGY_LEVEL,
+            paper=self._cfg.paper,
+        )
         print(
             f"\n[OPTIONS ENGINE] Mode={tag}  Level={_STRATEGY_LEVEL}  "
             f"Universe={len(SYMBOLS)} symbols\n"
@@ -198,11 +207,11 @@ class OptionsEngine:
         log.info("options_chain_loaded", contracts_per_symbol=snap)
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._feed.run(),          name="feed")
-            tg.create_task(self._chain.run(),          name="chain_refresh")
-            tg.create_task(self._strategy_loop(),      name="strategy")
-            tg.create_task(self._drawdown_watch(),     name="drawdown")
-            tg.create_task(self._dte_monitor_loop(),   name="dte_monitor")
+            tg.create_task(self._feed.run(), name="feed")
+            tg.create_task(self._chain.run(), name="chain_refresh")
+            tg.create_task(self._strategy_loop(), name="strategy")
+            tg.create_task(self._drawdown_watch(), name="drawdown")
+            tg.create_task(self._dte_monitor_loop(), name="dte_monitor")
 
     # ── Strategy loop ─────────────────────────────────────────────────────────
 
@@ -229,7 +238,7 @@ class OptionsEngine:
 
             # No new entries after NO_ENTRY_HOUR (default 3 PM)
             entry_cutoff = dtime(_NO_ENTRY_HOUR, 0)
-            allow_entry  = now_et < entry_cutoff
+            allow_entry = now_et < entry_cutoff
 
             sym = msg.get("symbol", "")
             order_list = self._signals.evaluate(msg)
@@ -243,8 +252,12 @@ class OptionsEngine:
                 for p in ("buy_call", "buy_put", "sell_csp", "bull_", "bear_")
             )
             if is_entry and not allow_entry:
-                log.info("options_entry_skipped_cutoff",
-                         symbol=sym, hour=now_et.hour, cutoff=_NO_ENTRY_HOUR)
+                log.info(
+                    "options_entry_skipped_cutoff",
+                    symbol=sym,
+                    hour=now_et.hour,
+                    cutoff=_NO_ENTRY_HOUR,
+                )
                 # Rollback signal state since we didn't execute
                 if sym in self._signals._positions:
                     del self._signals._positions[sym]
@@ -256,7 +269,7 @@ class OptionsEngine:
                 try:
                     result = await self._orders.submit_limit(
                         **order_kwargs,
-                        tif=TimeInForce.DAY,   # options require DAY TIF
+                        tif=TimeInForce.DAY,  # options require DAY TIF
                     )
                 except Exception as exc:
                     # Transient network / Alpaca failure. Treat like a blocked
@@ -274,8 +287,11 @@ class OptionsEngine:
                 if result:
                     log.info("options_order_result", action=action, **result)
                 else:
-                    log.warning("options_order_blocked", action=action,
-                                symbol=order_kwargs.get("symbol"))
+                    log.warning(
+                        "options_order_blocked",
+                        action=action,
+                        symbol=order_kwargs.get("symbol"),
+                    )
                     # On blocked entry, remove the position we pre-committed
                     if is_entry and sym in self._signals._positions:
                         del self._signals._positions[sym]
@@ -292,8 +308,11 @@ class OptionsEngine:
             await asyncio.sleep(_DTE_MONITOR_INTERVAL_S)
             to_close = self._signals.check_dte_closes()
             for underlying, order_list, _ in to_close:
-                log.warning("dte_close_executing",
-                            underlying=underlying, n_orders=len(order_list))
+                log.warning(
+                    "dte_close_executing",
+                    underlying=underlying,
+                    n_orders=len(order_list),
+                )
                 for order_kwargs in order_list:
                     action = order_kwargs.pop("action", "dte_close")
                     await self._bucket.acquire()
@@ -319,9 +338,12 @@ class OptionsEngine:
                     if result:
                         log.info("dte_close_result", action=action, **result)
                     else:
-                        log.error("dte_close_blocked", action=action,
-                                  symbol=order_kwargs.get("symbol"),
-                                  note="manual intervention may be required")
+                        log.error(
+                            "dte_close_blocked",
+                            action=action,
+                            symbol=order_kwargs.get("symbol"),
+                            note="manual intervention may be required",
+                        )
 
             # Periodic position snapshot for monitoring
             open_pos = self._signals.open_positions_summary()
@@ -345,10 +367,10 @@ class OptionsEngine:
         Same approach as equities_engine.py.  Silently skips on error.
         """
         log.info("options_buffer_preseed_start", symbols=SYMBOLS, window=WINDOW)
-        end   = datetime.now(_ET).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = datetime.now(_ET).replace(hour=0, minute=0, second=0, microsecond=0)
         start = end - timedelta(days=WINDOW * 2)  # extra headroom for non-trading days
         try:
-            req  = StockBarsRequest(
+            req = StockBarsRequest(
                 symbol_or_symbols=SYMBOLS,
                 timeframe=TimeFrame.Day,
                 start=start,
@@ -364,12 +386,16 @@ class OptionsEngine:
                 closes = [float(b.close) for b in sym_bars[-WINDOW:]]
                 self._signals.seed_price_buffer(sym, closes)
                 seeded += 1
-            log.info("options_buffer_preseed_complete",
-                     seeded=seeded, total=len(SYMBOLS))
+            log.info(
+                "options_buffer_preseed_complete", seeded=seeded, total=len(SYMBOLS)
+            )
         except Exception as exc:
-            log.warning("options_preseed_error",
-                        exc_type=type(exc).__name__, exc_msg=str(exc)[:120],
-                        note="engine will warm up from live bars (~60 bars per symbol)")
+            log.warning(
+                "options_preseed_error",
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:120],
+                note="engine will warm up from live bars (~60 bars per symbol)",
+            )
 
     def stop(self) -> None:
         log.info("options_engine_shutdown")
@@ -387,7 +413,7 @@ class OptionsEngine:
 # ── Entry point ────────────────────────────────────────────────────────────────
 async def main() -> None:
     engine = OptionsEngine()
-    loop   = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, engine.stop)
     await engine.run()

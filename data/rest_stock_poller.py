@@ -30,8 +30,8 @@ log = structlog.get_logger(__name__)
 
 _ET = zoneinfo.ZoneInfo("America/New_York")
 
-QUOTE_INTERVAL_S    = 30    # NBBO poll cadence
-BAR_CHECK_INTERVAL_S = 60   # daily bar poll cadence
+QUOTE_INTERVAL_S = 30  # NBBO poll cadence
+BAR_CHECK_INTERVAL_S = 60  # daily bar poll cadence
 
 
 class RestStockPoller:
@@ -43,26 +43,28 @@ class RestStockPoller:
     def __init__(
         self,
         data_client: StockHistoricalDataClient,
-        symbols:     list[str],
-        msg_queue:   asyncio.Queue,
+        symbols: list[str],
+        msg_queue: asyncio.Queue,
     ) -> None:
-        self._dc       = data_client
-        self._symbols  = symbols
-        self._queue    = msg_queue
-        self._running  = True
+        self._dc = data_client
+        self._symbols = symbols
+        self._queue = msg_queue
+        self._running = True
         # Track the last bar date emitted per symbol to avoid duplicates
         self._last_bar_date: dict[str, date] = {}
 
     async def run(self) -> None:
-        log.info("rest_stock_poller_start",
-                 symbols=self._symbols,
-                 quote_interval_s=QUOTE_INTERVAL_S,
-                 bar_interval_s=BAR_CHECK_INTERVAL_S)
+        log.info(
+            "rest_stock_poller_start",
+            symbols=self._symbols,
+            quote_interval_s=QUOTE_INTERVAL_S,
+            bar_interval_s=BAR_CHECK_INTERVAL_S,
+        )
 
         # Run quote and bar polling concurrently as separate inner loops
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self._quote_loop(), name="rest_quote_loop")
-            tg.create_task(self._bar_loop(),   name="rest_bar_loop")
+            tg.create_task(self._bar_loop(), name="rest_bar_loop")
 
     def stop(self) -> None:
         log.info("rest_stock_poller_stop")
@@ -76,11 +78,14 @@ class RestStockPoller:
             try:
                 await asyncio.to_thread(self._fetch_quotes)
             except Exception as exc:
-                log.warning("rest_quote_error",
-                            exc_type=type(exc).__name__, exc_msg=str(exc)[:120])
+                log.warning(
+                    "rest_quote_error",
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:120],
+                )
 
     def _fetch_quotes(self) -> None:
-        req  = StockLatestQuoteRequest(
+        req = StockLatestQuoteRequest(
             symbol_or_symbols=self._symbols,
             feed=DataFeed.IEX,
         )
@@ -89,15 +94,15 @@ class RestStockPoller:
         for sym, q in quotes.items():
             bid_px = float(getattr(q, "bid_price", 0) or 0)
             ask_px = float(getattr(q, "ask_price", 0) or 0)
-            bid_sz = float(getattr(q, "bid_size",  0) or 0)
-            ask_sz = float(getattr(q, "ask_size",  0) or 0)
+            bid_sz = float(getattr(q, "bid_size", 0) or 0)
+            ask_sz = float(getattr(q, "ask_size", 0) or 0)
             if bid_px <= 0 or ask_px <= 0:
                 continue
             msg = {
-                "type":   "orderbook",
+                "type": "orderbook",
                 "symbol": sym,
-                "bids":   [[bid_px, bid_sz]],
-                "asks":   [[ask_px, ask_sz]],
+                "bids": [[bid_px, bid_sz]],
+                "asks": [[ask_px, ask_sz]],
             }
             try:
                 self._queue.put_nowait(msg)
@@ -111,19 +116,25 @@ class RestStockPoller:
         try:
             await asyncio.to_thread(self._fetch_bars, force=True)
         except Exception as exc:
-            log.warning("rest_bar_error_startup",
-                        exc_type=type(exc).__name__, exc_msg=str(exc)[:120])
+            log.warning(
+                "rest_bar_error_startup",
+                exc_type=type(exc).__name__,
+                exc_msg=str(exc)[:120],
+            )
 
         while self._running:
             await asyncio.sleep(BAR_CHECK_INTERVAL_S)
             try:
                 await asyncio.to_thread(self._fetch_bars)
             except Exception as exc:
-                log.warning("rest_bar_error",
-                            exc_type=type(exc).__name__, exc_msg=str(exc)[:120])
+                log.warning(
+                    "rest_bar_error",
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:120],
+                )
 
     def _fetch_bars(self, force: bool = False) -> None:
-        req  = StockLatestBarRequest(
+        req = StockLatestBarRequest(
             symbol_or_symbols=self._symbols,
             feed=DataFeed.IEX,
         )
@@ -147,18 +158,22 @@ class RestStockPoller:
 
             self._last_bar_date[sym] = bar_date
             msg = {
-                "type":      "bar",
-                "symbol":    sym,
-                "open":      float(bar.open),
-                "high":      float(bar.high),
-                "low":       float(bar.low),
-                "close":     float(bar.close),
-                "volume":    float(bar.volume),
+                "type": "bar",
+                "symbol": sym,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
                 "timestamp": str(ts),
             }
             try:
                 self._queue.put_nowait(msg)
-                log.debug("rest_bar_emitted", symbol=sym, date=str(bar_date),
-                          close=float(bar.close))
+                log.debug(
+                    "rest_bar_emitted",
+                    symbol=sym,
+                    date=str(bar_date),
+                    close=float(bar.close),
+                )
             except asyncio.QueueFull:
                 log.warning("rest_bar_queue_full", symbol=sym)

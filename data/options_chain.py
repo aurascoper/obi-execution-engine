@@ -38,25 +38,26 @@ log = structlog.get_logger(__name__)
 CHAIN_REFRESH_S = 60
 
 # Quality filters — tighten or loosen based on liquidity of your universe.
-MIN_OPEN_INTEREST     = 50      # skip illiquid contracts
-MAX_SPREAD_PCT        = 0.20    # max (ask - bid) / mid; 20% = wide but acceptable
-MAX_CONTRACTS_IN_SNAP = 200     # batch ceiling for snapshot API call per symbol
+MIN_OPEN_INTEREST = 50  # skip illiquid contracts
+MAX_SPREAD_PCT = 0.20  # max (ask - bid) / mid; 20% = wide but acceptable
+MAX_CONTRACTS_IN_SNAP = 200  # batch ceiling for snapshot API call per symbol
 
 
 @dataclass(slots=True)
 class CachedContract:
     """Single options contract: metadata merged with live snapshot data."""
-    symbol:        str           # OSI  e.g. "TSLA250418C00250000"
-    underlying:    str           # e.g. "TSLA"
-    expiry:        date
-    strike:        float
+
+    symbol: str  # OSI  e.g. "TSLA250418C00250000"
+    underlying: str  # e.g. "TSLA"
+    expiry: date
+    strike: float
     contract_type: Literal["call", "put"]
-    delta:         float         # from greeks; nan if unavailable
-    bid:           float
-    ask:           float
-    mid:           float
+    delta: float  # from greeks; nan if unavailable
+    bid: float
+    ask: float
+    mid: float
     open_interest: int
-    iv:            float         # implied volatility; nan if unavailable
+    iv: float  # implied volatility; nan if unavailable
 
     @property
     def dte(self) -> int:
@@ -86,17 +87,17 @@ class OptionsChainCache:
     def __init__(
         self,
         trading_client: TradingClient,
-        data_client:    OptionHistoricalDataClient,
-        underlyings:    list[str],
-        min_dte:        int = 7,
-        max_dte:        int = 21,
+        data_client: OptionHistoricalDataClient,
+        underlyings: list[str],
+        min_dte: int = 7,
+        max_dte: int = 21,
     ) -> None:
-        self._tc          = trading_client
-        self._dc          = data_client
+        self._tc = trading_client
+        self._dc = data_client
         self._underlyings = underlyings
-        self._min_dte     = min_dte
-        self._max_dte     = max_dte
-        self._running     = True
+        self._min_dte = min_dte
+        self._max_dte = max_dte
+        self._running = True
         # underlying → list[CachedContract]
         self._cache: dict[str, list[CachedContract]] = {s: [] for s in underlyings}
 
@@ -117,11 +118,11 @@ class OptionsChainCache:
 
     def best_contract(
         self,
-        underlying:    str,
+        underlying: str,
         contract_type: Literal["call", "put"],
-        target_delta:  float = 0.45,
-        min_premium:   float = 0.10,
-        max_premium:   float = 5.00,
+        target_delta: float = 0.45,
+        min_premium: float = 0.10,
+        max_premium: float = 5.00,
     ) -> CachedContract | None:
         """
         Return the contract closest to |target_delta| that passes quality filters.
@@ -130,13 +131,14 @@ class OptionsChainCache:
         min/max_premium are per-share bounds (× 100 for total contract cost).
         """
         candidates = [
-            c for c in self._cache.get(underlying, [])
+            c
+            for c in self._cache.get(underlying, [])
             if c.contract_type == contract_type
             and not math.isnan(c.delta)
             and c.open_interest >= MIN_OPEN_INTEREST
-            and c.spread_pct    <= MAX_SPREAD_PCT
-            and c.bid           >  0
-            and min_premium     <= c.mid <= max_premium
+            and c.spread_pct <= MAX_SPREAD_PCT
+            and c.bid > 0
+            and min_premium <= c.mid <= max_premium
         ]
         if not candidates:
             return None
@@ -145,7 +147,7 @@ class OptionsChainCache:
     def spread_short_leg(
         self,
         long_contract: CachedContract,
-        spread_width:  float = 5.0,
+        spread_width: float = 5.0,
     ) -> CachedContract | None:
         """
         Find a short-leg contract for a vertical spread.
@@ -157,7 +159,7 @@ class OptionsChainCache:
         the short leg is spread_width below it, same expiry.
         """
         ctype = long_contract.contract_type
-        exp   = long_contract.expiry
+        exp = long_contract.expiry
 
         if ctype == "call":
             target_strike = long_contract.strike + spread_width
@@ -165,10 +167,11 @@ class OptionsChainCache:
             target_strike = long_contract.strike - spread_width
 
         candidates = [
-            c for c in self._cache.get(long_contract.underlying, [])
+            c
+            for c in self._cache.get(long_contract.underlying, [])
             if c.contract_type == ctype
-            and c.expiry        == exp
-            and c.bid           >  0
+            and c.expiry == exp
+            and c.bid > 0
             and c.open_interest >= MIN_OPEN_INTEREST
         ]
         if not candidates:
@@ -200,7 +203,7 @@ class OptionsChainCache:
             )
 
     def _sync_refresh_all(self) -> None:
-        today   = date.today()
+        today = date.today()
         exp_min = today + timedelta(days=self._min_dte)
         exp_max = today + timedelta(days=self._max_dte)
         for sym in self._underlyings:
@@ -222,7 +225,7 @@ class OptionsChainCache:
             expiration_date_lte=exp_max,
             status="active",
         )
-        result   = self._tc.get_option_contracts(req)
+        result = self._tc.get_option_contracts(req)
         # SDK returns GetOptionContractsResponse with .option_contracts list.
         if hasattr(result, "option_contracts"):
             contracts = list(result.option_contracts) if result.option_contracts else []
@@ -230,7 +233,9 @@ class OptionsChainCache:
             contracts = list(result) if result else []
         if not contracts:
             self._cache[sym] = []
-            log.debug("options_chain_empty", symbol=sym, dte_window=f"{exp_min}…{exp_max}")
+            log.debug(
+                "options_chain_empty", symbol=sym, dte_window=f"{exp_min}…{exp_max}"
+            )
             return
 
         # 2. Batch-fetch snapshots (greeks + NBBO) for all OSI symbols.
@@ -258,14 +263,18 @@ class OptionsChainCache:
                 continue
 
             greeks = getattr(snap, "greeks", None)
-            delta  = float(greeks.delta) \
-                     if greeks is not None and greeks.delta is not None \
-                     else float("nan")
-            iv     = float(snap.implied_volatility) \
-                     if snap.implied_volatility is not None \
-                     else float("nan")
+            delta = (
+                float(greeks.delta)
+                if greeks is not None and greeks.delta is not None
+                else float("nan")
+            )
+            iv = (
+                float(snap.implied_volatility)
+                if snap.implied_volatility is not None
+                else float("nan")
+            )
 
-            quote  = getattr(snap, "latest_quote", None)
+            quote = getattr(snap, "latest_quote", None)
             if quote is None:
                 continue
             bid = float(getattr(quote, "bid_price", 0) or 0)
@@ -278,34 +287,37 @@ class OptionsChainCache:
             exp = c.expiration_date
             if isinstance(exp, str):
                 from datetime import datetime as _dt
+
                 exp = _dt.strptime(exp[:10], "%Y-%m-%d").date()
 
             ctype: Literal["call", "put"] = (
                 "call"
                 if getattr(c, "type", None) == ContractType.CALL
-                   or str(getattr(c, "type", "")).lower() == "call"
+                or str(getattr(c, "type", "")).lower() == "call"
                 else "put"
             )
             oi = int(getattr(c, "open_interest", 0) or 0)
 
-            cached.append(CachedContract(
-                symbol        = c.symbol,
-                underlying    = sym,
-                expiry        = exp,
-                strike        = float(c.strike_price),
-                contract_type = ctype,
-                delta         = delta,
-                bid           = bid,
-                ask           = ask,
-                mid           = mid,
-                open_interest = oi,
-                iv            = iv,
-            ))
+            cached.append(
+                CachedContract(
+                    symbol=c.symbol,
+                    underlying=sym,
+                    expiry=exp,
+                    strike=float(c.strike_price),
+                    contract_type=ctype,
+                    delta=delta,
+                    bid=bid,
+                    ask=ask,
+                    mid=mid,
+                    open_interest=oi,
+                    iv=iv,
+                )
+            )
 
         self._cache[sym] = cached
         log.debug(
             "options_chain_refreshed",
-            symbol   = sym,
-            contracts= len(cached),
-            exp_range= f"{exp_min}…{exp_max}",
+            symbol=sym,
+            contracts=len(cached),
+            exp_range=f"{exp_min}…{exp_max}",
         )

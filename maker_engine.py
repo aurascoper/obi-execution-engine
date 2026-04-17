@@ -63,9 +63,9 @@ _CANCEL_INTERVAL_S = 30
 # ── Token bucket (rate limiter) ───────────────────────────────────────────────
 class _TokenBucket:
     def __init__(self, rate_per_minute: int):
-        self._tokens    = float(rate_per_minute)
-        self._max       = float(rate_per_minute)
-        self._interval  = 60.0 / rate_per_minute
+        self._tokens = float(rate_per_minute)
+        self._max = float(rate_per_minute)
+        self._interval = 60.0 / rate_per_minute
         self._last_fill = 0.0
 
     async def acquire(self) -> None:
@@ -74,7 +74,7 @@ class _TokenBucket:
             await asyncio.sleep(self._interval)
             now = loop.time()
             refill = (now - self._last_fill) / self._interval
-            self._tokens    = min(self._max, self._tokens + refill)
+            self._tokens = min(self._max, self._tokens + refill)
             self._last_fill = now
         self._tokens -= 1.0
 
@@ -82,39 +82,46 @@ class _TokenBucket:
 # ── Maker Engine ──────────────────────────────────────────────────────────────
 class MakerEngine:
     def __init__(self, msg_queue: asyncio.Queue | None = None):
-        self._cfg     = load_settings()
-        self._client  = TradingClient(
+        self._cfg = load_settings()
+        self._client = TradingClient(
             self._cfg.api_key,
             self._cfg.api_secret,
             paper=self._cfg.paper,
         )
         self._breaker = CircuitBreaker(self._client)
-        self._orders  = OrderManager(
-            self._client, self._breaker, self._cfg,
+        self._orders = OrderManager(
+            self._client,
+            self._breaker,
+            self._cfg,
             strategy_tag="maker",
         )
         self._signals = SignalEngine(
             symbols=SYMBOLS,
             strategy_tag="maker",
         )
-        self._bucket  = _TokenBucket(MAX_ORDERS_PER_MINUTE)
+        self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
         self._running = True
 
         if msg_queue is not None:
             self._msg_q = msg_queue
-            self._feed  = None
+            self._feed = None
         else:
             self._msg_q = asyncio.Queue(maxsize=2000)
-            self._feed  = LiveFeed(self._cfg, SYMBOLS, self._msg_q)
+            self._feed = LiveFeed(self._cfg, SYMBOLS, self._msg_q)
 
         # Wire fill events from TradingStream → SignalEngine position state
         self._orders.register_fill_handler(self._signals.on_fill)
 
     async def run(self) -> None:
         mode = self._cfg.execution_mode.value
-        tag  = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
-        log.info("maker_engine_start", mode=tag, symbols=SYMBOLS,
-                 paper=self._cfg.paper, strategy_tag="maker")
+        tag = "*** LIVE ***" if self._cfg.execution_mode == ExecutionMode.LIVE else mode
+        log.info(
+            "maker_engine_start",
+            mode=tag,
+            symbols=SYMBOLS,
+            paper=self._cfg.paper,
+            strategy_tag="maker",
+        )
         print(
             f"\n[MAKER ENGINE] Mode={tag}  Universe={len(SYMBOLS)} symbols\n"
             f"               strategy_tag=maker  cancel_interval={_CANCEL_INTERVAL_S}s\n"
@@ -126,10 +133,10 @@ class MakerEngine:
 
         async with asyncio.TaskGroup() as tg:
             if self._feed is not None:
-                tg.create_task(self._feed.run(),         name="feed")
-            tg.create_task(self._strategy_loop(),        name="strategy")
-            tg.create_task(self._drawdown_watch(),       name="drawdown")
-            tg.create_task(self._order_tracker_loop(),   name="order_tracker")
+                tg.create_task(self._feed.run(), name="feed")
+            tg.create_task(self._strategy_loop(), name="strategy")
+            tg.create_task(self._drawdown_watch(), name="drawdown")
+            tg.create_task(self._order_tracker_loop(), name="order_tracker")
             tg.create_task(self._orders.start_trade_updates(), name="trade_updates")
 
     # ── Strategy loop ─────────────────────────────────────────────────────────
@@ -229,7 +236,7 @@ class MakerEngine:
 # ── Entry point ───────────────────────────────────────────────────────────────
 async def main() -> None:
     engine = MakerEngine()
-    loop   = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, engine.stop)
     await engine.run()
