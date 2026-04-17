@@ -749,7 +749,10 @@ class SignalEngine:
         dust_caps_by_coin = dust_caps_by_coin or {}
         live_open_syms: set[str] = set()
         for pos in hl_positions:
-            coin = str(pos.get("coin", "")).upper()
+            raw_coin = str(pos.get("coin", ""))
+            # Try exact match first (preserves HIP-3 "xyz:MSTR" case),
+            # then upper-case fallback for native coins ("btc" → "BTC").
+            coin = raw_coin if raw_coin in coin_to_symbol else raw_coin.upper()
             state_sym = coin_to_symbol.get(coin)
             if state_sym is None or state_sym not in self._state:
                 continue
