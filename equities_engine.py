@@ -460,6 +460,7 @@ class Engine:
             tg.create_task(self._feed.run(),       name="stock_feed")
             tg.create_task(self._strategy_loop(),  name="equities_strategy")
             tg.create_task(self._drawdown_watch(), name="equities_drawdown")
+            tg.create_task(self._heartbeat(),      name="equities_heartbeat")
 
     # ── Startup position reconciliation ───────────────────────────────────────
     async def _reconcile_positions(self) -> None:
@@ -640,6 +641,11 @@ class Engine:
             if not safe:
                 self._running = False
                 self._feed.stop()
+
+    async def _heartbeat(self) -> None:
+        while self._running:
+            await asyncio.sleep(300)
+            log.info("equities_heartbeat", halted=not self._running)
 
     def stop(self) -> None:
         log.info("equities_engine_shutdown")
