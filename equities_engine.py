@@ -500,11 +500,13 @@ class Engine:
         self._tracker = SectorExposureTracker(
             SECTOR_MAP, SECTOR_CAPS, MAX_SECTOR_EXPOSURE
         )
-        all_symbols = SYMBOLS + sorted(MOMENTUM_EQUITIES - set(SYMBOLS))
-        self._signals = EquitiesSignalEngine(symbols=all_symbols, tracker=self._tracker)
+        self._all_symbols = SYMBOLS + sorted(MOMENTUM_EQUITIES - set(SYMBOLS))
+        self._signals = EquitiesSignalEngine(
+            symbols=self._all_symbols, tracker=self._tracker
+        )
         self._bucket = _TokenBucket(MAX_ORDERS_PER_MINUTE)
         self._msg_q = asyncio.Queue(maxsize=2000)
-        self._feed = LiveStockFeed(self._cfg, all_symbols, self._msg_q)
+        self._feed = LiveStockFeed(self._cfg, self._all_symbols, self._msg_q)
         self._running = True
 
     async def run(self) -> None:
@@ -627,12 +629,15 @@ class Engine:
         start = now - timedelta(days=lookback_days)
 
         log.info(
-            "preseed_fetching", symbols=SYMBOLS, lookback_days=lookback_days, feed="iex"
+            "preseed_fetching",
+            symbols=self._all_symbols,
+            lookback_days=lookback_days,
+            feed="iex",
         )
 
         try:
             req = StockBarsRequest(
-                symbol_or_symbols=SYMBOLS,
+                symbol_or_symbols=self._all_symbols,
                 timeframe=TimeFrame.Day,
                 start=start,
                 end=now,
@@ -649,7 +654,7 @@ class Engine:
             )
             return
 
-        for sym in SYMBOLS:
+        for sym in self._all_symbols:
             rows = df[df["symbol"] == sym].sort_values("timestamp")
             closes = rows["close"].values  # all available — buffers handle overflow
             if len(closes) == 0:
