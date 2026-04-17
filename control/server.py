@@ -115,10 +115,20 @@ class ControlPlaneServer:
     # ── Read commands ─────────────────────────────────────────────────────────
 
     def _cmd_get(self, params: dict) -> dict:
-        coin = str(params.get("coin", "")).upper()
+        coin = str(params.get("coin", "")).strip()
         # Try coin name ("BTC") or full symbol ("BTC/USD").
-        symbol = f"{coin}/USD" if "/" not in coin else coin
+        if "/" in coin:
+            symbol = coin
+        else:
+            symbol = f"{coin.upper()}/USD"
         st = self._signals._state.get(symbol)
+        # Fallback: try DEX-prefixed lookup (e.g. "SP500" → "xyz:SP500/USD").
+        if st is None:
+            for key, state in self._signals._state.items():
+                if ":" in key and key.endswith(f":{coin.upper()}/USD"):
+                    st = state
+                    symbol = key
+                    break
         if st is None:
             return {"ok": False, "error": f"unknown_symbol: {coin}"}
         return {"ok": True, "data": self._symbol_detail(st)}

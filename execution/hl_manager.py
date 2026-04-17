@@ -52,6 +52,8 @@ class HyperliquidOrderManager:
         default_leverage:  int               = 2,
         coins:             list[str] | None  = None,
         is_cross:          bool              = True,
+        perp_dexs:         list[str] | None  = None,
+        leverage_map:      dict[str, int] | None = None,
     ):
         if not cfg.hl_wallet_address or not cfg.hl_private_key:
             raise RuntimeError(
@@ -84,12 +86,19 @@ class HyperliquidOrderManager:
         self._mode           = cfg.execution_mode
         self.strategy_tag    = strategy_tag
 
-        self._exchange = Exchange(
-            wallet,
-            mainnet_url,
-            account_address=cfg.hl_wallet_address,
-        )
-        self._info = Info(mainnet_url, skip_ws=True)
+        exchange_kwargs: dict[str, Any] = {
+            "account_address": cfg.hl_wallet_address,
+        }
+        info_kwargs: dict[str, Any] = {"skip_ws": True}
+        if perp_dexs:
+            # SDK convention: "" = native HyperCore perps, must be included
+            # alongside builder DEX names to keep BTC/ETH/etc. resolvable.
+            full_dexs = [""] + [d for d in perp_dexs if d != ""]
+            exchange_kwargs["perp_dexs"] = full_dexs
+            info_kwargs["perp_dexs"] = full_dexs
+
+        self._exchange = Exchange(wallet, mainnet_url, **exchange_kwargs)
+        self._info = Info(mainnet_url, **info_kwargs)
 
         log.info(
             "hl_manager_initialized",
@@ -104,30 +113,43 @@ class HyperliquidOrderManager:
         # contract is "strategy runs fully; orders logged but never submitted"
         # — orders cannot reach the exchange, so an unfunded perp account is a
         # valid burn-in state; demote to a warning.
+        self._leverage_map = leverage_map or {}
         if coins:
             for coin in coins:
+                lev = self._leverage_map.get(coin, default_leverage)
+                # HIP-3 builder-deployed assets (dex:NAME) only support isolated margin.
+                coin_cross = is_cross and ":" not in coin
                 resp   = self._exchange.update_leverage(
-                    default_leverage, coin.upper(), is_cross
+                    lev, coin, coin_cross
                 )
                 status = (resp or {}).get("status")
+                resp_msg = str((resp or {}).get("response", ""))
                 if status == "ok":
                     log.info(
                         "hl_leverage_set",
-                        coin=coin.upper(),
-                        leverage=default_leverage,
-                        is_cross=is_cross,
+                        coin=coin,
+                        leverage=lev,
+                        is_cross=coin_cross,
+                    )
+                elif "sufficient margin" in resp_msg.lower():
+                    log.warning(
+                        "hl_leverage_pin_margin_constraint",
+                        coin=coin,
+                        leverage=lev,
+                        is_cross=coin_cross,
+                        response=resp,
                     )
                 elif self._mode == ExecutionMode.SHADOW:
                     log.warning(
                         "hl_leverage_pin_skipped_shadow",
-                        coin=coin.upper(),
-                        leverage=default_leverage,
+                        coin=coin,
+                        leverage=lev,
                         response=resp,
                     )
                 else:
                     raise RuntimeError(
                         f"hl update_leverage failed for {coin} "
-                        f"(leverage={default_leverage}, cross={is_cross}, "
+                        f"(leverage={lev}, cross={coin_cross}, "
                         f"mode={self._mode.value}): {resp}"
                     )
 
@@ -148,7 +170,7 @@ class HyperliquidOrderManager:
         Returns the SDK response dict, or None in SHADOW mode (logs a mock fill).
         """
         try:
-            symbol       = str(order["symbol"]).upper()
+            symbol       = str(order["symbol"])
             side         = str(order["side"]).lower()
             qty          = float(order["qty"])
             limit_px     = float(order["limit_px"])
@@ -246,7 +268,7 @@ class HyperliquidOrderManager:
             return {"status": "shadow_cancelled", "symbol": symbol, "oid": oid}
         try:
             resp = await asyncio.to_thread(
-                self._exchange.cancel, symbol.upper(), int(oid)
+                self._exchange.cancel, symbol, int(oid)
             )
         except Exception as exc:
             log.warning(
@@ -283,7 +305,7 @@ class HyperliquidOrderManager:
             return None
         try:
             resp = await asyncio.to_thread(
-                self._exchange.cancel_by_cloid, symbol.upper(), cloid_obj
+                self._exchange.cancel_by_cloid, symbol, cloid_obj
             )
         except Exception as exc:
             log.warning(

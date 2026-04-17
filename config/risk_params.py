@@ -40,6 +40,27 @@ SYMBOL_CAPS = {
     "VOO":      5_000.0,
     "NVDA":     3_000.0,
     "SPY":      5_000.0,
+    # HIP-3 equity perps (TradeXYZ on Hyperliquid) — screener_hip3.py top 20
+    "xyz:HIMS/USD":     100.0,
+    "xyz:HOOD/USD":     100.0,
+    "xyz:CRCL/USD":     100.0,
+    "xyz:ORCL/USD":     100.0,
+    "xyz:EWY/USD":      100.0,
+    "xyz:XYZ100/USD":   100.0,
+    "xyz:COIN/USD":     100.0,
+    "xyz:CRWV/USD":     100.0,
+    "xyz:TSLA/USD":     100.0,
+    "xyz:CL/USD":       100.0,
+    "xyz:SNDK/USD":     100.0,
+    "xyz:MSTR/USD":     100.0,
+    "xyz:SKHX/USD":     100.0,
+    "xyz:MSFT/USD":     100.0,
+    "xyz:MU/USD":       100.0,
+    "xyz:SP500/USD":    100.0,
+    "xyz:AMD/USD":      100.0,
+    "xyz:PLTR/USD":     100.0,
+    "xyz:BRENTOIL/USD": 100.0,
+    "xyz:INTC/USD":     100.0,
 }
 
 # --- API Rate Limiting ---

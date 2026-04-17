@@ -63,8 +63,10 @@ class HyperliquidFeed:
         msg_queues: asyncio.Queue | list[asyncio.Queue],
         url:        str = HL_WS_URL,
         wallet:     str | None = None,
+        perp_dexs:  list[str] | None = None,
     ):
-        self._coins = [c.upper() for c in coins]
+        self._coins = list(coins)
+        self._perp_dexs = perp_dexs or []
         self._queues: list[asyncio.Queue] = (
             msg_queues if isinstance(msg_queues, list) else [msg_queues]
         )
@@ -155,7 +157,7 @@ class HyperliquidFeed:
         # matching what SignalEngine expects (bids[0] = best bid, asks[0] = best ask).
         return {
             "type":      "orderbook",
-            "symbol":    coin,
+            "symbol":    str(coin),
             "bids":      bids,
             "asks":      asks,
             "timestamp": str(data.get("time", "")),
@@ -174,7 +176,7 @@ class HyperliquidFeed:
         Alo (maker) fills come back with crossed=False.
         """
         try:
-            coin = str(fill["coin"]).upper()
+            coin = str(fill["coin"])
             px   = float(fill["px"])
             sz   = float(fill["sz"])
             raw_side = str(fill["side"]).upper()
