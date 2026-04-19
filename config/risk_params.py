@@ -66,6 +66,17 @@ SYMBOL_CAPS = {
     "xyz:PLTR/USD": 100.0,
     "xyz:BRENTOIL/USD": 100.0,
     "xyz:INTC/USD": 100.0,
+    # ── HIP-3 expansion (screened 2026-04-19) — commodities + mega-caps ──
+    "xyz:GOLD/USD": 100.0,
+    "xyz:SILVER/USD": 100.0,
+    "xyz:NATGAS/USD": 100.0,
+    "xyz:COPPER/USD": 100.0,
+    "xyz:PLATINUM/USD": 100.0,
+    "xyz:TSM/USD": 100.0,
+    "xyz:AMZN/USD": 100.0,
+    "xyz:GOOGL/USD": 100.0,
+    "xyz:META/USD": 100.0,
+    "xyz:NVDA/USD": 100.0,
     # ── Momentum / trend-following candidates (screened 2026-04-17) ────────
     "AMZN": 1_500.0 if _is_live() else 1_500.0,
     "NKE": 1_500.0 if _is_live() else 1_500.0,

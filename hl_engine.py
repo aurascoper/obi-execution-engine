@@ -111,6 +111,15 @@ HIP3_TAKER_ESCALATION_Z = 3.0
 # szDecimals is queried at boot via Info.meta(); dust caps derived from it.
 
 
+def _is_pending_exit(st) -> bool:
+    """True if *any* strategy tag has a pending exit on this symbol."""
+    if not st:
+        return False
+    return st.pending_exits.get(STRATEGY_TAG, False) or st.pending_exits.get(
+        MOMENTUM_TAG, False
+    )
+
+
 def _round_hl_price(px: float, sz_decimals: int) -> float:
     if px <= 0:
         return px
@@ -711,7 +720,7 @@ class HLEngine:
         # detect queue-behind drift, reprice_count to bound API churn, and
         # is_entry to pick the right rollback path on give-up.
         st_now = self._signals._state[sym]
-        is_entry = not st_now.pending_exits.get(STRATEGY_TAG, False)
+        is_entry = not _is_pending_exit(st_now)
         self._pending_resting[sym] = {
             "cloid": cloid.lower(),
             "cid": cid,
@@ -958,7 +967,7 @@ class HLEngine:
 
         # SYMBOL_CAPS enforcement — entries only (exits reduce exposure).
         st = self._signals._state.get(sym)
-        is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
+        is_exit = _is_pending_exit(st)
         if not is_exit:
             from config.risk_params import SYMBOL_CAPS
 
@@ -999,21 +1008,25 @@ class HLEngine:
         # Route by execution style. Env-gated so the taker contract is
         # untouched when EXECUTION_STYLE is unset or "taker".
         if EXECUTION_STYLE == "maker":
+            # All exits use IOC taker regardless of venue: stop-loss and
+            # z-revert exits need guaranteed execution, not a resting Alo
+            # that may fail to cross ("post only would have immediately
+            # matched") or sit on the wrong side of a snapping move.
+            if is_exit:
+                log.info("exit_taker", symbol=sym, coin=coin)
+                return await self._submit_taker(sig)
             is_hip3 = ":" in coin
             if is_hip3:
-                st = self._signals._state.get(sym)
-                is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
-                # HIP-3 exits always use IOC taker: mean-reversion exits fire
-                # while price snaps back to the mean — a resting Alo sits on
-                # the wrong side of the move and the only fills are adverse.
-                if is_exit:
-                    log.info("hip3_exit_taker", symbol=sym, coin=coin)
-                    return await self._submit_taker(sig)
                 # HIP-3 entry escalation: extreme z-scores bypass maker.
+                st_esc = self._signals._state.get(sym)
                 z_abs = (
                     abs(sig.get("z", 0))
                     if sig.get("z")
-                    else (abs(st.price_buf.zscore(sig["limit_px"]) or 0) if st else 0)
+                    else (
+                        abs(st_esc.price_buf.zscore(sig["limit_px"]) or 0)
+                        if st_esc
+                        else 0
+                    )
                 )
                 if z_abs >= HIP3_TAKER_ESCALATION_Z:
                     log.info(
@@ -1066,7 +1079,7 @@ class HLEngine:
         )
 
         st = self._signals._state.get(sym)
-        is_exit = bool(st and st.pending_exits.get(STRATEGY_TAG, False))
+        is_exit = _is_pending_exit(st)
         z_now = sig.get("z") or (st.price_buf.zscore(raw_px) if st else None)
 
         hl_order = {
