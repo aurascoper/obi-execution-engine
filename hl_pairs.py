@@ -71,6 +71,18 @@ ROOT = Path(__file__).resolve().parent
 WHITELIST_PATH = ROOT / "config" / "pairs_whitelist.json"
 MAX_WHITELIST_AGE_S = 48 * 3600  # refuse stale whitelists — they mask regime shifts
 
+# Kill-switch: operator creates this file to halt NEW entries (existing positions
+# keep running through exit/stop logic). `touch logs/pairs_halt.flag` to halt,
+# `rm logs/pairs_halt.flag` to resume. Checked each tick — no restart needed.
+HALT_FLAG_PATH = ROOT / "logs" / "pairs_halt.flag"
+
+# Comma-separated DEX prefixes to drop from the whitelist at load-time. Intended
+# for DEXs the unified wallet has not funded (e.g. cash, flx, vntl, hyna, km).
+# Pairs where EITHER leg starts with a blacklisted prefix are filtered out.
+PAIRS_DEX_BLACKLIST = {
+    s.strip() for s in os.environ.get("PAIRS_DEX_BLACKLIST", "").split(",") if s.strip()
+}
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
 structlog.configure(
@@ -133,6 +145,31 @@ def _load_whitelist(path: Path = WHITELIST_PATH) -> list[dict]:
     pairs = data.get("pairs", [])
     if not pairs:
         raise RuntimeError(f"Whitelist {path} contains no pairs.")
+
+    if PAIRS_DEX_BLACKLIST:
+
+        def _dex(sym: str) -> str:
+            return sym.split(":", 1)[0] if ":" in sym else ""
+
+        before = len(pairs)
+        pairs = [
+            p
+            for p in pairs
+            if _dex(p["leg_a"]) not in PAIRS_DEX_BLACKLIST
+            and _dex(p["leg_b"]) not in PAIRS_DEX_BLACKLIST
+        ]
+        dropped = before - len(pairs)
+        if dropped:
+            log.info(
+                "whitelist_dex_blacklist_applied",
+                blacklist=sorted(PAIRS_DEX_BLACKLIST),
+                dropped=dropped,
+                remaining=len(pairs),
+            )
+        if not pairs:
+            raise RuntimeError(
+                f"Whitelist empty after DEX blacklist {PAIRS_DEX_BLACKLIST}."
+            )
     return pairs
 
 
@@ -254,6 +291,7 @@ class PairsEngine:
         self._info = self._om._info
         self._active_dexs_list = used_dexs
         self._stop = asyncio.Event()
+        self._tick_count = 0
 
         log.info(
             "pairs_engine_initialized",
@@ -288,8 +326,11 @@ class PairsEngine:
                 log.warning("mids_dex_failed", dex=dex, error=str(exc))
                 continue
             for k, v in (dex_mids or {}).items():
+                # SDK already returns HIP-3 keys in "dex:NAME" form — do not
+                # re-prefix or we end up with "xyz:xyz:MSTR" and no mid.
+                key = k if ":" in k else f"{dex}:{k}"
                 try:
-                    mids[f"{dex}:{k}"] = float(v)
+                    mids[key] = float(v)
                 except (TypeError, ValueError):
                     continue
         return mids
@@ -324,8 +365,9 @@ class PairsEngine:
                 for u, ctx in zip(universe, ctxs):
                     name = u.get("name")
                     if name:
+                        key = name if ":" in name else f"{dex}:{name}"
                         try:
-                            funding[f"{dex}:{name}"] = float(ctx.get("funding", 0))
+                            funding[key] = float(ctx.get("funding", 0))
                         except (TypeError, ValueError):
                             pass
             except Exception as exc:
@@ -574,6 +616,20 @@ class PairsEngine:
         mids = await self._fetch_mids()
         funding = await self._fetch_funding()
 
+        self._tick_count += 1
+        # Warmup heartbeat every 5 minutes (tick = POLL_INTERVAL_S = 60s).
+        if self._tick_count % 5 == 0:
+            warming = [p for p in self._pairs if not p.is_warm()]
+            if warming:
+                min_bars = min(min(len(p.prices_a), len(p.prices_b)) for p in warming)
+                log.info(
+                    "pair_warmup_progress",
+                    warming=len(warming),
+                    total=len(self._pairs),
+                    min_bars=min_bars,
+                    need_bars=WARMUP_BARS,
+                )
+
         for pair in self._pairs:
             px_a = mids.get(pair.leg_a)
             px_b = mids.get(pair.leg_b)
@@ -614,7 +670,16 @@ class PairsEngine:
                     direction = -1
                 if direction == 0:
                     continue
-                # Entry gates: portfolio cap, lockout, funding, netting.
+                # Entry gates: halt flag, portfolio cap, lockout, funding, netting.
+                # Existing positions still run through exit/stop — halt only blocks
+                # NEW entries so operator can safely drain the book around a macro event.
+                if HALT_FLAG_PATH.exists():
+                    log.info(
+                        "pair_entry_deferred_halt_flag",
+                        pair=pair.name,
+                        flag_path=str(HALT_FLAG_PATH),
+                    )
+                    continue
                 if self._open_count() >= MAX_OPEN_PAIRS:
                     log.info("pair_entry_deferred_max_open", pair=pair.name)
                     continue
