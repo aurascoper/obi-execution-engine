@@ -129,13 +129,17 @@ def run_screener() -> list[dict]:
         ],
         timeout=180,
     )
-    # Extract JSON array from stdout (ignore stderr noise)
-    start = out.find("[")
+    # Extract JSON array — screener emits a DEX-list header like
+    # "DEXs: ['xyz', ...]" before the real JSON, so find("[") is wrong.
+    # Locate the array by its own-line "[" marker instead.
+    idx = out.find("\n[\n")
+    if idx == -1:
+        return []
     end = out.rfind("]")
-    if start == -1 or end == -1:
+    if end == -1:
         return []
     try:
-        return json.loads(out[start : end + 1])
+        return json.loads(out[idx + 1 : end + 1])
     except json.JSONDecodeError:
         return []
 
