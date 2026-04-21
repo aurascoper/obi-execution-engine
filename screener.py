@@ -417,6 +417,11 @@ def main() -> None:
         default=MIN_ADV,
         help=f"Override minimum ADV filter (default {MIN_ADV / 1e6:.0f}M)",
     )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit longs/shorts as JSON instead of the human-readable table",
+    )
     args = ap.parse_args()
 
     api_key = os.environ["ALPACA_API_KEY_ID"]
@@ -454,9 +459,20 @@ def main() -> None:
             z_threshold=args.min_z,
             sector_filter=args.sector,
         )
-        print_momentum_results(
-            longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
-        )
+        if args.json:
+            import json as _json
+
+            def _row_mom(r):
+                z, sym, px, adv, sec, z4h, _sma, pct = r
+                return {"symbol": sym, "z": z, "z_4h": z4h, "pct_sma": pct,
+                        "price": px, "adv": adv, "sector": sec, "mode": "momentum"}
+
+            print(_json.dumps({"longs": [_row_mom(r) for r in longs],
+                               "shorts": [_row_mom(r) for r in shorts]}, indent=2))
+        else:
+            print_momentum_results(
+                longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+            )
     else:
         print("Computing z-scores + applying quality filters...")
         longs, shorts = compute_signals(
@@ -467,9 +483,20 @@ def main() -> None:
             z_threshold=args.min_z,
             sector_filter=args.sector,
         )
-        print_results(
-            longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
-        )
+        if args.json:
+            import json as _json
+
+            def _row_mr(r):
+                z, sym, px, adv, sec = r
+                return {"symbol": sym, "z": z, "price": px, "adv": adv,
+                        "sector": sec, "mode": "mean_reversion"}
+
+            print(_json.dumps({"longs": [_row_mr(r) for r in longs],
+                               "shorts": [_row_mr(r) for r in shorts]}, indent=2))
+        else:
+            print_results(
+                longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+            )
 
 
 if __name__ == "__main__":

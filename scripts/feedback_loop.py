@@ -144,6 +144,39 @@ def run_screener() -> list[dict]:
         return []
 
 
+def run_alpaca_screener() -> dict:
+    """R3k/SP500/NDX z-score screener as cross-venue check against HIP-3."""
+    out = run([str(PY), "screener.py", "--min-z", "1.5", "--json"], timeout=240)
+    idx = out.find("\n{")
+    if idx == -1:
+        return {"longs": [], "shorts": []}
+    end = out.rfind("}")
+    if end == -1:
+        return {"longs": [], "shorts": []}
+    try:
+        return json.loads(out[idx + 1 : end + 1])
+    except json.JSONDecodeError:
+        return {"longs": [], "shorts": []}
+
+
+def cross_venue_hits(alpaca: dict, hip3_candidates: list[dict]) -> list[dict]:
+    """Alpaca-flagged names that also appear as HIP-3 perps, in either direction."""
+    hip3_bases = {c["coin"].split(":")[-1]: c for c in hip3_candidates}
+    hits = []
+    for side, rows in (("long", alpaca.get("longs", [])), ("short", alpaca.get("shorts", []))):
+        for r in rows:
+            sym = r["symbol"]
+            if sym in hip3_bases:
+                hits.append({
+                    "symbol": sym,
+                    "alpaca_side": side,
+                    "alpaca_z": round(r["z"], 3),
+                    "hip3_coin": hip3_bases[sym]["coin"],
+                    "hip3_composite": round(hip3_bases[sym]["composite_score"], 3),
+                })
+    return hits
+
+
 def notify(title: str, body: str) -> None:
     try:
         subprocess.run(
@@ -170,7 +203,7 @@ def main() -> int:
     an = run([str(PY), "analyze_session.py"], timeout=120)
     pnl = parse_pnl(an)
 
-    # 3. screener
+    # 3. screener (HIP-3 primary + Alpaca R3k cross-check)
     candidates = run_screener()
     current_uni = get_current_universe()
     new_candidates = [
@@ -178,11 +211,15 @@ def main() -> int:
         for c in candidates
         if c["coin"] not in current_uni and c["composite_score"] >= 0.55
     ]
+    alpaca_screen = run_alpaca_screener()
+    cross_hits = cross_venue_hits(alpaca_screen, candidates)
 
     # Alerts
     alerts = []
     if nav["phantoms"] > 0:
         alerts.append(f"{nav['phantoms']} phantom positions")
+    if cross_hits:
+        alerts.append(f"{len(cross_hits)} cross-venue hits")
 
     # Prev iteration delta
     prev_net = None
@@ -208,6 +245,7 @@ def main() -> int:
         "nav": nav,
         "pnl": pnl,
         "new_candidates": [c["coin"] for c in new_candidates[:10]],
+        "cross_venue_hits": cross_hits[:10],
         "alerts": alerts,
     }
     LOG_JSONL.parent.mkdir(exist_ok=True)
