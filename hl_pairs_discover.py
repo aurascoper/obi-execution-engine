@@ -96,9 +96,10 @@ HL_MAX_MIN = 24 * 60  # half-life ceiling — slower = too much funding drag
 BETA_MIN = 0.15  # clamp: below = decoupled, above = levered beyond hedge utility
 BETA_MAX = 4.0
 SPREAD_SIGMA_MIN_BPS = 15  # below this the expected z-revert PnL < fees
-R2_MIN = 0.40  # OLS fit must explain ≥40% of log-price variance
+R2_MIN = 0.50  # OLS fit must explain ≥50% of log-price variance
 MIN_SAMPLES = 2000  # require ≥2000 aligned 1m bars out of ~2880 over 48h
 TOP_N_DEFAULT = 12  # how many survivors to keep in whitelist
+MAX_PAIRS_PER_SYMBOL = 3  # cap hub-concentration; no single symbol in > N pairs
 
 
 @dataclass
@@ -316,16 +317,31 @@ def discover(candidates: list[str], lookback_hours: int, top_n: int) -> dict:
             best[key] = r
     survivors = sorted(best.values(), key=lambda p: -p.score)
 
+    # Hub-cap: greedy pick so no single symbol appears in > MAX_PAIRS_PER_SYMBOL.
+    # Prevents one noisy symbol from dominating the whitelist as sole hub.
+    used: dict[str, int] = {}
+    diversified: list[PairStats] = []
+    for p in survivors:
+        if len(diversified) >= top_n:
+            break
+        if (used.get(p.leg_a, 0) >= MAX_PAIRS_PER_SYMBOL
+                or used.get(p.leg_b, 0) >= MAX_PAIRS_PER_SYMBOL):
+            continue
+        diversified.append(p)
+        used[p.leg_a] = used.get(p.leg_a, 0) + 1
+        used[p.leg_b] = used.get(p.leg_b, 0) + 1
+
     print(
         f"[discover] tested {tested} ordered pairs → "
-        f"{len(results)} passed gates → {len(survivors)} unique → keeping top {top_n}"
+        f"{len(results)} passed gates → {len(survivors)} unique → "
+        f"keeping top {len(diversified)} after hub-cap (≤{MAX_PAIRS_PER_SYMBOL}/symbol)"
     )
 
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "lookback_hours": lookback_hours,
         "universe": candidates,
-        "pairs": [asdict(p) for p in survivors[:top_n]],
+        "pairs": [asdict(p) for p in diversified],
     }
 
 
@@ -339,7 +355,7 @@ def _write_summary(result: dict) -> None:
         f"**Universe:** {len(result['universe'])} coins  |  "
         f"**Survivors:** {len(result['pairs'])}",
         "",
-        "Gates: `β∈[0.15, 4.0]`, `R²≥0.40`, "
+        f"Gates: `β∈[0.15, 4.0]`, `R²≥{R2_MIN:.2f}`, "
         f"`half-life∈[{HL_MIN_MIN}min, {HL_MAX_MIN // 60}h]`, "
         f"`σ_spread≥{SPREAD_SIGMA_MIN_BPS}bps`, `φ<1`",
         "",

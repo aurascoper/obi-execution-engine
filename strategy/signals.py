@@ -163,6 +163,18 @@ class _RollingBuffer:
     def _active(self) -> np.ndarray:
         return self._buf[: self._count]
 
+    def newest(self) -> float | None:
+        if self._count == 0:
+            return None
+        return float(self._buf[(self._idx - 1) % self._size])
+
+    def oldest(self) -> float | None:
+        if self._count == 0:
+            return None
+        if self._count < self._size:
+            return float(self._buf[0])
+        return float(self._buf[self._idx])
+
     def zscore(self, current: float) -> float | None:
         """
         Returns z_t = (current − μ_w) / σ_w, or None if window not yet full.

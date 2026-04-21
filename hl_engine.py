@@ -106,6 +106,19 @@ HIP3_MAKER_MAX_REPRICES = 15
 # skip maker and send IOC taker to guarantee fill on extreme dislocations.
 HIP3_TAKER_ESCALATION_Z = 3.0
 
+# ── P0 risk gates (net-exposure cap + regime pause) ──────────────────────────
+# Cap absolute signed notional across the mean-rev book. Entries that would
+# push |net| above this are blocked; exits and neutrality-restoring entries
+# always pass. Memory-based: uses st.positions + latest mid/close, not a live
+# HL snapshot.
+MAX_NET_NOTIONAL = float(os.environ.get("MAX_NET_NOTIONAL", "200.0"))
+# Regime pause: if BTC/USD OR xyz:SP500/USD 1h absolute return exceeds this,
+# block NEW entries for REGIME_PAUSE_SECONDS. Exits still fire. 60-bar
+# _RollingBuffer at 1m bars = exact 1h window.
+REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.015"))
+REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "3600"))
+REGIME_PROXIES = ("BTC/USD", "xyz:SP500/USD")
+
 # ── HL venue price precision ──────────────────────────────────────────────────
 # HL rule: price decimals ≤ max(6 - szDecimals, 0) AND significant figures ≤ 5.
 # szDecimals is queried at boot via Info.meta(); dust caps derived from it.
@@ -395,6 +408,9 @@ class HLEngine:
         self._running = True
 
         self._pending_resting: dict[str, dict] = {}
+
+        # P0 regime-pause state: monotonic deadline; entries blocked while > now().
+        self._regime_pause_until: float = 0.0
 
         # ── Control plane (Phase 1: read-only) ──────────────────────────────
         self._control = ControlPlaneServer(
@@ -732,6 +748,113 @@ class HLEngine:
                 else:
                     self._signals.rollback_exit(sym)
             return False
+
+        return True
+
+    # ── P0 risk gates ────────────────────────────────────────────────────────
+    def _current_mid(self, sym: str) -> float:
+        """Best mid if both sides fresh, else last close from price_buf."""
+        st = self._signals._state.get(sym)
+        if st is None:
+            return float("nan")
+        bid, ask = st.best_bid, st.best_ask
+        if (math.isfinite(bid) and bid > 0 and math.isfinite(ask) and ask > 0):
+            return 0.5 * (bid + ask)
+        last = st.price_buf.newest()
+        return float(last) if last is not None else float("nan")
+
+    def _compute_net_notional(self) -> float:
+        """Sum of signed (qty × mid) across all tags on all tracked symbols."""
+        net = 0.0
+        for sym, st in self._signals._state.items():
+            mid = self._current_mid(sym)
+            if not math.isfinite(mid) or mid <= 0:
+                continue
+            for tag, qty in st.positions.items():
+                if qty:
+                    net += qty * mid
+        return net
+
+    def _regime_tripped(self) -> bool:
+        """True if any regime proxy's 1h absolute return > REGIME_1H_ABS_RETURN."""
+        for sym in REGIME_PROXIES:
+            st = self._signals._state.get(sym)
+            if st is None:
+                continue
+            old = st.price_buf.oldest()
+            new = st.price_buf.newest()
+            if old is None or new is None or old <= 0:
+                continue
+            if not st.price_buf.is_full:
+                continue
+            if abs(new - old) / old >= REGIME_1H_ABS_RETURN:
+                return True
+        return False
+
+    def _risk_gate_ok(self, sig: dict, tag: str, is_momentum: bool) -> bool:
+        """
+        P0 entry gate: evaluated AFTER signal generation, BEFORE flip guard.
+        Blocks entries that (a) increase |net_notional| beyond cap, or (b) are
+        new entries during a regime pause. Exits always pass. Momentum book
+        is excluded from the net-cap (non-overlapping universe).
+        """
+        sym = sig["symbol"]
+        st = self._signals._state.get(sym)
+        if st is None:
+            return True
+
+        # Classify: is this an entry (increases |pos|) or an exit (decreases)?
+        cur_qty = st.open_qty(tag)
+        side_sign = 1.0 if sig["side"] == OrderSide.BUY else -1.0
+        delta_qty = side_sign * float(sig["qty"])
+        is_entry = (cur_qty == 0.0) or (cur_qty * delta_qty > 0.0)
+
+        # Exits always pass — never block flattening.
+        if not is_entry:
+            return True
+
+        now_mono = time.monotonic()
+
+        # Regime pause: re-check lazily so a new trip extends the deadline.
+        if self._regime_tripped():
+            self._regime_pause_until = max(
+                self._regime_pause_until, now_mono + REGIME_PAUSE_SECONDS
+            )
+            log.info(
+                "risk_gate_regime_pause",
+                symbol=sym,
+                tag=tag,
+                until_s=round(self._regime_pause_until - now_mono, 1),
+            )
+            return False
+        if now_mono < self._regime_pause_until:
+            log.info(
+                "risk_gate_regime_pause_active",
+                symbol=sym,
+                tag=tag,
+                remaining_s=round(self._regime_pause_until - now_mono, 1),
+            )
+            return False
+
+        # Net-cap: only block if entering WOULD INCREASE |net| beyond cap.
+        # Exclude momentum book from the mean-rev cap (separate book).
+        if not is_momentum:
+            mid = self._current_mid(sym)
+            if math.isfinite(mid) and mid > 0:
+                net_before = self._compute_net_notional()
+                delta_notional = delta_qty * mid
+                net_after = net_before + delta_notional
+                if (abs(net_after) > MAX_NET_NOTIONAL and
+                        abs(net_after) > abs(net_before)):
+                    log.info(
+                        "risk_gate_net_cap",
+                        symbol=sym,
+                        tag=tag,
+                        net_before=round(net_before, 2),
+                        net_after=round(net_after, 2),
+                        cap=MAX_NET_NOTIONAL,
+                    )
+                    return False
 
         return True
 
@@ -1380,6 +1503,9 @@ class HLEngine:
                 continue
 
             active_tag = MOMENTUM_TAG if is_momentum else STRATEGY_TAG
+
+            if not self._risk_gate_ok(sig, tag=active_tag, is_momentum=is_momentum):
+                continue
 
             if not await self._flip_guard_ok(sig, tag=active_tag):
                 continue
