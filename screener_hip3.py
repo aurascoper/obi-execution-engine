@@ -58,10 +58,13 @@ _COMMODITIES = {
 _FX = {"JPY", "EUR", "DXY", "GBP", "AUD", "CHF", "CNY"}
 _ETFS = {"EWY", "EWJ", "XLE", "URNM", "USAR", "SPY", "QQQ", "IWM"}
 _MEME_ADJACENT = {"GME", "PURRDAT", "BIRD"}
+_CRYPTO_INDICES = {"OTHERS", "BTCD", "TOTAL2"}
 
 
 def classify(coin: str) -> str:
     base = coin.split(":")[1] if ":" in coin else coin
+    if base in _CRYPTO_INDICES:
+        return "CRYPTO_INDEX"
     if base in _INDICES:
         return "INDEX"
     if base in _COMMODITIES:
@@ -87,6 +90,8 @@ def assign_z_tier(
     """Returns (z_entry, z_exit, z_short_entry, z_exit_short)."""
     if cat == "INDEX":
         return (-1.50, -0.30, 1.50, 0.30)
+    if cat == "CRYPTO_INDEX":
+        return (-2.00, -0.50, 2.00, 0.50)
     if cat == "FX":
         return (-1.25, -0.25, 1.25, 0.25)
     if cat == "COMMODITY":

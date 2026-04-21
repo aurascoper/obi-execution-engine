@@ -39,7 +39,7 @@ import logging
 import math
 import os
 import secrets
-import signal as signal_lib
+from util.platform_compat import install_shutdown_handlers
 import time
 from pathlib import Path
 
@@ -168,10 +168,16 @@ class HLEngine:
         )
         hip3_coins: list[str] = []
         if self._hip3_dexs and hip3_coins_raw:
-            dex = self._hip3_dexs[0]
-            prefix = f"{dex}:"
+            default_dex = self._hip3_dexs[0]
+            allowed_dexs = set(self._hip3_dexs)
             for name in hip3_coins_raw:
-                coin = name if name.startswith(prefix) else f"{prefix}{name}"
+                if ":" in name:
+                    dex, _, bare = name.partition(":")
+                    if dex not in allowed_dexs:
+                        continue
+                    coin = name
+                else:
+                    coin = f"{default_dex}:{name}"
                 if coin not in seen:
                     seen.add(coin)
                     hip3_coins.append(coin)
@@ -221,20 +227,54 @@ class HLEngine:
         self._hl_symbols: list[str] = list(self._coin_to_symbol.values())
 
         # ── Per-coin leverage map ────────────────────────────────────────────
+        # Each coin gets min(venue maxLeverage, cap). Cap is the env ceiling
+        # (HIP3_LEVERAGE, preserved for back-compat; now applies to all coins).
+        # Avoids "Invalid leverage value" errors on low-tier perps (e.g. LDO=5).
         self._default_leverage = 10
-        hip3_leverage = int(os.environ.get("HIP3_LEVERAGE", "5"))
+        lev_cap = int(os.environ.get("HIP3_LEVERAGE", "10"))
+        from hyperliquid.info import Info as _ProbeInfo
+
+        _probe = _ProbeInfo(
+            self._cfg.hl_api_url
+            if hasattr(self._cfg, "hl_api_url")
+            else "https://api.hyperliquid.xyz",
+            skip_ws=True,
+        )
+        venue_max_lev: dict[str, int] = {}
+        try:
+            _native_meta = _probe.meta()
+            for asset in _native_meta.get("universe", []) or []:
+                name = str(asset.get("name", ""))
+                if name:
+                    try:
+                        venue_max_lev[name] = int(asset.get("maxLeverage", 0) or 0)
+                    except TypeError, ValueError:
+                        pass
+        except Exception:
+            pass
+        for _dex in self._hip3_dexs:
+            try:
+                _dm = _probe.meta(dex=_dex)
+                for asset in _dm.get("universe", []) or []:
+                    name = str(asset.get("name", ""))
+                    if name:
+                        try:
+                            venue_max_lev[name] = int(asset.get("maxLeverage", 0) or 0)
+                        except TypeError, ValueError:
+                            pass
+            except Exception:
+                continue
         leverage_map: dict[str, int] = {}
-        for c in crypto_coins:
-            leverage_map[c] = self._default_leverage
-        for c in hip3_coins:
-            leverage_map[c] = hip3_leverage
+        for c in list(crypto_coins) + list(hip3_coins):
+            vmax = venue_max_lev.get(c, 0)
+            leverage_map[c] = min(lev_cap, vmax) if vmax > 0 else lev_cap
 
         self._hl = HyperliquidOrderManager(
             self._cfg,
             strategy_tag=STRATEGY_TAG,
             default_leverage=self._default_leverage,
             coins=self._hl_coins,
-            is_cross=True,
+            is_cross=False,
             perp_dexs=self._hip3_dexs or None,
             leverage_map=leverage_map,
         )
@@ -311,7 +351,13 @@ class HLEngine:
             sym = self._coin_to_symbol[coin]
             cat = classify(coin)
             # Default RMSD estimate by category (refined after preseed with real data).
-            _DEFAULT_RMSD = {"INDEX": 2.0, "FX": 0.3, "COMMODITY": 2.5, "ETF": 3.0}
+            _DEFAULT_RMSD = {
+                "INDEX": 2.0,
+                "CRYPTO_INDEX": 2.5,
+                "FX": 0.3,
+                "COMMODITY": 2.5,
+                "ETF": 3.0,
+            }
             z = assign_z_tier(cat, _DEFAULT_RMSD.get(cat, 5.0))
             self._signals.set_symbol_z(sym, z[0], z[1], z[2], z[3])
 
@@ -407,6 +453,28 @@ class HLEngine:
                     st["n"] += 1
 
             await self._msg_q.put(msg)
+
+    # ── Alpaca bars supervisor — isolate Alpaca WS failures from TaskGroup ──
+    async def _resilient_alpaca_bars(self) -> None:
+        """Restart Alpaca bar stream on failure; a single WS error must not
+        propagate into TaskGroup and cancel orderbook+strategy+orders."""
+        backoff = 5
+        while self._running and self._bars is not None:
+            try:
+                await self._bars.run()
+                # Clean return -> re-enter loop to reconnect
+                log.warning("alpaca_bars_clean_return")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning(
+                    "alpaca_bars_crash_recover",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    backoff_s=backoff,
+                )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)
 
     # ── Native bar synthesis ────────────────────────────────────────────────
     async def _bar_synthesizer(self) -> None:
@@ -515,6 +583,13 @@ class HLEngine:
                 continue
             coin = key[len(prefix) :]
             sym = self._coin_to_symbol.get(coin)
+            if sym is None and "_" in coin:
+                # Bash disallows ':' in env var names; accept underscore form
+                # Z_OVERRIDE_xyz_MSTR -> xyz:MSTR
+                alt = coin.replace("_", ":", 1)
+                sym = self._coin_to_symbol.get(alt)
+                if sym is not None:
+                    coin = alt
             if sym is None:
                 continue
             try:
@@ -535,6 +610,36 @@ class HLEngine:
                 z_exit=parts[1],
                 z_short_entry=parts[2],
                 z_exit_short=parts[3],
+            )
+
+        # ── Z4H_EXIT_<COIN>=long,short — patient-hold momentum exit override ──
+        z4h_prefix = "Z4H_EXIT_"
+        for key, val in os.environ.items():
+            if not key.startswith(z4h_prefix):
+                continue
+            coin = key[len(z4h_prefix) :]
+            sym = self._coin_to_symbol.get(coin)
+            if sym is None and "_" in coin:
+                alt = coin.replace("_", ":", 1)
+                sym = self._coin_to_symbol.get(alt)
+                if sym is not None:
+                    coin = alt
+            if sym is None:
+                continue
+            try:
+                parts = [float(x.strip()) for x in val.split(",")]
+                if len(parts) != 2:
+                    raise ValueError(f"expected 2 values, got {len(parts)}")
+            except (ValueError, TypeError) as exc:
+                log.warning("z4h_exit_parse_error", coin=coin, raw=val, error=str(exc))
+                continue
+            self._signals.set_symbol_z4h_exit(sym, parts[0], parts[1])
+            log.info(
+                "z4h_exit_applied",
+                coin=coin,
+                symbol=sym,
+                z_4h_exit_long=parts[0],
+                z_4h_exit_short=parts[1],
             )
 
     # ── Sign-flip guard: live-state check against in-memory direction ────────
@@ -1344,7 +1449,7 @@ class HLEngine:
 
         async with asyncio.TaskGroup() as tg:
             if self._bars is not None:
-                tg.create_task(self._bars.run(), name="alpaca_bars")
+                tg.create_task(self._resilient_alpaca_bars(), name="alpaca_bars")
             tg.create_task(self._book.run(), name="hl_orderbook")
             tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
             tg.create_task(self._strategy_loop(), name="strategy")
@@ -1363,9 +1468,7 @@ class HLEngine:
 
 async def main() -> None:
     engine = HLEngine()
-    loop = asyncio.get_running_loop()
-    for s in (signal_lib.SIGINT, signal_lib.SIGTERM):
-        loop.add_signal_handler(s, engine.stop)
+    install_shutdown_handlers(engine.stop)
     await engine.run()
 
 

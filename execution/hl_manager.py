@@ -139,6 +139,19 @@ class HyperliquidOrderManager:
                         is_cross=coin_cross,
                         response=resp,
                     )
+                elif (
+                    "open position" in resp_msg.lower()
+                    or "cannot switch" in resp_msg.lower()
+                ):
+                    # Open positions can't change margin mode; leave existing
+                    # mode in place and continue startup.
+                    log.warning(
+                        "hl_leverage_pin_open_position",
+                        coin=coin,
+                        leverage=lev,
+                        is_cross=coin_cross,
+                        response=resp,
+                    )
                 elif self._mode == ExecutionMode.SHADOW:
                     log.warning(
                         "hl_leverage_pin_skipped_shadow",

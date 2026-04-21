@@ -1,53 +1,210 @@
 {
-  "generated_ts": "2026-04-16T06:08:55+00:00",
+  "generated_ts": "2026-04-20T04:32:25+00:00",
   "filters": {
     "alpaca_whitelist": [
+      "AAVE",
+      "ADA",
+      "ARB",
       "AVAX",
+      "BAT",
+      "BCH",
+      "BONK",
+      "CRV",
       "DOGE",
+      "DOT",
+      "FIL",
+      "GRT",
+      "LDO",
       "LINK",
+      "LTC",
+      "PAXG",
+      "PEPE",
+      "POL",
+      "RENDER",
       "SHIB",
-      "SOL"
+      "SOL",
+      "SUSHI",
+      "UNI",
+      "XRP",
+      "XTZ",
+      "YFI",
+      "ZEC"
     ],
     "max_spread_bps": 5.0,
     "min_max_leverage": 3,
-    "min_day_vlm": 0.0
+    "min_day_vlm": 100000.0
   },
   "candidates": [
     {
       "coin": "SOL",
       "sz_decimals": 2,
       "max_leverage": 20,
-      "day_vlm": 213384675.73875007,
-      "open_interest": 3560035.7599999984,
-      "mark_px": 85.45,
-      "spread_bps": 0.1170268166939414
+      "day_vlm": 216490077.3169301,
+      "open_interest": 3644416.3800000004,
+      "mark_px": 84.349,
+      "spread_bps": 0.11855575380768772
+    },
+    {
+      "coin": "AAVE",
+      "sz_decimals": 2,
+      "max_leverage": 10,
+      "day_vlm": 157600839.0686999,
+      "open_interest": 556832.9999999999,
+      "mark_px": 93.128,
+      "spread_bps": 1.2885906040268944
+    },
+    {
+      "coin": "ZEC",
+      "sz_decimals": 2,
+      "max_leverage": 10,
+      "day_vlm": 61088799.472199954,
+      "open_interest": 275518.3,
+      "mark_px": 309.65,
+      "spread_bps": 0.3229921997380826
+    },
+    {
+      "coin": "XRP",
+      "sz_decimals": 0,
+      "max_leverage": 20,
+      "day_vlm": 58098502.659699984,
+      "open_interest": 81201306.0,
+      "mark_px": 1.4081,
+      "spread_bps": 0.7101516173702304
     },
     {
       "coin": "DOGE",
       "sz_decimals": 0,
       "max_leverage": 10,
-      "day_vlm": 17201858.775223996,
-      "open_interest": 327103784.0,
-      "mark_px": 0.096696,
-      "spread_bps": 0.10341528995072262
+      "day_vlm": 19095148.166056003,
+      "open_interest": 299453684.0,
+      "mark_px": 0.094189,
+      "spread_bps": 0.10616218396855477
+    },
+    {
+      "coin": "PAXG",
+      "sz_decimals": 3,
+      "max_leverage": 10,
+      "day_vlm": 7622801.258899996,
+      "open_interest": 8003.614,
+      "mark_px": 4771.6,
+      "spread_bps": 0.20958868221192306
+    },
+    {
+      "coin": "ARB",
+      "sz_decimals": 1,
+      "max_leverage": 10,
+      "day_vlm": 6504111.234503002,
+      "open_interest": 82158589.39999999,
+      "mark_px": 0.12528,
+      "spread_bps": 2.394349335568239
+    },
+    {
+      "coin": "CRV",
+      "sz_decimals": 1,
+      "max_leverage": 10,
+      "day_vlm": 4620754.470265999,
+      "open_interest": 32925739.2,
+      "mark_px": 0.22495,
+      "spread_bps": 2.2228643830437456
     },
     {
       "coin": "LINK",
       "sz_decimals": 1,
       "max_leverage": 10,
-      "day_vlm": 5014643.40442,
-      "open_interest": 3023504.6,
-      "mark_px": 9.307,
-      "spread_bps": 0.10744543115140344
+      "day_vlm": 3617034.7839500005,
+      "open_interest": 3028327.9999999995,
+      "mark_px": 9.1726,
+      "spread_bps": 1.5264179332304346
+    },
+    {
+      "coin": "ADA",
+      "sz_decimals": 0,
+      "max_leverage": 10,
+      "day_vlm": 3431651.7009699997,
+      "open_interest": 51629074.0,
+      "mark_px": 0.24523,
+      "spread_bps": 1.6306563391770177
     },
     {
       "coin": "AVAX",
       "sz_decimals": 2,
       "max_leverage": 10,
-      "day_vlm": 2594133.245826,
-      "open_interest": 4513874.599999999,
-      "mark_px": 9.5264,
-      "spread_bps": 0.6296634448872395
+      "day_vlm": 3263021.9339489997,
+      "open_interest": 4511539.96,
+      "mark_px": 9.1289,
+      "spread_bps": 0.657260538075762
+    },
+    {
+      "coin": "LDO",
+      "sz_decimals": 1,
+      "max_leverage": 5,
+      "day_vlm": 2250427.192026,
+      "open_interest": 14250355.600000001,
+      "mark_px": 0.36045,
+      "spread_bps": 3.051952556010238
+    },
+    {
+      "coin": "LTC",
+      "sz_decimals": 2,
+      "max_leverage": 10,
+      "day_vlm": 1391576.1355599998,
+      "open_interest": 224885.46,
+      "mark_px": 54.539,
+      "spread_bps": 0.7334470176219611
+    },
+    {
+      "coin": "BCH",
+      "sz_decimals": 3,
+      "max_leverage": 10,
+      "day_vlm": 1128513.27131,
+      "open_interest": 14972.292,
+      "mark_px": 437.95,
+      "spread_bps": 0.2283287477320733
+    },
+    {
+      "coin": "DOT",
+      "sz_decimals": 1,
+      "max_leverage": 10,
+      "day_vlm": 1110265.9146199997,
+      "open_interest": 4447405.600000001,
+      "mark_px": 1.2607,
+      "spread_bps": 3.9665225496802585
+    },
+    {
+      "coin": "UNI",
+      "sz_decimals": 1,
+      "max_leverage": 10,
+      "day_vlm": 1034699.43402,
+      "open_interest": 3066075.2,
+      "mark_px": 3.2687,
+      "spread_bps": 3.0598818885601236
+    },
+    {
+      "coin": "POL",
+      "sz_decimals": 0,
+      "max_leverage": 5,
+      "day_vlm": 824823.9165269998,
+      "open_interest": 25028356.0,
+      "mark_px": 0.089575,
+      "spread_bps": 4.019606748474029
+    },
+    {
+      "coin": "RENDER",
+      "sz_decimals": 1,
+      "max_leverage": 5,
+      "day_vlm": 754509.4523200002,
+      "open_interest": 1585659.0,
+      "mark_px": 1.7514,
+      "spread_bps": 4.568817818390257
+    },
+    {
+      "coin": "FIL",
+      "sz_decimals": 1,
+      "max_leverage": 5,
+      "day_vlm": 560741.1070200005,
+      "open_interest": 2845759.6,
+      "mark_px": 0.91985,
+      "spread_bps": 3.477618266189802
     }
   ]
 }

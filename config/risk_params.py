@@ -12,7 +12,7 @@ def _is_live() -> bool:
 
 # --- Daily P&L Circuit Breakers ---
 MAX_DAILY_DRAWDOWN_PCT = 0.02  # Hard halt if equity drops 2% intraday
-MAX_DAILY_LOSS_DOLLARS = 50.0 if _is_live() else 500.0  # $50 live / $500 paper
+MAX_DAILY_LOSS_DOLLARS = 100.0 if _is_live() else 500.0  # $100 live / $500 paper
 
 # --- Per-Order Size Caps ---
 MAX_ORDER_NOTIONAL = 550.00 if _is_live() else 2_000.00  # $550 live / $2000 paper
@@ -28,7 +28,7 @@ MAX_CONTRACTS_PER_TRADE = 1  # single contract per signal (small account)
 
 # --- Portfolio-Level Caps ---
 MAX_OPEN_POSITIONS = 10  # Total open positions allowed
-MAX_POSITION_PCT_EQUITY = 0.10  # No single position > 10% of equity
+MAX_POSITION_PCT_EQUITY = 0.25  # No single position > 25% of equity (unused today; doc)
 
 # --- Momentum Strategy Caps ---
 MOMENTUM_MAX_POSITIONS = 5  # max concurrent momentum positions across all venues
@@ -46,37 +46,61 @@ SYMBOL_CAPS = {
     "NVDA": 3_000.0,
     "SPY": 5_000.0,
     # HIP-3 equity perps (TradeXYZ on Hyperliquid) — screener_hip3.py top 20
-    "xyz:HIMS/USD": 100.0,
-    "xyz:HOOD/USD": 100.0,
-    "xyz:CRCL/USD": 100.0,
-    "xyz:ORCL/USD": 100.0,
-    "xyz:EWY/USD": 100.0,
-    "xyz:XYZ100/USD": 100.0,
-    "xyz:COIN/USD": 100.0,
-    "xyz:CRWV/USD": 100.0,
-    "xyz:TSLA/USD": 100.0,
-    "xyz:CL/USD": 100.0,
-    "xyz:SNDK/USD": 100.0,
-    "xyz:MSTR/USD": 100.0,
-    "xyz:SKHX/USD": 100.0,
-    "xyz:MSFT/USD": 100.0,
-    "xyz:MU/USD": 100.0,
-    "xyz:SP500/USD": 100.0,
-    "xyz:AMD/USD": 100.0,
-    "xyz:PLTR/USD": 100.0,
-    "xyz:BRENTOIL/USD": 100.0,
-    "xyz:INTC/USD": 100.0,
+    # Bumped $100→$200 2026-04-20 to deploy $366 free USDC (60% unused).
+    "xyz:HIMS/USD": 200.0,
+    "xyz:HOOD/USD": 200.0,
+    "xyz:CRCL/USD": 200.0,
+    "xyz:ORCL/USD": 200.0,
+    "xyz:EWY/USD": 200.0,
+    "xyz:XYZ100/USD": 200.0,
+    "xyz:COIN/USD": 200.0,
+    "xyz:CRWV/USD": 200.0,
+    "xyz:TSLA/USD": 200.0,
+    "xyz:CL/USD": 200.0,
+    "xyz:SNDK/USD": 200.0,
+    "xyz:MSTR/USD": 200.0,
+    "xyz:SKHX/USD": 200.0,
+    "xyz:MSFT/USD": 200.0,
+    "xyz:MU/USD": 200.0,
+    "xyz:SP500/USD": 200.0,
+    "xyz:AMD/USD": 200.0,
+    "xyz:PLTR/USD": 200.0,
+    "xyz:BRENTOIL/USD": 200.0,
+    "xyz:INTC/USD": 200.0,
+    "xyz:RIVN/USD": 50.0,  # unchanged: CoinCodex $12 forecast hedge
     # ── HIP-3 expansion (screened 2026-04-19) — commodities + mega-caps ──
-    "xyz:GOLD/USD": 100.0,
-    "xyz:SILVER/USD": 100.0,
-    "xyz:NATGAS/USD": 100.0,
-    "xyz:COPPER/USD": 100.0,
-    "xyz:PLATINUM/USD": 100.0,
-    "xyz:TSM/USD": 100.0,
-    "xyz:AMZN/USD": 100.0,
-    "xyz:GOOGL/USD": 100.0,
-    "xyz:META/USD": 100.0,
-    "xyz:NVDA/USD": 100.0,
+    "xyz:GOLD/USD": 200.0,
+    "xyz:SILVER/USD": 200.0,
+    "xyz:NATGAS/USD": 200.0,
+    "xyz:COPPER/USD": 200.0,
+    "xyz:PLATINUM/USD": 200.0,
+    "xyz:TSM/USD": 200.0,
+    "xyz:AMZN/USD": 200.0,
+    "xyz:GOOGL/USD": 200.0,
+    "xyz:META/USD": 200.0,
+    "xyz:NVDA/USD": 200.0,
+    # ── HIP-3 additions (env.sh 2026-04-20) — mega-caps, FX, commodities, indices ──
+    "xyz:AAPL/USD": 200.0,
+    "xyz:LLY/USD": 200.0,
+    "xyz:NFLX/USD": 200.0,
+    "xyz:COST/USD": 200.0,
+    "xyz:BABA/USD": 200.0,
+    "xyz:RKLB/USD": 200.0,
+    "xyz:MRVL/USD": 200.0,
+    "xyz:VIX/USD": 200.0,
+    "xyz:DXY/USD": 200.0,
+    "xyz:EUR/USD": 200.0,
+    "xyz:JPY/USD": 200.0,
+    "xyz:JP225/USD": 200.0,
+    "xyz:XLE/USD": 200.0,
+    "xyz:PALLADIUM/USD": 200.0,
+    "xyz:URANIUM/USD": 200.0,
+    "xyz:WHEAT/USD": 200.0,
+    "xyz:CORN/USD": 200.0,
+    # ── para (crypto dominance indices) — unfunded today but parse-safe ──
+    "para:BTCD/USD": 200.0,
+    "para:OTHERS/USD": 200.0,
+    "para:TOTAL2/USD": 200.0,
     # ── Momentum / trend-following candidates (screened 2026-04-17) ────────
     "AMZN": 1_500.0 if _is_live() else 1_500.0,
     "NKE": 1_500.0 if _is_live() else 1_500.0,

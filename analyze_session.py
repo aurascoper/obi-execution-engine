@@ -132,21 +132,26 @@ def pair_round_trips(fills: list[dict]) -> tuple[list[dict], list[dict]]:
             if entry is None:
                 unpaired.append(f)
                 continue
-            entry_notional = entry["qty_signed"] * entry["price"]
-            exit_notional = f["qty_signed"] * f["price"]
-            # Close identity: signed qty flips sign on exit, so summing signed
-            # notionals gives realized cash. Short: entry_qty<0 → entry_notional<0
-            # (cash received), exit_qty>0 → exit_notional>0 (cash paid).
-            # PnL = -(entry_notional + exit_notional).
-            gross = -(entry_notional + exit_notional)
+            entry_qty = abs(entry["qty_signed"])
+            exit_qty = abs(f["qty_signed"])
+            matched_qty = min(entry_qty, exit_qty)
+            qty_mismatch = (
+                abs(entry_qty - exit_qty) / max(entry_qty, exit_qty, 1e-9) > 0.05
+            )
+            direction = "long" if entry["qty_signed"] > 0 else "short"
+            if direction == "long":
+                gross = matched_qty * (f["price"] - entry["price"])
+            else:
+                gross = matched_qty * (entry["price"] - f["price"])
+            entry_notional = matched_qty * entry["price"]
+            exit_notional = matched_qty * f["price"]
             fees = _fee(entry_notional) + _fee(exit_notional)
             net = gross - fees
-            direction = "long" if entry["qty_signed"] > 0 else "short"
             trips.append(
                 {
                     "symbol": sym,
                     "direction": direction,
-                    "qty": abs(entry["qty_signed"]),
+                    "qty": matched_qty,
                     "entry_px": entry["price"],
                     "exit_px": f["price"],
                     "entry_ts": entry["ts"],
@@ -154,8 +159,25 @@ def pair_round_trips(fills: list[dict]) -> tuple[list[dict], list[dict]]:
                     "gross": gross,
                     "fees": fees,
                     "net": net,
+                    "suspect": qty_mismatch,
+                    "entry_qty": entry_qty,
+                    "exit_qty": exit_qty,
                 }
             )
+            if qty_mismatch:
+                residual_qty = abs(entry_qty - exit_qty)
+                residual_side = entry if entry_qty > exit_qty else f
+                unpaired.append(
+                    {
+                        **residual_side,
+                        "qty_signed": (
+                            residual_qty
+                            if residual_side["qty_signed"] > 0
+                            else -residual_qty
+                        ),
+                        "note": "qty_mismatch_residual",
+                    }
+                )
 
     return trips, list(open_by_sym.values()) + unpaired
 
@@ -203,6 +225,7 @@ def main() -> None:
             f"{t['qty']:>10.4f} "
             f"{t['entry_px']:>11.2f} {t['exit_px']:>11.2f} "
             f"{t['gross']:>+9.3f} {t['fees']:>7.3f} {t['net']:>+9.3f}"
+            f"{'  !qtyMismatch(e=' + format(t['entry_qty'], '.4f') + ' x=' + format(t['exit_qty'], '.4f') + ')' if t.get('suspect') else ''}"
         )
 
     print(f"{'─' * 78}")

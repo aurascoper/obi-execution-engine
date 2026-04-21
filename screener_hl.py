@@ -35,7 +35,37 @@ from hyperliquid.utils import constants
 # _QTY_DECIMALS. Any coin NOT in this set has no Alpaca bar source, so the
 # SignalEngine rolling buffer would never fill. Pre-filtering here is the only
 # honest way to keep the engine universe and the data feed in sync.
-ALPACA_SUPPORTED = {"BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "SHIB"}
+ALPACA_SUPPORTED = {
+    "BTC",
+    "ETH",
+    "SOL",
+    "DOGE",
+    "AVAX",
+    "LINK",
+    "SHIB",
+    "AAVE",
+    "UNI",
+    "CRV",
+    "SUSHI",
+    "LDO",
+    "GRT",
+    "YFI",
+    "ARB",
+    "POL",
+    "FIL",
+    "RENDER",
+    "PAXG",
+    "BAT",
+    "ADA",
+    "DOT",
+    "LTC",
+    "BCH",
+    "XRP",
+    "XTZ",
+    "PEPE",
+    "BONK",
+    "ZEC",
+}
 EXCLUDE_CORE = {"BTC", "ETH"}
 MAX_SPREAD_BPS = 5.0
 MIN_MAX_LEVERAGE = 3

@@ -79,6 +79,13 @@ STOP_LOSS_PCT = (
     0.010  # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
 )
 
+# ── z-revert exit gate ───────────────────────────────────────────────────────
+# Prevent premature z_revert exits caused by mean-drift (rolling mean catches up
+# to a new price level, collapsing z toward 0 without actual price reversion).
+# z_revert requires BOTH conditions; stop_loss / time_stop always fire immediately.
+MIN_HOLD_FOR_REVERT_S = 15 * 60  # 15 min — 25% of 60-bar window; z settles
+MIN_REVERT_BPS = 0.001  # 0.1% favorable price move confirms real reversion
+
 # ── Momentum / trend-following parameters ─────────────────────────────────────
 Z_MOMENTUM_ENTRY = +1.25  # enter momentum long when z > +1.25 (trending up)
 Z_MOMENTUM_SHORT_ENTRY = -1.25  # enter momentum short when z < -1.25 (trending down)
@@ -203,6 +210,8 @@ class _SymbolState:
         "z_exit_short",
         "z_momentum_entry",  # per-symbol momentum override (None = use default)
         "z_momentum_short_entry",
+        "z_4h_exit_long",  # patient-hold override: require z_4h >= this to exit long (default 0)
+        "z_4h_exit_short",  # patient-hold override: require z_4h <= this to exit short (default 0)
     )
 
     def __init__(self, symbol: str, window: int) -> None:
@@ -222,6 +231,8 @@ class _SymbolState:
         self.z_exit_short: float | None = None
         self.z_momentum_entry: float | None = None
         self.z_momentum_short_entry: float | None = None
+        self.z_4h_exit_long: float | None = None
+        self.z_4h_exit_short: float | None = None
 
     # ── Tag-aware helpers ──────────────────────────────────────────────────────
 
@@ -398,6 +409,34 @@ class SignalEngine:
                 st.z_exit_short if st.z_exit_short is not None else self._z_exit_short
             )
             z_revert = (z > _z_exit) if is_long else (z < _z_exit_short)
+
+            # Gate z_revert: suppress mean-drift false reverts.
+            # Require BOTH minimum hold time AND favorable price move.
+            if z_revert and not stop_reason:
+                hold_age = (int(time.time()) - entry_ts) if entry_ts > 0 else 0
+                favorable = 0.0
+                if not math.isnan(entry_px) and entry_px > 0:
+                    favorable = (
+                        (close - entry_px) / entry_px
+                        if is_long
+                        else (entry_px - close) / entry_px
+                    )
+                if hold_age < MIN_HOLD_FOR_REVERT_S or favorable < MIN_REVERT_BPS:
+                    log.info(
+                        "z_revert_suppressed",
+                        symbol=sym,
+                        z=round(z, 4),
+                        tag=tag,
+                        hold_age_s=hold_age,
+                        favorable_bps=round(favorable * 10000, 1),
+                        reason=(
+                            "hold_too_short"
+                            if hold_age < MIN_HOLD_FOR_REVERT_S
+                            else "insufficient_move"
+                        ),
+                    )
+                    z_revert = False
+
             if not (z_revert or stop_reason):
                 return None
 
@@ -961,12 +1000,29 @@ class SignalEngine:
             elif not is_long and close > trend_sma:
                 exit_reason = "trend_break"
 
-            # 2. Momentum exhaustion — z_4h flips against position
+            # 2. Momentum exhaustion
+            # Default: sign-flip exit (long exits when z_4h<0, short exits when z_4h>0).
+            # Per-symbol override: positive z_4h_exit_long defers exit until z_4h is
+            # that extended (patient hold). Analogous negative for shorts.
             if z_4h is not None:
-                if is_long and z_4h < 0:
-                    exit_reason = exit_reason or "z4h_exhaustion"
-                elif not is_long and z_4h > 0:
-                    exit_reason = exit_reason or "z4h_exhaustion"
+                thr_long = st.z_4h_exit_long
+                thr_short = st.z_4h_exit_short
+                if is_long:
+                    if thr_long is not None and thr_long > 0.0:
+                        if z_4h >= thr_long:
+                            exit_reason = (
+                                exit_reason or f"z4h_patient_exit_{thr_long:.1f}"
+                            )
+                    elif z_4h < 0:
+                        exit_reason = exit_reason or "z4h_exhaustion"
+                else:
+                    if thr_short is not None and thr_short < 0.0:
+                        if z_4h <= thr_short:
+                            exit_reason = (
+                                exit_reason or f"z4h_patient_exit_{thr_short:.1f}"
+                            )
+                    elif z_4h > 0:
+                        exit_reason = exit_reason or "z4h_exhaustion"
 
             # 3. Stop loss — wider than mean-reversion (3%)
             if not math.isnan(entry_px) and entry_px > 0:
@@ -1126,3 +1182,18 @@ class SignalEngine:
             return
         st.z_momentum_entry = z_momentum_entry
         st.z_momentum_short_entry = z_momentum_short_entry
+
+    def set_symbol_z4h_exit(
+        self,
+        symbol: str,
+        z_4h_exit_long: float,
+        z_4h_exit_short: float,
+    ) -> None:
+        """Per-symbol patient-hold: defer momentum z_4h-exhaustion exit until
+        z_4h reaches an extended level. Positive z_4h_exit_long keeps long
+        positions open until z_4h>=that value. Analogous negative for shorts."""
+        st = self._state.get(symbol)
+        if st is None:
+            return
+        st.z_4h_exit_long = z_4h_exit_long
+        st.z_4h_exit_short = z_4h_exit_short

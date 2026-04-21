@@ -33,7 +33,7 @@ MAX_DAILY_LOSS = 50.0
 LOG_PATH = Path(__file__).resolve().parent / "logs" / "hl_watchdog.log"
 ENGINE_SCRIPT = "hl_engine.py"
 # Builder DEXs whose clearinghouse values must be included in drawdown monitoring.
-_BUILDER_DEXS = ["xyz"]
+_BUILDER_DEXS = ["xyz", "flx", "vntl", "hyna", "km", "cash", "para", "abcd"]
 
 
 def _log(msg: str) -> None:
