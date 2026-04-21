@@ -464,14 +464,33 @@ def main() -> None:
 
             def _row_mom(r):
                 z, sym, px, adv, sec, z4h, _sma, pct = r
-                return {"symbol": sym, "z": z, "z_4h": z4h, "pct_sma": pct,
-                        "price": px, "adv": adv, "sector": sec, "mode": "momentum"}
+                return {
+                    "symbol": sym,
+                    "z": z,
+                    "z_4h": z4h,
+                    "pct_sma": pct,
+                    "price": px,
+                    "adv": adv,
+                    "sector": sec,
+                    "mode": "momentum",
+                }
 
-            print(_json.dumps({"longs": [_row_mom(r) for r in longs],
-                               "shorts": [_row_mom(r) for r in shorts]}, indent=2))
+            print(
+                _json.dumps(
+                    {
+                        "longs": [_row_mom(r) for r in longs],
+                        "shorts": [_row_mom(r) for r in shorts],
+                    },
+                    indent=2,
+                )
+            )
         else:
             print_momentum_results(
-                longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+                longs,
+                shorts,
+                already_in,
+                new_only=args.new_only,
+                scanned_date=scanned_date,
             )
     else:
         print("Computing z-scores + applying quality filters...")
@@ -488,14 +507,31 @@ def main() -> None:
 
             def _row_mr(r):
                 z, sym, px, adv, sec = r
-                return {"symbol": sym, "z": z, "price": px, "adv": adv,
-                        "sector": sec, "mode": "mean_reversion"}
+                return {
+                    "symbol": sym,
+                    "z": z,
+                    "price": px,
+                    "adv": adv,
+                    "sector": sec,
+                    "mode": "mean_reversion",
+                }
 
-            print(_json.dumps({"longs": [_row_mr(r) for r in longs],
-                               "shorts": [_row_mr(r) for r in shorts]}, indent=2))
+            print(
+                _json.dumps(
+                    {
+                        "longs": [_row_mr(r) for r in longs],
+                        "shorts": [_row_mr(r) for r in shorts],
+                    },
+                    indent=2,
+                )
+            )
         else:
             print_results(
-                longs, shorts, already_in, new_only=args.new_only, scanned_date=scanned_date
+                longs,
+                shorts,
+                already_in,
+                new_only=args.new_only,
+                scanned_date=scanned_date,
             )
 
 

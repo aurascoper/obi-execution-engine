@@ -163,17 +163,22 @@ def cross_venue_hits(alpaca: dict, hip3_candidates: list[dict]) -> list[dict]:
     """Alpaca-flagged names that also appear as HIP-3 perps, in either direction."""
     hip3_bases = {c["coin"].split(":")[-1]: c for c in hip3_candidates}
     hits = []
-    for side, rows in (("long", alpaca.get("longs", [])), ("short", alpaca.get("shorts", []))):
+    for side, rows in (
+        ("long", alpaca.get("longs", [])),
+        ("short", alpaca.get("shorts", [])),
+    ):
         for r in rows:
             sym = r["symbol"]
             if sym in hip3_bases:
-                hits.append({
-                    "symbol": sym,
-                    "alpaca_side": side,
-                    "alpaca_z": round(r["z"], 3),
-                    "hip3_coin": hip3_bases[sym]["coin"],
-                    "hip3_composite": round(hip3_bases[sym]["composite_score"], 3),
-                })
+                hits.append(
+                    {
+                        "symbol": sym,
+                        "alpaca_side": side,
+                        "alpaca_z": round(r["z"], 3),
+                        "hip3_coin": hip3_bases[sym]["coin"],
+                        "hip3_composite": round(hip3_bases[sym]["composite_score"], 3),
+                    }
+                )
     return hits
 
 
