@@ -59,7 +59,7 @@ def _find_engine_pid() -> int | None:
             pid = int(line.strip())
             if pid != os.getpid():
                 return pid
-    except subprocess.CalledProcessError, ValueError:
+    except (subprocess.CalledProcessError, ValueError):
         pass
     return None
 
