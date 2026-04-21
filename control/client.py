@@ -10,7 +10,9 @@ import json
 import os
 import socket
 
-_DEFAULT_SOCK = "/tmp/hl_engine.sock"
+from util.platform_compat import control_socket_path, supports_unix_sockets
+
+_DEFAULT_SOCK = control_socket_path("hl_engine")
 _TIMEOUT = 5.0
 _BUF_SIZE = 65536
 
@@ -36,6 +38,11 @@ class ControlClient:
     # ── Transport ─────────────────────────────────────────────────────────────
 
     def _request(self, msg: dict) -> dict:
+        if not supports_unix_sockets():
+            raise ConnectionError(
+                "Control plane is unavailable on Windows (AF_UNIX not supported). "
+                "Run hl_ctl from a POSIX host or use a WSL shell."
+            )
         if not os.path.exists(self._sock_path):
             raise ConnectionError(
                 f"Control socket not found at {self._sock_path}. "

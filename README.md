@@ -1,5 +1,5 @@
 # OBI + Mean-Reversion Execution Engine
-### Tri-Engine | Mean Reversion (Crypto Spot) + Statistical Arbitrage (Equities) + Bi-Directional Perps (Crypto + HIP-3 Equity/Commodity, Hyperliquid) | Async Python | Apple Silicon M4
+### Tri-Engine | Mean Reversion (Crypto Spot) + Statistical Arbitrage (Equities) + Bi-Directional Perps (Crypto + HIP-3 Equity/Commodity, Hyperliquid) | Async Python | macOS / Linux / Windows AMD64
 
 A production-grade algorithmic trading system implementing three architecturally distinct
 quantitative strategies across parallel execution engines, grounded in the survey of
@@ -542,43 +542,79 @@ All thresholds are hardcoded constants in `config/risk_params.py`. `CircuitBreak
 
 ## Quickstart
 
-```bash
-# 1. Credentials
-source env.sh   # Alpaca keys (gitignored). Contains ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY
-# For Hyperliquid, a .env file at repo root provides:
-#   HL_WALLET_ADDRESS=0x...
-#   HL_PRIVATE_KEY=0x...        (master wallet — agent keys can't do USD transfers)
-# config/settings.py loads .env non-overriding, so env.sh values still win.
+### macOS / Linux
 
-# 2. Install
+```bash
+# 1. Install
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+# 2. Credentials
+cp .env.example .env
+# Edit .env with ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY / HL_WALLET_ADDRESS / HL_PRIVATE_KEY.
+# Legacy env.sh still works (source env.sh overrides .env), but .env is the portable path.
+
 # 3a. Run Alpaca engines (paper mode)
-nohup /path/to/venv/bin/python3 live_engine.py     >> logs/engine.jsonl          2>&1 &
+nohup .venv/bin/python live_engine.py     >> logs/engine.jsonl          2>&1 &
 sleep 5
-nohup /path/to/venv/bin/python3 equities_engine.py >> logs/equities_engine.jsonl 2>&1 &
+nohup .venv/bin/python equities_engine.py >> logs/equities_engine.jsonl 2>&1 &
 
 # 3b. Run Hyperliquid engine (mainnet — real capital)
-#     First time only: fund the perp clearinghouse
-python3 fund_perp.py
+#     First time only: fund the perp clearinghouse.
+python fund_perp.py
 #     28-coin hybrid launch: 8 native crypto + 20 HIP-3 equity/commodity perps.
-#     HIP3_DEXS enables the TradeXYZ builder DEX alongside native HyperCore.
 EXECUTION_MODE=LIVE ALPACA_TRADING_MODE=live EXECUTION_STYLE=maker \
   HL_UNIVERSE="BTC,ETH,SOL,DOGE,AVAX,LINK,kSHIB,HYPE" \
   HIP3_DEXS="xyz" \
-  HIP3_UNIVERSE="xyz:HIMS,xyz:HOOD,xyz:CRCL,xyz:ORCL,xyz:EWY,xyz:XYZ100,xyz:COIN,xyz:CRWV,xyz:TSLA,xyz:CL,xyz:SNDK,xyz:MSTR,xyz:SKHX,xyz:MSFT,xyz:MU,xyz:SP500,xyz:AMD,xyz:PLTR,xyz:BRENTOIL,xyz:INTC" \
+  HIP3_UNIVERSE="xyz:HIMS,xyz:HOOD,xyz:CRCL,xyz:COIN,xyz:MSTR,xyz:AMD,xyz:PLTR" \
   HIP3_LEVERAGE=5 \
-  nohup caffeinate -i venv/bin/python3 hl_engine.py &
+  nohup caffeinate -i .venv/bin/python hl_engine.py &
 
-# 4. Screen for new signals (Alpaca universe only)
-python3 screener.py --new-only
-python3 screener.py --sector Financials --min-z 1.5
+# 4. Screen for new signals
+python screener.py --new-only
+python screener.py --sector Financials --min-z 1.5
 
 # 5. Monitor live signals
-tail -f logs/hl_engine.jsonl | python3 -c \
+tail -f logs/hl_engine.jsonl | python -c \
   "import sys,json; [print(json.dumps(json.loads(l),indent=2)) for l in sys.stdin
    if any(k in l for k in ['entry_signal','exit_signal','hl_order_intent','hl_order_inner_rejection'])]"
 ```
+
+### Windows (AMD64)
+
+Windows is a first-class runtime target as of the v-AMD64 port. The engines run identically;
+only the control-plane CLI (`hl_ctl.py`) is unavailable because it relies on AF_UNIX sockets.
+
+```powershell
+# 1. One-time bootstrap (creates .venv, installs deps, runs launch.py).
+.\scripts\run-launch.ps1
+
+# Or do it manually:
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# 2. Credentials
+Copy-Item .env.example .env
+# Fill in ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY (and HL_* if using Hyperliquid).
+
+# 3. Pick an engine
+.\scripts\run-live.ps1       # Alpaca crypto spot
+.\scripts\run-equities.ps1   # Alpaca equities
+.\scripts\run-hl.ps1         # Hyperliquid perps
+.\scripts\run-launch.ps1     # Taker + Maker pair
+
+# If PowerShell blocks script execution, one-time:
+# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Notes for Windows users:
+
+- Do **not** use `source env.sh`, `nohup`, or `caffeinate` — those are Unix-only. Stop processes with `Ctrl+C`.
+- The engine's control socket lives in `%TEMP%\hl_engine.sock`; override with `HL_CONTROL_DIR` in `.env` if needed.
+- For always-on operation, wrap the PowerShell scripts with **NSSM** or **Task Scheduler** (supervisor shell scripts in `scripts/*.sh` are POSIX-only).
+- Recommended Python: **3.12** (CI also tests 3.11). Python 3.14 has not yet been validated on Windows.
 
 ---
 

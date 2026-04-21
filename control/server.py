@@ -16,6 +16,7 @@ import structlog
 
 from control.protocol import deserialize, serialize
 from strategy.signals import SignalEngine
+from util.platform_compat import control_socket_path, supports_unix_sockets
 
 log = structlog.get_logger("hl_control")
 
@@ -28,17 +29,28 @@ class ControlPlaneServer:
         self,
         signals: SignalEngine,
         engine_meta: dict,
-        sock_path: str = "/tmp/hl_engine.sock",
+        sock_path: str | None = None,
     ) -> None:
         self._signals = signals
         self._meta = engine_meta
-        self._sock_path = sock_path
+        self._sock_path = sock_path or control_socket_path("hl_engine")
         self._server: asyncio.AbstractServer | None = None
 
     # ── Public lifecycle ──────────────────────────────────────────────────────
 
     async def serve(self) -> None:
         """Start the Unix server. Runs until stop() is called or the task is cancelled."""
+        # Windows lacks AF_UNIX; skip the control plane entirely. hl_ctl remains
+        # unusable there but the engine itself still runs.
+        if not supports_unix_sockets():
+            log.warning("ctl_server_disabled_windows", sock=self._sock_path)
+            # Park forever so the TaskGroup stays balanced; cancel on shutdown.
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+            return
+
         # Clean up stale socket from previous run / crash.
         try:
             os.unlink(self._sock_path)

@@ -18,7 +18,6 @@ Usage:
 
 import asyncio
 import logging
-import signal
 from pathlib import Path
 
 import structlog
@@ -28,6 +27,7 @@ from alpaca.trading.enums import QueryOrderStatus
 from config.settings import load as load_settings
 from data.feed import LiveFeed
 from live_engine import Engine, SYMBOLS
+from util.platform_compat import install_shutdown_handlers
 
 # ── Logging — write to a launch-level log in addition to per-engine logs ──────
 Path("logs").mkdir(exist_ok=True)
@@ -86,9 +86,7 @@ async def main() -> None:
         maker.stop()
         feed.stop()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _stop)
+    install_shutdown_handlers(_stop)
 
     log.info("launch_start", symbols=SYMBOLS, engines=["taker", "maker"])
     print(

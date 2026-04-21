@@ -35,7 +35,7 @@ Usage:
 import asyncio
 import logging
 import os
-import signal
+from util.platform_compat import install_shutdown_handlers
 import zoneinfo
 from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
@@ -413,9 +413,7 @@ class OptionsEngine:
 # ── Entry point ────────────────────────────────────────────────────────────────
 async def main() -> None:
     engine = OptionsEngine()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, engine.stop)
+    install_shutdown_handlers(engine.stop)
     await engine.run()
 
 

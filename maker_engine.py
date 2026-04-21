@@ -21,7 +21,7 @@ Usage:
 
 import asyncio
 import logging
-import signal
+from util.platform_compat import install_shutdown_handlers
 from pathlib import Path
 
 import structlog
@@ -236,9 +236,7 @@ class MakerEngine:
 # ── Entry point ───────────────────────────────────────────────────────────────
 async def main() -> None:
     engine = MakerEngine()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, engine.stop)
+    install_shutdown_handlers(engine.stop)
     await engine.run()
 
 

@@ -132,10 +132,13 @@ def main() -> int:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    from util.platform_compat import control_socket_path
+
+    _default_sock = control_socket_path("hl_engine")
     parser.add_argument(
         "--sock",
-        default="/tmp/hl_engine.sock",
-        help="Path to the engine control socket (default: /tmp/hl_engine.sock)",
+        default=_default_sock,
+        help=f"Path to the engine control socket (default: {_default_sock})",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
