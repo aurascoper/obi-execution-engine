@@ -403,7 +403,7 @@ class HyperliquidOrderManager:
             pos = ap.get("position", {}) if isinstance(ap, dict) else {}
             try:
                 szi = float(pos.get("szi", 0))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if szi == 0:
                 continue

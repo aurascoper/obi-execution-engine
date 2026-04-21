@@ -248,7 +248,7 @@ class HLEngine:
                 if name:
                     try:
                         venue_max_lev[name] = int(asset.get("maxLeverage", 0) or 0)
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         pass
         except Exception:
             pass
@@ -260,7 +260,7 @@ class HLEngine:
                     if name:
                         try:
                             venue_max_lev[name] = int(asset.get("maxLeverage", 0) or 0)
-                        except TypeError, ValueError:
+                        except (TypeError, ValueError):
                             pass
             except Exception:
                 continue
@@ -290,7 +290,7 @@ class HLEngine:
             if name:
                 try:
                     venue_sz_dec[name] = int(asset.get("szDecimals", 0))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     continue
 
         # HIP-3 DEX meta probes — names already include dex prefix (e.g. "xyz:TSLA").
@@ -305,7 +305,7 @@ class HLEngine:
                     continue
                 try:
                     venue_sz_dec[coin_name] = int(asset.get("szDecimals", 0))
-                except TypeError, ValueError:
+                except (TypeError, ValueError):
                     continue
 
         missing = [c for c in self._hl_coins if c not in venue_sz_dec]
@@ -521,7 +521,7 @@ class HLEngine:
             for c in candles:
                 try:
                     close = float(c["c"])
-                except KeyError, TypeError, ValueError:
+                except (KeyError, TypeError, ValueError):
                     continue
                 st.price_buf.push(close)
                 st.trend_buf.push(close)
@@ -1222,7 +1222,7 @@ class HLEngine:
                     try:
                         fill_px = float(s["filled"].get("avgPx", 0) or 0)
                         filled_sz = float(s["filled"].get("totalSz", 0))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         fill_px, filled_sz = 0.0, 0.0
                     if filled_sz > 0:
                         slip_bps = (
@@ -1280,7 +1280,7 @@ class HLEngine:
 
         try:
             filled_sz = float(msg["sz"])
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             filled_sz = 0.0
         if filled_sz <= 0:
             return

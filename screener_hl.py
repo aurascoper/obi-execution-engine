@@ -91,7 +91,7 @@ def _top_spread_bps(info: Info, coin: str) -> float | None:
     try:
         bid = float(bids[0]["px"])
         ask = float(asks[0]["px"])
-    except KeyError, ValueError, TypeError:
+    except (KeyError, ValueError, TypeError):
         return None
     if bid <= 0 or ask <= 0 or ask <= bid:
         return None
@@ -142,7 +142,7 @@ def main() -> None:
             day_vlm = float(ctx.get("dayNtlVlm", 0) or 0)
             mark = float(ctx.get("markPx", 0) or 0)
             oi = float(ctx.get("openInterest", 0) or 0)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
         if max_lev < MIN_MAX_LEVERAGE:
             continue

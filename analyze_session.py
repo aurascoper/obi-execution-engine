@@ -71,7 +71,7 @@ def extract_fills(events: list[dict]) -> list[dict]:
                     try:
                         px = float(f.get("avgPx"))
                         sz = float(f.get("totalSz"))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         continue
                     if sz <= 0:
                         continue

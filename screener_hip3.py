@@ -215,7 +215,7 @@ def fetch_universe(
                 oi_usd = mark * oi_coins
                 vol_usd = float(ctx.get("dayNtlVlm", 0))
                 funding = float(ctx.get("funding", 0))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
 
             if oi_usd < min_oi or vol_usd < min_vol:
@@ -255,7 +255,7 @@ def fetch_rmsd(info: Info, assets: list[dict], lookback_days: int = 7) -> list[d
         for c in candles:
             try:
                 closes.append(float(c["c"]))
-            except KeyError, TypeError, ValueError:
+            except (KeyError, TypeError, ValueError):
                 continue
 
         if len(closes) < 10:

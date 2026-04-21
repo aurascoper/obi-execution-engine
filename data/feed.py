@@ -144,7 +144,7 @@ class LiveFeed:
             bs = float(q.bid_size)
             ap = float(q.ask_price)
             as_ = float(q.ask_size)
-        except TypeError, AttributeError:
+        except (TypeError, AttributeError):
             return
         if bp <= 0 or ap <= 0:
             return

@@ -150,7 +150,7 @@ class HyperliquidFeed:
         try:
             bids = [[float(lvl["px"]), float(lvl["sz"])] for lvl in levels[0]]
             asks = [[float(lvl["px"]), float(lvl["sz"])] for lvl in levels[1]]
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             return None
 
         # HL returns asks in ascending-px order and bids in descending-px order,
@@ -180,7 +180,7 @@ class HyperliquidFeed:
             px = float(fill["px"])
             sz = float(fill["sz"])
             raw_side = str(fill["side"]).upper()
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             return None
 
         if raw_side == "B":
