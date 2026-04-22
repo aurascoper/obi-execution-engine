@@ -1,49 +1,53 @@
-<!-- generated_at: 2026-04-22T19:47:33Z -->
+<!-- generated_at: 2026-04-22T20:07:36Z -->
 <!-- source: logs/monitor/latest.md (sanitized) -->
 
-# Monitor Report — 2026-04-22 19:01 UTC
+# Monitor Report — 2026-04-22 20:01 UTC
 
 ## 1. Universe Scan — HL native perps
 **Longs (z_4h≥+2):** 0
 **Shorts (z_4h≤-2):** 3
-- FIL/USD    z=-4.31 z_4h=-3.22 ★
-- RENDER/USD z=-4.45 z_4h=-3.00 ★
-- ENA/USD    z=-3.91 z_4h=-2.59 ★
+- BNB/USD    z=-4.36 z_4h=-3.13 ★
+- UNI/USD    z=-1.43 z_4h=-2.68 ★
+- ENA/USD    z=-1.02 z_4h=-2.38
 
 ## 2. Universe Scan — HIP-3 (xyz subaccount, funded)
-**Longs (z_4h≥+2):** 0
-**Shorts (z_4h≤-2):** 3
-- xyz:COST/USD       z=-1.70 z_4h=-2.89 ★
-- xyz:TSLA/USD       z=-2.45 z_4h=-2.61 ★
-- xyz:BABA/USD       z=-3.27 z_4h=-2.05
+**Longs (z_4h≥+2):** 3
+- xyz:HIMS/USD       z=+3.05 z_4h=+2.56 ★
+- xyz:MSFT/USD       z=+1.40 z_4h=+2.43
+- xyz:LLY/USD        z=+0.92 z_4h=+2.39
+**Shorts (z_4h≤-2):** 2
+- xyz:CRWV/USD       z=-1.94 z_4h=-3.22 ★
+- xyz:EUR/USD        z=-2.00 z_4h=-2.19
 
 _HIP-3 unfunded (blacklisted DEXs) w/ |z_4h|≥2.5:_ 2
-  - para:OTHERS/USD        z=-3.02 z_4h=-3.37
-  - vntl:DEFENSE/USD       z=-1.23 z_4h=-2.65
+  - vntl:ANTHROPIC/USD     z=-4.62 z_4h=-3.64
+  - hyna:ENA/USD           z=-1.19 z_4h=-2.88
 
 ## 3. Screener — engine health
-- **hl_engine**: PID 45838 up 17:18
-- **hl_pairs**: PID 29813 up 01:01:06
+- **hl_engine**: PID 69837 up 09:32
+- **hl_pairs**: PID 29813 up 02:01:06
 - **feedback_loop**: NOT RUNNING
-- flip_guard_blocked (1h): 27 ⚠
-- pair lifecycle (1h): pair_open_complete=2, pair_close_complete=0, pair_stop_complete=0, pair_leg_no_fill=0, pair_beta_drift_rejected=8
+- flip_guard_blocked (1h): 60 ⚠
+- pair lifecycle (1h): pair_open_complete=4, pair_close_complete=2, pair_stop_complete=0, pair_leg_no_fill=0, pair_beta_drift_rejected=2
 
 ## 4. Wallet NAV
-- **main**: NAV $518.28 (Δ -35.26) margin $458.41 free $59.87 pos=8
-- **xyz**: NAV $287.45 (Δ +14.03) margin $287.45 pos=11
+- **main**: NAV $495.25 (Δ -23.03) margin $185.66 free $309.59 pos=9
+- **xyz**: NAV $306.37 (Δ +18.92) margin $306.37 pos=14
 
 ## 5. Analyzer — patient-hold thesis distance
-- ZEC            z_4h=-0.88 (long exit +5.0: Δ=+5.88; short exit -5.0: Δ=+4.12)
-- xyz:MSTR       z_4h=+0.12 (long exit +5.0: Δ=+4.88; short exit -5.0: Δ=+5.12)
-- AAVE           z_4h=+0.17 (long exit +5.0: Δ=+4.83; short exit -5.0: Δ=+5.17)
-- xyz:RIVN       z_4h=+0.21 (long exit +5.0: Δ=+4.79; short exit -5.0: Δ=+5.21)
-- LDO            z_4h=+1.50 (long exit +5.0: Δ=+3.50; short exit -5.0: Δ=+6.50)
-- xyz:INTC       z_4h=-1.79 (long exit +5.0: Δ=+6.79; short exit -5.0: Δ=+3.21)
-- xyz:NVDA       z_4h=-0.66 (long exit +5.0: Δ=+5.66; short exit -5.0: Δ=+4.34)
-- xyz:AMZN       z_4h=+1.11 (long exit +5.0: Δ=+3.89; short exit -5.0: Δ=+6.11)
+- ZEC            z_4h=-1.77 (long exit +5.0: Δ=+6.77; short exit -5.0: Δ=+3.23)
+- xyz:MSTR       z_4h=+0.39 (long exit +5.0: Δ=+4.61; short exit -5.0: Δ=+5.39)
+- AAVE           z_4h=-0.14 (long exit +5.0: Δ=+5.14; short exit -5.0: Δ=+4.86)
+- xyz:RIVN       z_4h=-0.45 (long exit +5.0: Δ=+5.45; short exit -5.0: Δ=+4.55)
+- LDO            z_4h=+0.49 (long exit +5.0: Δ=+4.51; short exit -5.0: Δ=+5.49)
+- xyz:INTC       z_4h=-1.13 (long exit +5.0: Δ=+6.13; short exit -5.0: Δ=+3.87)
+- xyz:NVDA       z_4h=+1.80 (long exit +5.0: Δ=+3.20; short exit -5.0: Δ=+6.80)
+- xyz:AMZN       z_4h=+1.87 (long exit +5.0: Δ=+3.13; short exit -5.0: Δ=+6.87)
 
 ## 6. Open pair risk
-- open pairs: 3
-  - xyz:SKHX|ARB               pos=+1 z=-0.90 mtm=$+0.06
-  - ARB|xyz:EWY                pos=-1 z=+1.27 mtm=$+0.32
-  - xyz:NFLX|BCH               pos=-1 z=+2.15 mtm=$-0.06
+- open pairs: 5
+  - xyz:SKHX|BTC               pos=-1 z=+1.17 mtm=$+0.08
+  - xyz:SKHX|ARB               pos=+1 z=+0.15 mtm=$+0.19
+  - xyz:SKHX|xyz:TSM           pos=+1 z=-2.16 mtm=$-0.05
+  - xyz:BRENTOIL|xyz:META      pos=+1 z=-2.68 mtm=$+0.00
+  - LINK|xyz:MU                pos=+1 z=-1.45 mtm=$+0.01
