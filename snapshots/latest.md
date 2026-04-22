@@ -1,48 +1,41 @@
-<!-- generated_at: 2026-04-22T17:49:55Z -->
+<!-- generated_at: 2026-04-22T18:07:16Z -->
 <!-- source: logs/monitor/latest.md (sanitized) -->
 
-# Monitor Report — 2026-04-22 17:01 UTC
+# Monitor Report — 2026-04-22 18:01 UTC
 
 ## 1. Universe Scan — HL native perps
-**Longs (z_4h≥+2):** 1
-- ARB/USD    z=+2.12 z_4h=+3.57 ★
-**Shorts (z_4h≤-2):** 3
-- CRV/USD    z=-2.07 z_4h=-2.85 ★
-- SUI/USD    z=-1.71 z_4h=-2.69 ★
-- ADA/USD    z=-1.28 z_4h=-2.65 ★
-
-## 2. Universe Scan — HIP-3 (xyz subaccount, funded)
-**Longs (z_4h≥+2):** 0
+**Longs (z_4h≥+2):** 3
+- ARB/USD    z=+1.95 z_4h=+2.79 ★
+- AAVE/USD   z=+2.15 z_4h=+2.65 ★
+- POL/USD    z=+2.21 z_4h=+2.31
 **Shorts (z_4h≤-2):** 0
 
-_HIP-3 unfunded (blacklisted DEXs) w/ |z_4h|≥2.5:_ 1
-  - hyna:SUI/USD           z=-1.66 z_4h=-2.64
+## 2. Universe Scan — HIP-3 (xyz subaccount, funded)
+**Longs (z_4h≥+2):** 1
+- xyz:META/USD       z=+1.03 z_4h=+2.04
+**Shorts (z_4h≤-2):** 1
+- xyz:NATGAS/USD     z=-1.57 z_4h=-2.08
 
 ## 3. Screener — engine health
-- **hl_engine**: PID 97069 up 05:23:10
-- **hl_pairs**: PID 58264 up 02:25:49
+- **hl_engine**: PID 97069 up 06:23:11
+- **hl_pairs**: PID 29813 up 01:06
 - **feedback_loop**: NOT RUNNING
-- flip_guard_blocked (1h): 3
-- pair lifecycle (1h): pair_open_complete=1, pair_close_complete=1, pair_stop_complete=0, pair_leg_no_fill=0, pair_beta_drift_rejected=9
+- flip_guard_blocked (1h): 2
+- pair lifecycle (1h): pair_open_complete=3, pair_close_complete=3, pair_stop_complete=0, pair_leg_no_fill=0, pair_beta_drift_rejected=6
 
 ## 4. Wallet NAV
-- **main**: NAV $534.57 (Δ +0.96) margin $224.72 free $309.85 pos=4
-- **xyz**: NAV $303.94 (Δ +1.13) margin $303.94 pos=8
+- **main**: NAV $553.54 (Δ +18.98) margin $217.07 free $336.48 pos=6
+- **xyz**: NAV $273.42 (Δ -30.52) margin $273.42 pos=9
 
 ## 5. Analyzer — patient-hold thesis distance
-- ZEC            z_4h=+0.81 (long exit +5.0: Δ=+4.19; short exit -5.0: Δ=+5.81)
-- xyz:MSTR       z_4h=-0.55 (long exit +5.0: Δ=+5.55; short exit -5.0: Δ=+4.45)
-- AAVE           z_4h=-0.65 (long exit +5.0: Δ=+5.65; short exit -5.0: Δ=+4.35)
-- xyz:RIVN       z_4h=+0.56 (long exit +5.0: Δ=+4.44; short exit -5.0: Δ=+5.56)
-- LDO            z_4h=-0.18 (long exit +5.0: Δ=+5.18; short exit -5.0: Δ=+4.82)
-- xyz:INTC       z_4h=-1.19 (long exit +5.0: Δ=+6.19; short exit -5.0: Δ=+3.81)
-- xyz:NVDA       z_4h=+0.81 (long exit +5.0: Δ=+4.19; short exit -5.0: Δ=+5.81)
-- xyz:AMZN       z_4h=+0.65 (long exit +5.0: Δ=+4.35; short exit -5.0: Δ=+5.65)
+- ZEC            z_4h=-0.01 (long exit +5.0: Δ=+5.01; short exit -5.0: Δ=+4.99)
+- xyz:MSTR       z_4h=-1.04 (long exit +5.0: Δ=+6.04; short exit -5.0: Δ=+3.96)
+- AAVE           z_4h=+2.65 (long exit +5.0: Δ=+2.35; short exit -5.0: Δ=+7.65)
+- xyz:RIVN       z_4h=+0.32 (long exit +5.0: Δ=+4.68; short exit -5.0: Δ=+5.32)
+- LDO            z_4h=+2.03 (long exit +5.0: Δ=+2.97; short exit -5.0: Δ=+7.03)
+- xyz:INTC       z_4h=-0.81 (long exit +5.0: Δ=+5.81; short exit -5.0: Δ=+4.19)
+- xyz:NVDA       z_4h=+1.78 (long exit +5.0: Δ=+3.22; short exit -5.0: Δ=+6.78)
+- xyz:AMZN       z_4h=+1.78 (long exit +5.0: Δ=+3.22; short exit -5.0: Δ=+6.78)
 
 ## 6. Open pair risk
-- open pairs: 5
-  - xyz:MU|NEAR                pos=-1 z=+1.61 mtm=$-0.51
-  - xyz:BRENTOIL|xyz:TSM       pos=-1 z=+1.61 mtm=$-0.02
-  - xyz:BRENTOIL|xyz:META      pos=-1 z=+1.53 mtm=$-0.32
-  - xyz:EWY|BTC                pos=-1 z=+1.97 mtm=$+0.01
-  - SOL|LTC                    pos=+1 z=-0.76 mtm=$-0.15
+- open pairs: 0
