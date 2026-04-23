@@ -97,6 +97,7 @@ def _round_hl_size(qty: float, sz_decimals: int) -> float:
     factor = 10**sz_decimals
     return math.floor(qty * factor) / factor
 
+
 ROOT = Path(__file__).resolve().parent
 WHITELIST_PATH = ROOT / "config" / "pairs_whitelist.json"
 MAX_WHITELIST_AGE_S = 48 * 3600  # refuse stale whitelists — they mask regime shifts
@@ -419,9 +420,7 @@ class PairsEngine:
                     continue
         missing = [c for c in coins if c not in venue_sz_dec]
         if missing:
-            raise RuntimeError(
-                f"pairs meta() missing szDecimals for coins: {missing}"
-            )
+            raise RuntimeError(f"pairs meta() missing szDecimals for coins: {missing}")
         self._sz_dec: dict[str, int] = {c: venue_sz_dec[c] for c in coins}
 
         log.info(
@@ -469,7 +468,7 @@ class PairsEngine:
         for pair in self._pairs:
             a = coin_bars.get(pair.leg_a, {})
             b = coin_bars.get(pair.leg_b, {})
-            common_ts = sorted(set(a) & set(b))[-(WINDOW + 1):]
+            common_ts = sorted(set(a) & set(b))[-(WINDOW + 1) :]
             for ts in common_ts:
                 pair.push(a[ts], b[ts])
             # Suppress the first auto-refit (`last_refit_ts == 0.0` gate in
