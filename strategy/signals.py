@@ -60,7 +60,24 @@ import numpy as np
 import structlog
 from alpaca.trading.enums import OrderSide
 
-from config.risk_params import MAX_ORDER_NOTIONAL, SYMBOL_CAPS
+from config.risk_params import (
+    BASKET_WINDOW,
+    FEATURE_SET,
+    KELLY_CAP,
+    KELLY_DEXES,
+    KELLY_HL_MIN_BARS,
+    KELLY_K,
+    KELLY_SIGMA_FLOOR,
+    KELLY_SYMBOLS,
+    MAX_ORDER_NOTIONAL,
+    MLOFI_ALPHA,
+    MLOFI_NORM,
+    SIGNAL_MODE,
+    SIZING_MODE,
+    SYMBOL_CAPS,
+)
+from strategy.baskets import BasketAggregator
+from strategy.sizing import kelly_fraction
 
 log = structlog.get_logger(__name__)
 
@@ -71,10 +88,20 @@ WINDOW = 60  # rolling bars for z-score
 #                  (24/7 stream; no historical pre-seed; warmup ~60 min)
 # Equities engine: 60 daily bars = ~3-month macro window
 #                  (pre-seeded from IEX history at startup; warm on bar 1)
-Z_ENTRY = -1.25  # enter long when z < Z_ENTRY (oversold)
-Z_EXIT = -0.50  # exit long when z reverts above Z_EXIT
-Z_SHORT_ENTRY = +1.25  # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
-Z_EXIT_SHORT = +0.50  # cover short when z reverts below Z_EXIT_SHORT    — HL only
+import os as _os
+
+Z_ENTRY = float(
+    _os.environ.get("Z_ENTRY", "-1.25")
+)  # enter long when z < Z_ENTRY (oversold)
+Z_EXIT = float(
+    _os.environ.get("Z_EXIT", "-0.50")
+)  # exit long when z reverts above Z_EXIT
+Z_SHORT_ENTRY = float(
+    _os.environ.get("Z_SHORT_ENTRY", "1.25")
+)  # enter short when z > Z_SHORT_ENTRY (overbought) — HL only
+Z_EXIT_SHORT = float(
+    _os.environ.get("Z_EXIT_SHORT", "0.50")
+)  # cover short when z reverts below Z_EXIT_SHORT    — HL only
 STOP_LOSS_PCT = (
     0.010  # force-exit if adverse move ≥ 1% of entry price — trending-regime safety net
 )
@@ -189,6 +216,41 @@ class _RollingBuffer:
             return None
         return float((current - mu) / sig)
 
+    def sigma(self) -> float | None:
+        """Sample std (ddof=1) over the active window; None until warm."""
+        if not self.is_full:
+            return None
+        s = float(np.std(self._active(), ddof=1))
+        if s < 1e-10:
+            return None
+        return s
+
+    def phi(self) -> float | None:
+        """
+        AR(1) coefficient φ over the active window: x_{t+1} = φ·x_t + ε.
+        Estimated as cov(x[:-1], x[1:]) / var(x[:-1]) — mean-centred.
+        Returns None until warm, or if variance collapses. Bounded to
+        [-0.999, 0.999] to keep half-life finite for callers.
+        """
+        if not self.is_full:
+            return None
+        a = self._active()
+        if a.size < 3:
+            return None
+        x0 = a[:-1]
+        x1 = a[1:]
+        m0 = float(np.mean(x0))
+        var0 = float(np.mean((x0 - m0) ** 2))
+        if var0 < 1e-12:
+            return None
+        cov = float(np.mean((x0 - m0) * (x1 - float(np.mean(x1)))))
+        p = cov / var0
+        if p >= 0.999:
+            p = 0.999
+        elif p <= -0.999:
+            p = -0.999
+        return p
+
 
 # ── Per-Symbol Runtime State ───────────────────────────────────────────────────
 class _SymbolState:
@@ -210,6 +272,10 @@ class _SymbolState:
         "price_buf",  # _RollingBuffer of close prices (WINDOW bars, z-score)
         "trend_buf",  # _RollingBuffer of close prices (TREND_MA_WINDOW bars, regime gate)
         "obi",  # latest ρ_t scalar (updated by update_orderbook)
+        "log_gofi",  # Phase 3: tanh(log((vb+eps)/(va+eps))) ∈ [-1,1]
+        "mlofi",  # Phase 3: tanh(Σ α^l · (Δvb_l − Δva_l) / MLOFI_NORM) ∈ [-1,1]
+        "prev_bid_sizes",  # ndarray of prior snapshot bid-size levels (MLOFI delta)
+        "prev_ask_sizes",  # ndarray of prior snapshot ask-size levels (MLOFI delta)
         "best_ask",  # latest best ask (taker aggressive limit)
         "best_bid",  # latest best bid (maker passive limit)
         "positions",  # dict[str, float]  tag → open qty
@@ -231,6 +297,10 @@ class _SymbolState:
         self.price_buf = _RollingBuffer(window)
         self.trend_buf = _RollingBuffer(TREND_MA_WINDOW)
         self.obi = 0.0
+        self.log_gofi = 0.0
+        self.mlofi = 0.0
+        self.prev_bid_sizes: np.ndarray | None = None
+        self.prev_ask_sizes: np.ndarray | None = None
         self.best_ask = float("nan")
         self.best_bid = float("nan")
         self.positions: dict[str, float] = {}
@@ -313,6 +383,7 @@ class SignalEngine:
         notional_per_trade: float = NOTIONAL_PER_TRADE,
         strategy_tag: str = "taker",
         allow_short: bool = False,
+        basket_agg: BasketAggregator | None = None,
     ) -> None:
         self._z_entry = z_entry
         self._z_exit = z_exit
@@ -323,6 +394,9 @@ class SignalEngine:
         self._notional_per_trade = notional_per_trade
         self.strategy_tag = strategy_tag
         self._allow_short = allow_short
+        # Phase 2: optional sector-residual aggregator. When None OR when
+        # SIGNAL_MODE != "basket_residual", evaluate() uses raw per-symbol z.
+        self._basket_agg = basket_agg
 
         self._state: dict[str, _SymbolState] = {
             s: _SymbolState(s, window) for s in symbols
@@ -365,8 +439,23 @@ class SignalEngine:
         st.price_buf.push(close)
         st.trend_buf.push(close)
 
-        # 2. Compute z-score (returns None if window not yet warm)
-        z = st.price_buf.zscore(close)
+        # 1b. Feed the basket aggregator (Phase 2) — no-op if close not finite
+        # or symbol not in a basket. We pass log(close) so the residual lives
+        # in log-return space (stationary under multiplicative drift).
+        if self._basket_agg is not None and close > 0:
+            self._basket_agg.update(sym, math.log(close))
+
+        # 2. Compute z-score: basket-residual when SIGNAL_MODE is on AND the
+        # aggregator has a warm buffer for this symbol; otherwise raw.
+        z: float | None = None
+        if (
+            SIGNAL_MODE == "basket_residual"
+            and self._basket_agg is not None
+            and close > 0
+        ):
+            z = self._basket_agg.residual_z(sym, math.log(close))
+        if z is None:
+            z = st.price_buf.zscore(close)
         if z is None:
             return None
 
@@ -481,6 +570,8 @@ class SignalEngine:
                 "qty": exit_qty,
                 "limit_px": exit_px,
                 "notional": notional,
+                "_exit_pnl_pct": pnl_est,
+                "_exit_tag": tag,
             }
 
         # 4. Entry path — long xor short (both conditions must hold)
@@ -488,9 +579,17 @@ class SignalEngine:
         _z_short_entry = (
             st.z_short_entry if st.z_short_entry is not None else self._z_short_entry
         )
-        long_entry = (z < _z_entry) and (st.obi > self._obi_theta)
+        # Phase 3: the feature used for the flow-direction gate. Defaults to
+        # OBI (existing behavior) — flag-flip only affects this selection.
+        if FEATURE_SET == "log_gofi":
+            _flow = st.log_gofi
+        elif FEATURE_SET == "mlofi":
+            _flow = st.mlofi
+        else:
+            _flow = st.obi
+        long_entry = (z < _z_entry) and (_flow > self._obi_theta)
         short_entry = (
-            self._allow_short and (z > _z_short_entry) and (st.obi < -self._obi_theta)
+            self._allow_short and (z > _z_short_entry) and (_flow < -self._obi_theta)
         )
         if not (long_entry or short_entry):
             return None
@@ -524,7 +623,11 @@ class SignalEngine:
         direction = "long" if long_entry else "short"
 
         # 5. Size the order (absolute qty; sign applied to positions below)
-        qty, notional = self._size_order(sym, close)
+        # Pass z + AR(1) φ + σ so Kelly-OU can shrink the cap when SIZING_MODE=kelly.
+        # Under SIZING_MODE=fixed these arguments are ignored — same behavior as before.
+        sigma = st.price_buf.sigma()
+        phi = st.price_buf.phi()
+        qty, notional = self._size_order(sym, close, z=z, phi=phi, sigma=sigma)
         if qty <= 0.0:
             log.warning("sizing_returned_zero", symbol=sym, close=close)
             return None
@@ -590,12 +693,38 @@ class SignalEngine:
             count=min(n, len(asks)),
         )
 
-        vb = bid_sizes.sum()
-        va = ask_sizes.sum()
+        vb = float(bid_sizes.sum())
+        va = float(ask_sizes.sum())
         rho = (vb - va) / (vb + va + 1e-8)  # epsilon guards /0 on empty book
 
         st = self._state[sym]
         st.obi = float(rho)
+
+        # ── Phase 3: log-GOFI (Su 2112.02947) ────────────────────────────────
+        # Stationarized log-ratio; squash through tanh so range matches OBI.
+        # Under symmetric flip (swap bids↔asks), log-GOFI negates exactly.
+        _EPS = 1e-8
+        raw_log_gofi = math.log((vb + _EPS) / (va + _EPS))
+        st.log_gofi = math.tanh(raw_log_gofi)
+
+        # ── Phase 3: MLOFI (Xu 1907.06230) ───────────────────────────────────
+        # Σ_l α^l · (ΔV^b_l − ΔV^a_l). First tick has no prior snapshot ⇒ 0.
+        # Level prices assumed stable between snapshots; correct enough for HL
+        # tight-spread books. tanh-normalize so range matches OBI.
+        mlofi_raw = 0.0
+        if st.prev_bid_sizes is not None and st.prev_ask_sizes is not None:
+            m = min(len(bid_sizes), len(st.prev_bid_sizes))
+            k = min(len(ask_sizes), len(st.prev_ask_sizes))
+            lvls = min(m, k)
+            if lvls > 0:
+                d_bid = bid_sizes[:lvls] - st.prev_bid_sizes[:lvls]
+                d_ask = ask_sizes[:lvls] - st.prev_ask_sizes[:lvls]
+                weights = MLOFI_ALPHA ** np.arange(lvls, dtype=np.float64)
+                mlofi_raw = float(np.dot(weights, d_bid - d_ask))
+        st.mlofi = math.tanh(mlofi_raw / MLOFI_NORM) if MLOFI_NORM > 0 else 0.0
+        # Retain this snapshot for next tick's delta.
+        st.prev_bid_sizes = bid_sizes.copy()
+        st.prev_ask_sizes = ask_sizes.copy()
 
         # Cache best ask (taker limit) and best bid (maker limit)
         if asks:
@@ -847,27 +976,28 @@ class SignalEngine:
                 entry_px=entry_px,
             )
 
-        # Flat-on-chain sweep: any memory position under our tag whose symbol
-        # is NOT in live_open_syms is stale (e.g. SHADOW mock entry, or a
-        # missed-fill WebSocket event in LIVE). Wipe it so the flip-guard
+        # Flat-on-chain sweep: any memory position under any of our tracked
+        # tags whose symbol is NOT in live_open_syms is stale (e.g. SHADOW
+        # mock entry, missed-fill WebSocket event, or a momentum rollback
+        # that left positions[MOMENTUM_TAG] nonzero). Wipe so the flip-guard
         # exit deadlock self-heals on the next bar.
-        tag = self.strategy_tag
-        for sym, st in self._state.items():
-            if sym in live_open_syms:
-                continue
-            if st.positions.get(tag, 0.0) != 0.0:
-                stale_qty = st.positions[tag]
-                st.positions[tag] = 0.0
-                st.entry_prices[tag] = float("nan")
-                st.entry_ts[tag] = 0
-                st.pending_exits[tag] = False
-                log.warning(
-                    "hl_memory_wiped_stale",
-                    symbol=sym,
-                    tag=tag,
-                    stale_qty=stale_qty,
-                    reason="mem_nonzero_but_live_flat",
-                )
+        for tag in (self.strategy_tag, MOMENTUM_TAG):
+            for sym, st in self._state.items():
+                if sym in live_open_syms:
+                    continue
+                if st.positions.get(tag, 0.0) != 0.0:
+                    stale_qty = st.positions[tag]
+                    st.positions[tag] = 0.0
+                    st.entry_prices[tag] = float("nan")
+                    st.entry_ts[tag] = 0
+                    st.pending_exits[tag] = False
+                    log.warning(
+                        "hl_memory_wiped_stale",
+                        symbol=sym,
+                        tag=tag,
+                        stale_qty=stale_qty,
+                        reason="mem_nonzero_but_live_flat",
+                    )
 
     def rollback_exit(self, symbol: str) -> None:
         """
@@ -937,22 +1067,127 @@ class SignalEngine:
                 return round(ref * (1.0 - LIMIT_SLIPPAGE), dec)
 
     # ── Private: Position Sizing ───────────────────────────────────────────────
-    def _size_order(self, symbol: str, price: float) -> tuple[float, float]:
+    def _kelly_applies(self, symbol: str) -> bool:
+        """True when SIZING_MODE=kelly and symbol passes the allowlist check.
+
+        KELLY_SYMBOLS (strict per-symbol allowlist) takes precedence when set;
+        otherwise falls back to KELLY_DEXES (prefix allowlist). Empty both →
+        all symbols eligible.
+        """
+        if SIZING_MODE != "kelly":
+            return False
+        sym_l = symbol.lower()
+        if KELLY_SYMBOLS:
+            return sym_l in KELLY_SYMBOLS
+        if not KELLY_DEXES:
+            return True
+        prefix = sym_l.split(":", 1)[0] if ":" in sym_l else ""
+        return prefix in KELLY_DEXES
+
+    def _size_order(
+        self,
+        symbol: str,
+        price: float,
+        z: float | None = None,
+        phi: float | None = None,
+        sigma: float | None = None,
+    ) -> tuple[float, float]:
         """
         Returns (qty, notional).
 
-        Notional is the minimum of:
+        Base cap is the minimum of:
           • NOTIONAL_PER_TRADE (strategy-level cap for small account)
           • SYMBOL_CAPS[symbol] (risk_params.py per-symbol cap)
           • MAX_ORDER_NOTIONAL  (circuit-breaker hard cap)
 
-        qty is rounded to exchange-allowed decimal precision.
+        When SIZING_MODE=kelly and the symbol's dex is in KELLY_DEXES (or the
+        allowlist is empty), the base cap is shrunk by a fractional-Kelly
+        multiplier f*·k ∈ [0, KELLY_CAP]. Kelly can only reduce, never grow:
+        the min() hierarchy above is still the outer clamp, enforced by the
+        downstream risk gates.
+
+        qty is floored to exchange-allowed decimal precision.
         """
-        cap = min(
+        fixed_cap = min(
             self._notional_per_trade,
             SYMBOL_CAPS.get(symbol, self._notional_per_trade),
             MAX_ORDER_NOTIONAL,
         )
+
+        # Always compute the Kelly counterfactual when inputs are valid so
+        # downstream attribution can compare Kelly vs fixed ΔPnL on any entry,
+        # regardless of SIZING_MODE. Live decision logic below is unchanged.
+        kelly_cap: float | None = None
+        f_shadow: float | None = None
+        theta_shadow: float | None = None
+        phi_valid = (
+            z is not None and phi is not None and sigma is not None and 0.0 < phi < 1.0
+        )
+        if phi_valid:
+            theta_shadow = -math.log(phi)
+            theta_max = math.log(2.0) / max(KELLY_HL_MIN_BARS, 1e-6)
+            if theta_shadow > theta_max:
+                theta_shadow = theta_max
+            f_shadow = kelly_fraction(
+                z=z,
+                theta=theta_shadow,
+                sigma=sigma,
+                k=KELLY_K,
+                cap=KELLY_CAP,
+                sigma_floor=KELLY_SIGMA_FLOOR,
+            )
+            kelly_cap = fixed_cap * f_shadow
+
+        is_kelly = self._kelly_applies(symbol)
+
+        if is_kelly:
+            if phi_valid and kelly_cap is not None:
+                cap = kelly_cap
+                log.info(
+                    "kelly_sizing",
+                    symbol=symbol,
+                    z=round(z, 4),
+                    phi=round(phi, 4),
+                    theta=round(theta_shadow, 5),
+                    sigma=round(sigma, 6),
+                    f=round(f_shadow, 4),
+                    base_cap=round(fixed_cap, 2),
+                    cap=round(cap, 2),
+                )
+            else:
+                # Kelly active but φ invalid — skip trade (prior behavior).
+                log.info(
+                    "sizing_shadow",
+                    symbol=symbol,
+                    mode="kelly",
+                    fixed_cap=round(fixed_cap, 2),
+                    kelly_cap=None,
+                    kelly_f=None,
+                    chosen_cap=0.0,
+                    skip_reason="bad_phi",
+                    z=(round(z, 4) if z is not None else None),
+                    phi=(round(phi, 4) if phi is not None else None),
+                )
+                return 0.0, 0.0
+        else:
+            cap = fixed_cap
+
+        log.info(
+            "sizing_shadow",
+            symbol=symbol,
+            mode=("kelly" if is_kelly else "fixed"),
+            fixed_cap=round(fixed_cap, 2),
+            kelly_cap=(round(kelly_cap, 2) if kelly_cap is not None else None),
+            kelly_f=(round(f_shadow, 4) if f_shadow is not None else None),
+            chosen_cap=round(cap, 2),
+            z=(round(z, 4) if z is not None else None),
+            phi=(round(phi, 4) if phi is not None else None),
+            sigma=(round(sigma, 6) if sigma is not None else None),
+        )
+
+        if cap <= 0.0:
+            return 0.0, 0.0
+
         decimals = _QTY_DECIMALS.get(symbol, 6)
         # Floor (not round) so actual notional never exceeds cap.
         # round() can push qty × price above cap, causing circuit breaker rejection.
@@ -1091,6 +1326,8 @@ class SignalEngine:
                 "qty": exit_qty,
                 "limit_px": exit_px,
                 "notional": notional,
+                "_exit_pnl_pct": pnl_est,
+                "_exit_tag": tag,
             }
 
         # ── Entry path ────────────────────────────────────────────────────────
