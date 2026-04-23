@@ -758,7 +758,7 @@ class HLEngine:
         if st is None:
             return float("nan")
         bid, ask = st.best_bid, st.best_ask
-        if (math.isfinite(bid) and bid > 0 and math.isfinite(ask) and ask > 0):
+        if math.isfinite(bid) and bid > 0 and math.isfinite(ask) and ask > 0:
             return 0.5 * (bid + ask)
         last = st.price_buf.newest()
         return float(last) if last is not None else float("nan")
@@ -844,8 +844,9 @@ class HLEngine:
                 net_before = self._compute_net_notional()
                 delta_notional = delta_qty * mid
                 net_after = net_before + delta_notional
-                if (abs(net_after) > MAX_NET_NOTIONAL and
-                        abs(net_after) > abs(net_before)):
+                if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
+                    net_before
+                ):
                     log.info(
                         "risk_gate_net_cap",
                         symbol=sym,

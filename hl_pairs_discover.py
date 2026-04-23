@@ -324,8 +324,10 @@ def discover(candidates: list[str], lookback_hours: int, top_n: int) -> dict:
     for p in survivors:
         if len(diversified) >= top_n:
             break
-        if (used.get(p.leg_a, 0) >= MAX_PAIRS_PER_SYMBOL
-                or used.get(p.leg_b, 0) >= MAX_PAIRS_PER_SYMBOL):
+        if (
+            used.get(p.leg_a, 0) >= MAX_PAIRS_PER_SYMBOL
+            or used.get(p.leg_b, 0) >= MAX_PAIRS_PER_SYMBOL
+        ):
             continue
         diversified.append(p)
         used[p.leg_a] = used.get(p.leg_a, 0) + 1
