@@ -61,7 +61,6 @@ import structlog
 from alpaca.trading.enums import OrderSide
 
 from config.risk_params import (
-    BASKET_WINDOW,
     FEATURE_SET,
     KELLY_CAP,
     KELLY_DEXES,
