@@ -109,8 +109,8 @@ STOP_LOSS_PCT = (
 # Prevent premature z_revert exits caused by mean-drift (rolling mean catches up
 # to a new price level, collapsing z toward 0 without actual price reversion).
 # z_revert requires BOTH conditions; stop_loss / time_stop always fire immediately.
-MIN_HOLD_FOR_REVERT_S = 15 * 60  # 15 min — 25% of 60-bar window; z settles
-MIN_REVERT_BPS = 0.001  # 0.1% favorable price move confirms real reversion
+MIN_HOLD_FOR_REVERT_S = 60  # iter4: drop hold gate only
+MIN_REVERT_BPS = 0.001  # iter4: keep 10 bps — isolate effect of removing hold only
 
 # ── Momentum / trend-following parameters ─────────────────────────────────────
 Z_MOMENTUM_ENTRY = +1.25  # enter momentum long when z > +1.25 (trending up)
