@@ -41,12 +41,10 @@ Output:
 """
 from __future__ import annotations
 
-import math
 import os
 import random
 import sqlite3
 import statistics
-import sys
 from collections import deque
 from pathlib import Path
 

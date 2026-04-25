@@ -56,7 +56,7 @@ import json
 import os
 import sqlite3
 from bisect import bisect_left, bisect_right
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
