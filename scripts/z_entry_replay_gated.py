@@ -79,15 +79,18 @@ MOM_GATE_DEFAULT = ROOT / "config" / "gates" / "momentum.json"
 OUT_DIR = ROOT / "autoresearch_gated"
 BASELINE_FILE = OUT_DIR / "_baseline_per_symbol.json"
 BASELINE_COUNT_FILE = OUT_DIR / "_baseline_trade_count.json"
-ATTRIBUTION_FILE = Path(os.environ.get("GATED_ATTRIBUTION", str(OUT_DIR / "attribution.jsonl")))
+ATTRIBUTION_FILE = Path(
+    os.environ.get("GATED_ATTRIBUTION", str(OUT_DIR / "attribution.jsonl"))
+)
 
 # ── Constants (copied inline from strategy/signals.py + z_entry_replay.py) ─
 NOTIONAL_PER_TRADE = 750.0
-STOP_LOSS_PCT = 0.010          # X4
-TIME_STOP_S = 60 * 60          # X3: 1h MAX_HOLD_S
+STOP_LOSS_PCT = 0.010  # X4
+TIME_STOP_S = 60 * 60  # X3: 1h MAX_HOLD_S
 # X1 dampers: imported from strategy.signals so /autoresearch sees fresh values
 # whenever the agent edits the constrained file.
 import sys as _sys
+
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in _sys.path:
     _sys.path.insert(0, _REPO_ROOT)
@@ -108,7 +111,8 @@ def _load_z4h_exit_map() -> dict[str, tuple[float, float]]:
         if "Z4H_EXIT_" not in line or line.strip().startswith("#"):
             continue
         import re as _re
-        m = _re.search(r'Z4H_EXIT_([A-Za-z0-9_]+)=([^\s#]+)', line)
+
+        m = _re.search(r"Z4H_EXIT_([A-Za-z0-9_]+)=([^\s#]+)", line)
         if not m:
             continue
         raw_sym = m.group(1)
@@ -121,7 +125,16 @@ def _load_z4h_exit_map() -> dict[str, tuple[float, float]]:
         except Exception:
             continue
         # env var form: Z4H_EXIT_xyz_MSTR → sym "xyz:MSTR"; Z4H_EXIT_ZEC → "ZEC"
-        if raw_sym.startswith("xyz_") or raw_sym.startswith("para_") or raw_sym.startswith("hyna_") or raw_sym.startswith("vntl_") or raw_sym.startswith("km_") or raw_sym.startswith("flx_") or raw_sym.startswith("cash_") or raw_sym.startswith("abcd_"):
+        if (
+            raw_sym.startswith("xyz_")
+            or raw_sym.startswith("para_")
+            or raw_sym.startswith("hyna_")
+            or raw_sym.startswith("vntl_")
+            or raw_sym.startswith("km_")
+            or raw_sym.startswith("flx_")
+            or raw_sym.startswith("cash_")
+            or raw_sym.startswith("abcd_")
+        ):
             prefix, _, tail = raw_sym.partition("_")
             sym = f"{prefix}:{tail}"
         else:
@@ -167,15 +180,27 @@ Z_SHORT_ENTRY = float(_params.get("z_short_entry", 1.25))
 Z_EXIT_SHORT = float(_params.get("z_exit_short", 0.50))
 OVERRIDES = _params.get("per_symbol_overrides", {}) or {}
 
-_obi_cfg = _load_json("OBI_GATE_FILE", OBI_GATE_DEFAULT, {"OBI_THETA": 0.0, "OBI_DIRECTION_MODE": "signed"})
+_obi_cfg = _load_json(
+    "OBI_GATE_FILE",
+    OBI_GATE_DEFAULT,
+    {"OBI_THETA": 0.0, "OBI_DIRECTION_MODE": "signed"},
+)
 OBI_THETA = float(_obi_cfg.get("OBI_THETA", 0.0))
 OBI_DIRECTION_MODE = str(_obi_cfg.get("OBI_DIRECTION_MODE", "signed"))
 
-_trend_cfg = _load_json("TREND_GATE_FILE", TREND_GATE_DEFAULT, {"TREND_MA_WINDOW": 240, "Z_4H_MOMENTUM_THRESHOLD": 2.0})
+_trend_cfg = _load_json(
+    "TREND_GATE_FILE",
+    TREND_GATE_DEFAULT,
+    {"TREND_MA_WINDOW": 240, "Z_4H_MOMENTUM_THRESHOLD": 2.0},
+)
 TREND_MA_WINDOW = int(_trend_cfg.get("TREND_MA_WINDOW", 240))
 Z_4H_MOMENTUM_THRESHOLD = float(_trend_cfg.get("Z_4H_MOMENTUM_THRESHOLD", 2.0))
 
-_ratchet_cfg = _load_json("RATCHET_GATE_FILE", RATCHET_GATE_DEFAULT, {"SHOCK_ARM": 4.0, "SHOCK_STEP": 1.0, "TRANCHES": 3})
+_ratchet_cfg = _load_json(
+    "RATCHET_GATE_FILE",
+    RATCHET_GATE_DEFAULT,
+    {"SHOCK_ARM": 4.0, "SHOCK_STEP": 1.0, "TRANCHES": 3},
+)
 SHOCK_ARM = float(_ratchet_cfg.get("SHOCK_ARM", 4.0))
 SHOCK_STEP = float(_ratchet_cfg.get("SHOCK_STEP", 1.0))
 RATCHET_TRANCHES = int(_ratchet_cfg.get("TRANCHES", 3))
@@ -241,7 +266,9 @@ def mark_at(bars, sym, ts_ms):
         return closes[0]
     if i >= len(ts_list):
         return closes[-1]
-    return closes[i] if (ts_list[i] - ts_ms) < (ts_ms - ts_list[i - 1]) else closes[i - 1]
+    return (
+        closes[i] if (ts_list[i] - ts_ms) < (ts_ms - ts_list[i - 1]) else closes[i - 1]
+    )
 
 
 def trend_sma_at(bars, sym, ts_ms) -> float | None:
@@ -272,6 +299,7 @@ def load_ticks() -> dict[str, list[tuple[int, float, float, float]]]:
       REPLAY_FROM_MS / REPLAY_TO_MS — keep only ticks where FROM <= ts < TO.
     """
     import os as _os
+
     _from = _os.environ.get("REPLAY_FROM_MS")
     _to = _os.environ.get("REPLAY_TO_MS")
     from_ms = int(_from) if _from else None
@@ -446,12 +474,16 @@ def simulate_symbol_gated(
                 ex = Z4H_EXIT_MAP.get(sym)
                 if ex is not None and z4 == z4:
                     ex_long, ex_short = ex
-                    patient_block = (side == 1 and z4 < ex_long) or (side == -1 and z4 > ex_short)
+                    patient_block = (side == 1 and z4 < ex_long) or (
+                        side == -1 and z4 > ex_short
+                    )
                     if patient_block:
                         z_revert_candidate = False
                 # Damper: require min hold AND min favorable move
                 favorable = (cur - entry_mark) / entry_mark * side
-                if z_revert_candidate and (age_s < MIN_HOLD_FOR_REVERT_S or favorable < MIN_REVERT_BPS):
+                if z_revert_candidate and (
+                    age_s < MIN_HOLD_FOR_REVERT_S or favorable < MIN_REVERT_BPS
+                ):
                     z_revert_candidate = False
                 if z_revert_candidate:
                     exit_reason = "z_revert"
@@ -525,7 +557,9 @@ def simulate_symbol_gated(
         # We generalise to direction * obi > OBI_THETA.
         if OBI_DIRECTION_MODE == "signed":
             if side * obi <= OBI_THETA:
-                cf = _counterfactual_pnl(ticks_sym, idx, side, bars, sym, z_exit, z_exit_short)
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
                 sink.record("obi_gate", sym, ts, cf, side, z)
                 continue
 
@@ -534,11 +568,15 @@ def simulate_symbol_gated(
         cur_close = mark_at(bars, sym, ts)
         if sma is not None and cur_close is not None:
             if side == 1 and cur_close < sma:
-                cf = _counterfactual_pnl(ticks_sym, idx, side, bars, sym, z_exit, z_exit_short)
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
                 sink.record("trend_regime", sym, ts, cf, side, z)
                 continue
             if side == -1 and cur_close > sma:
-                cf = _counterfactual_pnl(ticks_sym, idx, side, bars, sym, z_exit, z_exit_short)
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
                 sink.record("trend_regime", sym, ts, cf, side, z)
                 continue
 
@@ -547,7 +585,9 @@ def simulate_symbol_gated(
         # against immediate reopen in the opposite direction of the last
         # trade we just closed).
         if last_closed_side != 0 and last_closed_side == -side:
-            cf = _counterfactual_pnl(ticks_sym, idx, side, bars, sym, z_exit, z_exit_short)
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
             sink.record("flip_guard", sym, ts, cf, side, z)
             # clear after one tick so we don't permanently block
             last_closed_side = 0
@@ -556,7 +596,9 @@ def simulate_symbol_gated(
         # G4 momentum_dedup: block mean-reversion entry while the z is extreme
         # enough that momentum-tag would own the symbol.
         if abs(z) >= Z_MOMENTUM_ENTRY:
-            cf = _counterfactual_pnl(ticks_sym, idx, side, bars, sym, z_exit, z_exit_short)
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
             sink.record("momentum_dedup", sym, ts, cf, side, z)
             continue
 
@@ -655,11 +697,15 @@ def main():
             baseline_count = total_trades
     elif BASELINE_COUNT_FILE.exists():
         try:
-            baseline_count = int(json.loads(BASELINE_COUNT_FILE.read_text()).get("total_trades", 0))
+            baseline_count = int(
+                json.loads(BASELINE_COUNT_FILE.read_text()).get("total_trades", 0)
+            )
         except Exception:
             baseline_count = total_trades
     else:
-        baseline_count = total_trades  # first run establishes own floor at 100% of itself
+        baseline_count = (
+            total_trades  # first run establishes own floor at 100% of itself
+        )
 
     min_trades = int(MIN_TRADES_FRAC * baseline_count) if baseline_count > 0 else 0
 
@@ -697,7 +743,9 @@ def main():
         cnt = sink.gate_counts.get(gate, 0)
         saved = sink.gate_saved.get(gate, 0.0)
         avg = (saved / cnt) if cnt > 0 else 0.0
-        print(f"  {gate:<16s} rejected {cnt:>7d}  saved ${saved:+9.2f}  avg_per_reject ${avg:+.3f}")
+        print(
+            f"  {gate:<16s} rejected {cnt:>7d}  saved ${saved:+9.2f}  avg_per_reject ${avg:+.3f}"
+        )
     print(
         f"  {'FIRED':<16s} entries  {total_trades:>7d}  SCORE  ${total:+9.2f}  "
         f"$/trade ${secondary:+.3f}"
@@ -708,10 +756,12 @@ def main():
     print("\ntop-8 |pnl|:")
     for s, pnl in top:
         base_pnl = float(baseline.get(s, 0.0)) if baseline else 0.0
-        d = f"Δ={pnl-base_pnl:+6.2f}" if baseline else ""
+        d = f"Δ={pnl - base_pnl:+6.2f}" if baseline else ""
         reasons = per_sym_exit_reasons.get(s, {})
         rstr = ",".join(f"{k}={v}" for k, v in sorted(reasons.items())) or "-"
-        print(f"  {s:18s} trades={per_sym_trades[s]:4d} sim={pnl:+8.2f} {d}  exits[{rstr}]")
+        print(
+            f"  {s:18s} trades={per_sym_trades[s]:4d} sim={pnl:+8.2f} {d}  exits[{rstr}]"
+        )
 
 
 if __name__ == "__main__":

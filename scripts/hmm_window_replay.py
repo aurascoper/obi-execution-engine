@@ -39,6 +39,7 @@ Output:
     GUARD_FIRE_COUNT: <int>  # total triggers across symbols
     GUARD_BASELINE_N: <int>  # baseline windows sampled
 """
+
 from __future__ import annotations
 
 import os
@@ -66,6 +67,7 @@ INTERVAL = "15m"
 
 try:
     from hmmlearn.hmm import GaussianHMM
+
     _HMM_OK = True
 except Exception:
     _HMM_OK = False
@@ -76,11 +78,13 @@ def _load_returns(symbol: str, days: int) -> np.ndarray:
     most recent `days`."""
     con = sqlite3.connect(BARS_DB)
     try:
-        rows = list(con.execute(
-            "SELECT t_close_ms, c FROM bars "
-            "WHERE symbol=? AND interval=? ORDER BY t_close_ms DESC LIMIT ?",
-            (symbol, INTERVAL, days * 96),
-        ))
+        rows = list(
+            con.execute(
+                "SELECT t_close_ms, c FROM bars "
+                "WHERE symbol=? AND interval=? ORDER BY t_close_ms DESC LIMIT ?",
+                (symbol, INTERVAL, days * 96),
+            )
+        )
     finally:
         con.close()
     rows.reverse()
@@ -91,8 +95,9 @@ def _load_returns(symbol: str, days: int) -> np.ndarray:
     return rets
 
 
-def _windowed_entropy(model, history: deque[float], window_ticks: int,
-                      average_taps: int) -> float | None:
+def _windowed_entropy(
+    model, history: deque[float], window_ticks: int, average_taps: int
+) -> float | None:
     """Forward-backward over the last `window_ticks` of `history`; entropy
     of the last `average_taps`-mean of the posterior."""
     n = min(window_ticks, len(history))
@@ -100,7 +105,8 @@ def _windowed_entropy(model, history: deque[float], window_ticks: int,
         return None
     arr = np.fromiter(
         (history[i] for i in range(len(history) - n, len(history))),
-        dtype=np.float64, count=n,
+        dtype=np.float64,
+        count=n,
     ).reshape(-1, 1)
     try:
         post = model.predict_proba(arr)
@@ -116,9 +122,12 @@ class _ReplayChannel:
     rolling z of the entropy series, percentile threshold, rising-edge
     detection with cooldown."""
 
-    def __init__(self, z_window: int = 600,
-                 threshold_pct: float = THRESHOLD_PCT,
-                 cooldown_bars: int = COOLDOWN_BARS):
+    def __init__(
+        self,
+        z_window: int = 600,
+        threshold_pct: float = THRESHOLD_PCT,
+        cooldown_bars: int = COOLDOWN_BARS,
+    ):
         self.entropy_buf: deque[float] = deque(maxlen=z_window)
         self.max_history: deque[float] = deque(maxlen=z_window)
         self.threshold_pct = threshold_pct
@@ -145,8 +154,10 @@ class _ReplayChannel:
             return
         if not self.edge_armed:
             return
-        if (self.last_fire_idx is not None
-                and idx - self.last_fire_idx < self.cooldown_bars):
+        if (
+            self.last_fire_idx is not None
+            and idx - self.last_fire_idx < self.cooldown_bars
+        ):
             return
         self.edge_armed = False
         self.last_fire_idx = idx
@@ -156,13 +167,18 @@ class _ReplayChannel:
 def _replay_symbol(symbol: str, rng_seed: int) -> dict:
     rets = _load_returns(symbol, REPLAY_DAYS)
     if len(rets) < 600:
-        return {"symbol": symbol, "n_bars": int(len(rets)),
-                "fires": [], "rets": rets, "ret_z": np.array([])}
+        return {
+            "symbol": symbol,
+            "n_bars": int(len(rets)),
+            "fires": [],
+            "rets": rets,
+            "ret_z": np.array([]),
+        }
 
     # Run HMM forward, refitting every REFIT_EVERY bars.
     history: deque[float] = deque(maxlen=5000)
     model = None
-    last_fit_idx = -10**9
+    last_fit_idx = -(10**9)
     channel = _ReplayChannel()
     min_samples = 600
 
@@ -173,8 +189,10 @@ def _replay_symbol(symbol: str, rng_seed: int) -> dict:
         if model is None or (i - last_fit_idx) >= REFIT_EVERY:
             try:
                 m = GaussianHMM(
-                    n_components=3, covariance_type="diag",
-                    n_iter=20, random_state=rng_seed,
+                    n_components=3,
+                    covariance_type="diag",
+                    n_iter=20,
+                    random_state=rng_seed,
                 )
                 m.fit(np.asarray(history).reshape(-1, 1))
                 model = m
@@ -207,15 +225,19 @@ def _replay_symbol(symbol: str, rng_seed: int) -> dict:
     }
 
 
-def _lift_for(symbol_data: dict, rng: random.Random,
-              n_baseline: int = 50) -> dict:
+def _lift_for(symbol_data: dict, rng: random.Random, n_baseline: int = 50) -> dict:
     """Compute median post-trigger max|z| and median random-baseline max|z|."""
     fires = symbol_data["fires"]
     ret_z = symbol_data["ret_z"]
     n_bars = len(ret_z)
     if not fires or n_bars < LOOKAHEAD_BARS + 2:
-        return {"trig_median": None, "base_median": None,
-                "lift": None, "n_trig": 0, "n_base": 0}
+        return {
+            "trig_median": None,
+            "base_median": None,
+            "lift": None,
+            "n_trig": 0,
+            "n_base": 0,
+        }
     fire_idxs = {f[0] for f in fires}
 
     # Triggered: max|z| in (idx, idx+LOOKAHEAD]
@@ -224,7 +246,7 @@ def _lift_for(symbol_data: dict, rng: random.Random,
         end = min(idx + 1 + LOOKAHEAD_BARS, n_bars)
         if end <= idx + 1:
             continue
-        trig_max.append(float(np.max(np.abs(ret_z[idx + 1:end]))))
+        trig_max.append(float(np.max(np.abs(ret_z[idx + 1 : end]))))
 
     # Baseline: random idx ≥ 60, ≥ COOLDOWN_BARS away from any fire
     base_max = []
@@ -234,17 +256,25 @@ def _lift_for(symbol_data: dict, rng: random.Random,
         i = rng.randint(60, n_bars - LOOKAHEAD_BARS - 1)
         if any(abs(i - fi) < COOLDOWN_BARS for fi in fire_idxs):
             continue
-        base_max.append(float(np.max(np.abs(ret_z[i + 1:i + 1 + LOOKAHEAD_BARS]))))
+        base_max.append(float(np.max(np.abs(ret_z[i + 1 : i + 1 + LOOKAHEAD_BARS]))))
 
     if not trig_max or not base_max:
-        return {"trig_median": None, "base_median": None,
-                "lift": None, "n_trig": len(trig_max), "n_base": len(base_max)}
+        return {
+            "trig_median": None,
+            "base_median": None,
+            "lift": None,
+            "n_trig": len(trig_max),
+            "n_base": len(base_max),
+        }
 
     tm = statistics.median(trig_max)
     bm = statistics.median(base_max)
     return {
-        "trig_median": tm, "base_median": bm,
-        "lift": tm - bm, "n_trig": len(trig_max), "n_base": len(base_max),
+        "trig_median": tm,
+        "base_median": bm,
+        "lift": tm - bm,
+        "n_trig": len(trig_max),
+        "n_base": len(base_max),
     }
 
 
