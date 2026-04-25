@@ -27,6 +27,7 @@ ENV:
     META_EVAL_LOOKBACK_DAYS=14 # only events newer than this; default 14d
     META_EVAL_LOG_PATH=...     # override log path
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -64,7 +65,9 @@ def _iso_to_dt(s: str) -> _dt.datetime | None:
     return ts
 
 
-def _load_events(path: Path, since: _dt.datetime) -> list[tuple[_dt.datetime, str, float]]:
+def _load_events(
+    path: Path, since: _dt.datetime
+) -> list[tuple[_dt.datetime, str, float]]:
     """Return list of (ts, arm, pnl_pct) for exit_signal events newer than `since`."""
     out: list[tuple[_dt.datetime, str, float]] = []
     if not path.exists():
@@ -121,7 +124,9 @@ def main() -> int:
     match_rate = matched / total
 
     snap = bandit.snapshot()
-    print(f"# total_events={total} matched={matched} fee_threshold_pct={FEE_ROUND_TRIP_PCT:.4f}")
+    print(
+        f"# total_events={total} matched={matched} fee_threshold_pct={FEE_ROUND_TRIP_PCT:.4f}"
+    )
     print(f"# pick_counts={pick_counts}")
     for arm in ARMS:
         creds = by_arm_credited[arm]
@@ -130,8 +135,8 @@ def main() -> int:
         s = snap.get(arm, {})
         print(
             f"# {arm:10s} credited={n:4d} avg_pnl_pct={avg:+.4f} "
-            f"alpha={s.get('alpha',0):.3f} beta={s.get('beta',0):.3f} "
-            f"posterior_mean={s.get('mean',0):.4f}"
+            f"alpha={s.get('alpha', 0):.3f} beta={s.get('beta', 0):.3f} "
+            f"posterior_mean={s.get('mean', 0):.4f}"
         )
 
     if match_rate < MATCH_RATE_FLOOR:
