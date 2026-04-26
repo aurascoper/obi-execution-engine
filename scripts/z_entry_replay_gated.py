@@ -144,6 +144,7 @@ _regime_trips: list[tuple[int, int]] = []
 # similar tooling). Set when REPLAY_OPENS_OUT env var points at a writable
 # path. None disables emission entirely (zero overhead).
 _OPENS_OUT_FH = None
+_TRADES_OUT_FH = None
 
 
 def build_regime_trips(bars: dict) -> list[tuple[int, int]]:
@@ -245,6 +246,92 @@ def _load_z4h_exit_map() -> dict[str, tuple[float, float]]:
 Z4H_EXIT_MAP = _load_z4h_exit_map()
 MIN_TICKS = int(os.environ.get("REPLAY_MIN_TICKS", "50"))
 SYMBOL_FILTER = os.environ.get("REPLAY_SYMBOLS", "all")
+
+# Universe-filter mode (residual decomposition Phase 1):
+#   all                     — every symbol with ticks (current behavior)
+#   live_fills_window       — DIAGNOSTIC: symbols with >=N hl_fill_received
+#                             in [REPLAY_FROM_MS, REPLAY_TO_MS). Lookahead.
+#   entry_signal_window     — DIAGNOSTIC: symbols with >=1 entry_signal in
+#                             window. Lookahead but weaker than fills.
+#   configured_live         — DEPLOYABLE: HL_UNIVERSE + HIP3_UNIVERSE env
+#                             vars (production trading universe). No
+#                             lookahead.
+REPLAY_UNIVERSE_MODE = os.environ.get("REPLAY_UNIVERSE", "all")
+REPLAY_MIN_LIVE_FILLS = int(os.environ.get("REPLAY_MIN_LIVE_FILLS", "1"))
+# Cardinality-suppression gates (Phase 3 — replay over-trades by ~20×):
+#   MIN_REENTRY_COOLDOWN_S   block re-entry on a symbol within N seconds
+#                             of its last close. Default 0 = off.
+#   MAX_OPENS_PER_SYMBOL_PER_DAY  hard daily-bucket cap on opens per symbol.
+#                                  Default 0 = off.
+MIN_REENTRY_COOLDOWN_S = int(os.environ.get("MIN_REENTRY_COOLDOWN_S", "0"))
+MAX_OPENS_PER_SYMBOL_PER_DAY = int(os.environ.get("MAX_OPENS_PER_SYMBOL_PER_DAY", "0"))
+# REENTRY_COOLDOWN_BY_SYMBOL — JSON file with per-symbol cooldown overrides.
+# When set, supersedes MIN_REENTRY_COOLDOWN_S per symbol.
+REENTRY_COOLDOWN_BY_SYMBOL_FILE = os.environ.get("REENTRY_COOLDOWN_BY_SYMBOL", "")
+
+
+def _load_reentry_cooldown_by_symbol(path: str) -> dict[str, int]:
+    """Parse JSON config; return symbol→cooldown_s map.
+    Default is taken from MIN_REENTRY_COOLDOWN_S (or 0 if absent).
+    Group symbols apply uniform cooldown_s; overrides win over groups.
+    """
+    if not path:
+        return {}
+    try:
+        cfg = json.loads(Path(path).read_text())
+    except Exception as e:
+        print(f"# WARN: cooldown-by-symbol load failed: {e}", file=__import__("sys").stderr)
+        return {}
+    out: dict[str, int] = {}
+    for grp in (cfg.get("groups") or {}).values():
+        try:
+            cd = int(grp.get("cooldown_s", 0))
+        except (TypeError, ValueError):
+            continue
+        for sym in grp.get("symbols") or []:
+            s = (sym or "").replace("/USD", "").replace("/USDC", "")
+            if s:
+                out[s] = cd
+    for sym, cd in (cfg.get("overrides") or {}).items():
+        s = (sym or "").replace("/USD", "").replace("/USDC", "")
+        try:
+            out[s] = int(cd)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+REENTRY_COOLDOWN_BY_SYMBOL: dict[str, int] = _load_reentry_cooldown_by_symbol(
+    REENTRY_COOLDOWN_BY_SYMBOL_FILE
+)
+REENTRY_COOLDOWN_DEFAULT_FROM_FILE: int = 0
+if REENTRY_COOLDOWN_BY_SYMBOL_FILE:
+    try:
+        _cfg = json.loads(Path(REENTRY_COOLDOWN_BY_SYMBOL_FILE).read_text())
+        REENTRY_COOLDOWN_DEFAULT_FROM_FILE = int(_cfg.get("default", 0))
+    except Exception:
+        pass
+
+# Ratchet exit model (Phase 2 partial-close patch):
+#   full     existing behavior — every ratchet trigger fully closes the
+#            position. Numerically identical to baseline.
+#   tranche  ratchet_1/ratchet_2 reduce by RATCHET_TRANCHE_FRAC * initial
+#            qty; ratchet_final closes the remainder. Position stays open
+#            between tranches and remains exposed to z_revert / stop_loss /
+#            time_stop on subsequent ticks.
+RATCHET_EXIT_MODEL = os.environ.get("RATCHET_EXIT_MODEL", "full")
+RATCHET_TRANCHE_FRAC = float(os.environ.get("RATCHET_TRANCHE_FRAC", "0.333333"))
+RATCHET_TRANCHES_TOTAL_FLAG = int(os.environ.get("RATCHET_TRANCHES_TOTAL", "3"))
+MIN_POSITION_QTY = float(os.environ.get("MIN_POSITION_QTY", "1e-12"))
+
+# Held-source for `configured_or_held` mode:
+#   reconstruct_from_fills    walk hl_fill_received from log start to window
+#                              start; symbols with non-zero net position are
+#                              "held". No lookahead. May miss positions
+#                              opened before log start.
+#   current_user_state         query HL API now. Lookahead — only valid for
+#                              forward/paper-soak windows ending within ~6h.
+REPLAY_HELD_SOURCE = os.environ.get("REPLAY_HELD_SOURCE", "reconstruct_from_fills")
 
 WRITE_BASELINE = os.environ.get("GATED_WRITE_BASELINE", "0") == "1"
 MIN_TRADES_FRAC = float(os.environ.get("GATED_MIN_TRADES_FRAC", "0.30"))
@@ -527,6 +614,46 @@ def _counterfactual_pnl(
     return (cur - entry_mark) * side * qty
 
 
+# ── Position state helpers (Phase 2 partial-close) ────────────────────────
+def _side_sign(side) -> float:
+    """Accepts +1/-1 ints or 'long'/'short' strings; returns ±1.0."""
+    if isinstance(side, str):
+        return 1.0 if side.lower() == "long" else -1.0
+    return 1.0 if side >= 0 else -1.0
+
+
+def reduce_position(position: dict, close_qty: float, px: float, ts_ms: int, reason: str) -> float:
+    """Realize PnL on `close_qty` units at `px` and shrink position.
+
+    Returns the incremental realized PnL (signed). Caller adds this to the
+    per-symbol total.
+    """
+    close_qty = min(close_qty, position["qty"])
+    pnl = _side_sign(position["side"]) * close_qty * (px - position["entry_vwap"])
+    position["qty"] -= close_qty
+    position["realized_pnl"] += pnl
+    position["reductions"].append(
+        {
+            "ts_ms": ts_ms,
+            "qty": close_qty,
+            "px": px,
+            "reason": reason,
+            "pnl": pnl,
+            "remaining_qty": position["qty"],
+        }
+    )
+    return pnl
+
+
+def close_remaining(position: dict, px: float, ts_ms: int, reason: str) -> float:
+    """Close any remaining qty. Returns the incremental PnL realized on
+    this final reduction (NOT cumulative — caller already accounted for
+    earlier tranche PnL via reduce_position calls)."""
+    if position["qty"] <= 0:
+        return 0.0
+    return reduce_position(position, position["qty"], px, ts_ms, reason)
+
+
 # ── Gate-aware simulation ─────────────────────────────────────────────────
 def simulate_symbol_gated(
     sym: str,
@@ -544,6 +671,8 @@ def simulate_symbol_gated(
     n_trades = 0
     pos = None  # dict with keys: side, entry_ts, entry_mark, qty, ratchet (dict|None)
     last_closed_side: int = 0  # for flip_guard approximation across ticks
+    last_close_ts_ms: int = 0  # for G6 reentry cooldown
+    opens_per_day: dict[str, int] = defaultdict(int)  # for G7 daily cap
     exit_reasons: dict[str, int] = defaultdict(int)
 
     for idx, (ts, z, obi, z4) in enumerate(ticks_sym):
@@ -624,18 +753,67 @@ def simulate_symbol_gated(
                 exit_reason = "time_stop"
 
             if exit_reason is not None:
-                # Partial-ratchet intermediate tranches don't flatten in live engine,
-                # but for PnL replay we model each ratchet trigger as a scaled
-                # exit of 1/TRANCHES of the position and keep the residual open.
-                # However, to keep the harness simple AND conservative, we exit
-                # the full position on any ratchet trigger (models worst-case
-                # attribution; a more granular model is out of scope for phase 1).
-                pnl = (cur - entry_mark) * side * qty
-                total += pnl
-                n_trades += 1
-                last_closed_side = side
-                exit_reasons[exit_reason] += 1
-                pos = None
+                # Phase 2: route every exit through reduce_position /
+                # close_remaining. In RATCHET_EXIT_MODEL=full this is
+                # numerically identical to the previous full-close pnl;
+                # in tranche mode, ratchet_1/ratchet_2 reduce by a fixed
+                # fraction of initial_qty and leave the position open
+                # for subsequent exits on the remainder.
+                is_ratchet = exit_reason.startswith("ratchet")
+                is_final_ratchet = exit_reason == "ratchet_final"
+                tranche_mode = (
+                    RATCHET_EXIT_MODEL == "tranche" and is_ratchet and not is_final_ratchet
+                )
+                if tranche_mode:
+                    fired = pos["ratchet_tranches_fired"]
+                    if fired < RATCHET_TRANCHES_TOTAL_FLAG - 1:
+                        close_qty = pos["initial_qty"] * RATCHET_TRANCHE_FRAC
+                    else:
+                        close_qty = pos["qty"]
+                    increment_pnl = reduce_position(pos, close_qty, cur, ts, exit_reason)
+                    total += increment_pnl
+                    pos["ratchet_tranches_fired"] += 1
+                    exit_reasons[exit_reason] += 1
+                    if pos["qty"] <= MIN_POSITION_QTY:
+                        # tail flush — closing reduction emptied the book
+                        n_trades += 1
+                        last_closed_side = side
+                        last_close_ts_ms = ts
+                        pos = None
+                    # else: position remains open with reduced qty
+                else:
+                    # Full close — z_revert / stop_loss / time_stop / any
+                    # ratchet exit when model=full / ratchet_final under
+                    # tranche mode.
+                    increment_pnl = reduce_position(
+                        pos, pos["qty"], cur, ts, exit_reason
+                    )
+                    total += increment_pnl
+                    n_trades += 1
+                    last_closed_side = side
+                    last_close_ts_ms = ts
+                    exit_reasons[exit_reason] += 1
+                    if _TRADES_OUT_FH is not None:
+                        _TRADES_OUT_FH.write(
+                            json.dumps(
+                                {
+                                    "entry_ts": pos["entry_ts_ms"],
+                                    "exit_ts": ts,
+                                    "symbol": sym,
+                                    "side": pos["side"],
+                                    "initial_qty": pos["initial_qty"],
+                                    "entry_vwap": pos["entry_vwap"],
+                                    "exit_px": cur,
+                                    "pnl": pos["realized_pnl"],
+                                    "reason": exit_reason,
+                                    "n_reductions": len(pos["reductions"]),
+                                    "ratchet_tranches_fired": pos["ratchet_tranches_fired"],
+                                },
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        )
+                    pos = None
             continue  # don't try to open on the same tick we exited on
 
         # ── Entry processing ──────────────────────────────────────────────
@@ -711,17 +889,53 @@ def simulate_symbol_gated(
             sink.record("momentum_dedup", sym, ts, cf, side, z)
             continue
 
+        # G6 reentry_cooldown — phase-3 cardinality suppression.
+        # Per-symbol map (if loaded) overrides the global threshold.
+        if REENTRY_COOLDOWN_BY_SYMBOL:
+            cooldown_s = REENTRY_COOLDOWN_BY_SYMBOL.get(
+                sym, REENTRY_COOLDOWN_DEFAULT_FROM_FILE
+            )
+        else:
+            cooldown_s = MIN_REENTRY_COOLDOWN_S
+        if cooldown_s > 0 and last_close_ts_ms > 0:
+            if (ts - last_close_ts_ms) < cooldown_s * 1000:
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
+                sink.record("reentry_cooldown", sym, ts, cf, side, z)
+                continue
+
+        # G7 max_opens_per_day — phase-3 hard cardinality cap
+        day_key = datetime.utcfromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+        if MAX_OPENS_PER_SYMBOL_PER_DAY > 0:
+            if opens_per_day[day_key] >= MAX_OPENS_PER_SYMBOL_PER_DAY:
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
+                sink.record("max_opens_day", sym, ts, cf, side, z)
+                continue
+
         # G5 z_threshold (already satisfied by want_long/want_short gate). OPEN.
         m = mark_at(bars, sym, ts)
         if m is None or m <= 0:
             continue
         qty = NOTIONAL_PER_TRADE / m
+        opens_per_day[day_key] += 1
         pos = {
-            "side": side,
+            "symbol": sym,
+            "side": side,             # int ±1 (kept for back-compat with downstream code)
+            "qty": qty,
+            "initial_qty": qty,
+            "entry_px": m,
+            "entry_vwap": m,
+            "entry_ts_ms": ts,
+            "realized_pnl": 0.0,
+            "reductions": [],
+            "ratchet_tranches_fired": 0,
+            "ratchet": None,
+            # back-compat aliases — existing exit code reads these:
             "entry_ts": ts,
             "entry_mark": m,
-            "qty": qty,
-            "ratchet": None,
         }
         # Optional opens emission for diagnostic tooling (e.g. entry alignment).
         if _OPENS_OUT_FH is not None:
@@ -742,6 +956,365 @@ def simulate_symbol_gated(
     return total, n_trades, dict(exit_reasons)
 
 
+def _load_universe_live_fills(from_ms: int, to_ms: int, min_fills: int = 1) -> set[str]:
+    """Symbols with >=min_fills hl_fill_received events in [from_ms, to_ms).
+    Diagnostic only — uses live outcome inside the validation window."""
+    from collections import Counter
+
+    cnt: Counter = Counter()
+    with LOG.open() as f:
+        for line in f:
+            if '"hl_fill_received"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("event") != "hl_fill_received":
+                continue
+            ts_raw = o.get("timestamp")
+            if isinstance(ts_raw, (int, float)):
+                ts_ms = int(ts_raw * 1000) if ts_raw < 1e12 else int(ts_raw)
+            elif isinstance(ts_raw, str):
+                try:
+                    s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                    ts_ms = int(__import__("datetime").datetime.fromisoformat(s).timestamp() * 1000)
+                except Exception:
+                    continue
+            else:
+                continue
+            if ts_ms < from_ms or ts_ms >= to_ms:
+                continue
+            sym = _norm(o.get("symbol") or o.get("coin") or "")
+            if sym:
+                cnt[sym] += 1
+    return {s for s, n in cnt.items() if n >= min_fills}
+
+
+def _load_universe_entry_signals(from_ms: int, to_ms: int) -> set[str]:
+    """Symbols with >=1 entry_signal event in the window. Diagnostic."""
+    out: set[str] = set()
+    with LOG.open() as f:
+        for line in f:
+            if '"entry_signal"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("event") != "entry_signal":
+                continue
+            ts_raw = o.get("timestamp")
+            if isinstance(ts_raw, str):
+                try:
+                    s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                    ts_ms = int(__import__("datetime").datetime.fromisoformat(s).timestamp() * 1000)
+                except Exception:
+                    continue
+            elif isinstance(ts_raw, (int, float)):
+                ts_ms = int(ts_raw * 1000) if ts_raw < 1e12 else int(ts_raw)
+            else:
+                continue
+            if ts_ms < from_ms or ts_ms >= to_ms:
+                continue
+            sym = _norm(o.get("symbol") or o.get("coin") or "")
+            if sym:
+                out.add(sym)
+    return out
+
+
+def _load_universe_configured_live() -> set[str]:
+    """Production trading universe = HL_UNIVERSE + HIP3_UNIVERSE env vars
+    + config/pairs_whitelist.json (universe + leg_a/leg_b of every pair).
+    Auto_topup also actively trades ZEC by design.
+
+    Non-lookahead — what the engine ecosystem *would* trade ex ante.
+    """
+    out: set[str] = set()
+    for var in ("HL_UNIVERSE", "HIP3_UNIVERSE"):
+        v = os.environ.get(var) or ""
+        for tok in v.split(","):
+            s = _norm(tok.strip())
+            if s:
+                out.add(s)
+    # pairs whitelist — separate hl_pairs.py engine trades these.
+    pw = ROOT / "config" / "pairs_whitelist.json"
+    if pw.exists():
+        try:
+            d = json.loads(pw.read_text())
+            for tok in d.get("universe") or []:
+                s = _norm(str(tok))
+                if s:
+                    out.add(s)
+            for p in d.get("pairs") or []:
+                for k in ("leg_a", "leg_b"):
+                    s = _norm(str(p.get(k, "")))
+                    if s:
+                        out.add(s)
+        except Exception:
+            pass
+    # auto_topup ZEC watcher (deployed; pause-on-ratchet shipped 2026-04-26)
+    out.add("ZEC")
+    return out
+
+
+def _load_held_at_start_from_fills(start_ms: int) -> set[str]:
+    """Reconstruct symbols with non-zero net position at start_ms by
+    walking hl_fill_received events from log start to start_ms.
+
+    LIMITATION: misses positions opened before the engine log begins.
+    Caller should warn if start_ms < earliest log timestamp.
+    """
+    pos: dict[str, float] = defaultdict(float)
+    with LOG.open() as f:
+        for line in f:
+            if '"hl_fill_received"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("event") != "hl_fill_received":
+                continue
+            ts_raw = o.get("timestamp", "")
+            try:
+                if isinstance(ts_raw, str):
+                    s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                    ts_ms = int(datetime.fromisoformat(s).timestamp() * 1000)
+                else:
+                    ts_ms = int(ts_raw * 1000) if ts_raw < 1e12 else int(ts_raw)
+            except Exception:
+                continue
+            if ts_ms >= start_ms:
+                break  # log is chronological; everything after is in-window or after
+            sym = _norm(o.get("symbol") or o.get("coin") or "")
+            if not sym:
+                continue
+            try:
+                sz = float(o.get("sz", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            side = (o.get("side") or "").lower()
+            if side == "buy":
+                pos[sym] += sz
+            elif side == "sell":
+                pos[sym] -= sz
+    eps = 1e-6
+    return {s for s, q in pos.items() if abs(q) > eps}
+
+
+def _load_held_at_start_from_engine_log(start_ms: int) -> set[str]:
+    """Use hl_position_reconciled events: take the LAST event per symbol
+    before start_ms; symbols with non-zero szi are held at start.
+
+    This is the most accurate non-lookahead source because the engine
+    emits ~per-minute reconciliation snapshots from HL state.
+    """
+    last_szi: dict[str, float] = {}
+    with LOG.open() as f:
+        for line in f:
+            if '"hl_position_reconciled"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("event") != "hl_position_reconciled":
+                continue
+            ts_raw = o.get("timestamp", "")
+            try:
+                if isinstance(ts_raw, str):
+                    s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                    ts_ms = int(datetime.fromisoformat(s).timestamp() * 1000)
+                else:
+                    ts_ms = int(ts_raw * 1000) if ts_raw < 1e12 else int(ts_raw)
+            except Exception:
+                continue
+            if ts_ms >= start_ms:
+                break  # log is chronological
+            sym = _norm(o.get("symbol") or o.get("coin") or "")
+            if not sym:
+                continue
+            try:
+                szi = float(o.get("szi", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            last_szi[sym] = szi
+    eps = 1e-6
+    return {s for s, q in last_szi.items() if abs(q) > eps}
+
+
+def _load_held_at_start_from_hl_history(start_ms: int, lookback_days: int = 30) -> set[str]:
+    """Reconstruct positions at start_ms by walking HL API user_fills_by_time
+    over [start_ms - lookback_days, start_ms). Non-lookahead w.r.t. the
+    validation window. Use when local log doesn't span far enough back."""
+    addr = os.environ.get("HL_WALLET_ADDRESS")
+    if not addr:
+        env_path = ROOT / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith("HL_WALLET_ADDRESS="):
+                    addr = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if not addr:
+        return set()
+    try:
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+    except ImportError:
+        return set()
+    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    from_ms = start_ms - lookback_days * 86_400_000
+    try:
+        fills = info.user_fills_by_time(addr, from_ms, start_ms, aggregate_by_time=False) or []
+    except Exception as e:
+        print(f"# WARN: hl_history fills fetch failed: {e}", file=_sys.stderr)
+        return set()
+    pos: dict[str, float] = defaultdict(float)
+    for f in fills:
+        sym = _norm(f.get("coin", ""))
+        if not sym:
+            continue
+        try:
+            sz = float(f.get("sz", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        side = (f.get("side") or "").upper()
+        if side == "B":
+            pos[sym] += sz
+        elif side == "A":
+            pos[sym] -= sz
+    eps = 1e-6
+    return {s for s, q in pos.items() if abs(q) > eps}
+
+
+def _load_held_at_start_from_api(start_ms: int) -> set[str]:
+    """Query HL user_state now and return symbols with non-zero position.
+    Only valid for forward/paper-soak windows ending within ~6h of now."""
+    addr = os.environ.get("HL_WALLET_ADDRESS")
+    if not addr:
+        env_path = ROOT / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith("HL_WALLET_ADDRESS="):
+                    addr = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if not addr:
+        return set()
+    try:
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+    except ImportError:
+        return set()
+    held: set[str] = set()
+    for dex in (None, "xyz", "vntl", "hyna", "flx", "km", "cash", "para"):
+        kwargs = dict(skip_ws=True)
+        if dex:
+            kwargs["perp_dexs"] = [dex]
+        try:
+            info = Info(constants.MAINNET_API_URL, **kwargs)
+            us = info.user_state(addr)
+        except Exception:
+            continue
+        for ap in us.get("assetPositions") or []:
+            p = ap.get("position") or {}
+            try:
+                if abs(float(p.get("szi", 0) or 0)) > 1e-9:
+                    held.add(_norm(p.get("coin", "")))
+            except (TypeError, ValueError):
+                continue
+    return {h for h in held if h}
+
+
+def _load_held_at_start(start_ms: int, end_ms: int) -> set[str]:
+    """Return held-symbol set per REPLAY_HELD_SOURCE. Guard against
+    using current_user_state for stale historical windows."""
+    src = REPLAY_HELD_SOURCE
+    if src == "current_user_state":
+        now_ms = int(datetime.now().timestamp() * 1000)
+        if end_ms < now_ms - 6 * 3600_000:
+            print(
+                f"# WARN: REPLAY_HELD_SOURCE=current_user_state but window ends "
+                f"{(now_ms - end_ms) / 3600_000:.1f}h ago; held set may be wrong",
+                file=_sys.stderr,
+            )
+        return _load_held_at_start_from_api(start_ms)
+    if src == "hl_history":
+        return _load_held_at_start_from_hl_history(start_ms)
+    if src == "engine_position_log":
+        return _load_held_at_start_from_engine_log(start_ms)
+    if src == "user_state_snapshot_at_start":
+        print(
+            "# NOTE: user_state_snapshot_at_start not implemented; using "
+            "reconstruct_from_fills instead",
+            file=_sys.stderr,
+        )
+    # default: reconstruct_from_fills (local hl_fill_received log).
+    held = _load_held_at_start_from_fills(start_ms)
+    if not held:
+        # Local log fills empty before start_ms; try engine position log
+        # (hl_position_reconciled), which has per-minute snapshots even
+        # when fills are sparse.
+        held = _load_held_at_start_from_engine_log(start_ms)
+        if held:
+            print(
+                f"# NOTE: held reconstructed from engine_position_log: "
+                f"{len(held)} syms",
+                file=_sys.stderr,
+            )
+        else:
+            # Last resort: HL API history.
+            held = _load_held_at_start_from_hl_history(start_ms)
+            if held:
+                print(
+                    f"# NOTE: held reconstructed from HL API history: "
+                    f"{len(held)} syms",
+                    file=_sys.stderr,
+                )
+    return held
+
+
+def _resolve_universe(from_ms: int | None, to_ms: int | None) -> set[str] | None:
+    """Return the set of allowed symbols, or None if no filter."""
+    mode = REPLAY_UNIVERSE_MODE
+    if mode == "all":
+        return None
+    if mode == "live_fills_window":
+        if from_ms is None or to_ms is None:
+            print("# WARN: live_fills_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all")
+            return None
+        return _load_universe_live_fills(from_ms, to_ms, REPLAY_MIN_LIVE_FILLS)
+    if mode == "entry_signal_window":
+        if from_ms is None or to_ms is None:
+            print("# WARN: entry_signal_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all")
+            return None
+        return _load_universe_entry_signals(from_ms, to_ms)
+    if mode == "configured_live":
+        u = _load_universe_configured_live()
+        if not u:
+            print("# WARN: configured_live mode but HL_UNIVERSE/HIP3_UNIVERSE empty; falling back to all")
+            return None
+        return u
+    if mode == "configured_or_held":
+        u = _load_universe_configured_live()
+        if from_ms is None:
+            print("# WARN: configured_or_held needs REPLAY_FROM_MS; using configured_live alone")
+            return u or None
+        held = _load_held_at_start(from_ms, to_ms or from_ms)
+        if not u and not held:
+            print("# WARN: both configured + held empty; falling back to all")
+            return None
+        combined = (u or set()) | held
+        print(
+            f"# configured_or_held breakdown: configured={len(u or [])} "
+            f"held_at_start={len(held)} union={len(combined)}",
+            file=_sys.stderr,
+        )
+        return combined
+    print(f"# WARN: unknown REPLAY_UNIVERSE={mode}; falling back to all")
+    return None
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -751,6 +1324,23 @@ def main():
     allowed = None
     if SYMBOL_FILTER != "all":
         allowed = {_norm(s) for s in SYMBOL_FILTER.split(",")}
+
+    # Universe filter (Phase 1 residual decomposition)
+    _from = os.environ.get("REPLAY_FROM_MS")
+    _to = os.environ.get("REPLAY_TO_MS")
+    _from_ms = int(_from) if _from else None
+    _to_ms = int(_to) if _to else None
+    universe = _resolve_universe(_from_ms, _to_ms)
+    if universe is not None:
+        print(
+            f"# REPLAY_UNIVERSE={REPLAY_UNIVERSE_MODE}  "
+            f"allowed_symbols={len(universe)}",
+            file=_sys.stderr,
+        )
+        if allowed is None:
+            allowed = universe
+        else:
+            allowed = allowed & universe
 
     # G0 prep: build regime-pause trip index if the gate is enabled.
     global _regime_trips
@@ -771,6 +1361,12 @@ def main():
     _opens_out_path = os.environ.get("REPLAY_OPENS_OUT")
     if _opens_out_path:
         _OPENS_OUT_FH = open(_opens_out_path, "w")
+
+    # Diagnostic: per-trade emission for cardinality / holding analysis.
+    global _TRADES_OUT_FH
+    _trades_out_path = os.environ.get("REPLAY_TRADES_OUT")
+    if _trades_out_path:
+        _TRADES_OUT_FH = open(_trades_out_path, "w")
 
     per_sym: dict[str, float] = {}
     per_sym_trades: dict[str, int] = {}
@@ -800,6 +1396,8 @@ def main():
     sink.flush()
     if _OPENS_OUT_FH is not None:
         _OPENS_OUT_FH.close()
+    if _TRADES_OUT_FH is not None:
+        _TRADES_OUT_FH.close()
 
     # ── Guard: worst per-symbol regression vs baseline ─────────────────────
     worst_sym = None
@@ -883,13 +1481,23 @@ def main():
 
     # ── Attribution block ──────────────────────────────────────────────────
     print("\n=== GATE ATTRIBUTION ===")
-    for gate in ("obi_gate", "trend_regime", "flip_guard", "momentum_dedup"):
+    for gate in (
+        "regime_pause", "obi_gate", "trend_regime", "flip_guard",
+        "momentum_dedup", "reentry_cooldown", "max_opens_day",
+    ):
         cnt = sink.gate_counts.get(gate, 0)
         saved = sink.gate_saved.get(gate, 0.0)
         avg = (saved / cnt) if cnt > 0 else 0.0
         print(
             f"  {gate:<16s} rejected {cnt:>7d}  saved ${saved:+9.2f}  avg_per_reject ${avg:+.3f}"
         )
+    # Structured emission for tooling — single line, parseable.
+    print(
+        "REPLAY_GATE_COUNTS_JSON " + json.dumps(
+            {"event": "replay_gate_counts", "gate_counts": dict(sink.gate_counts)},
+            separators=(",", ":"),
+        )
+    )
     print(
         f"  {'FIRED':<16s} entries  {total_trades:>7d}  SCORE  ${total:+9.2f}  "
         f"$/trade ${secondary:+.3f}"

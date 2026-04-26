@@ -69,6 +69,72 @@ def pearson(xs: list[float], ys: list[float]) -> float | None:
     return num / (dx * dy)
 
 
+def parse_hl_closed_pnl(from_ms: int, to_ms: int):
+    """Pull HL user_fills_by_time from native + builder DEXes; aggregate
+    `closedPnl` per symbol. This is the AUTHORITATIVE live realized PnL.
+
+    Replaces parse_exit_signals as the default ground truth source —
+    audit_live_pnl_ground_truth.py showed exit_signal.pnl_est correlates
+    only ρ≈0.6 with this venue-truth value.
+
+    Returns (per_sym_pnl_dollars, per_sym_daily_pnl, fees_per_sym).
+    """
+    addr = os.environ.get("HL_WALLET_ADDRESS")
+    if not addr:
+        env_path = ROOT / ".env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith("HL_WALLET_ADDRESS="):
+                    addr = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    if not addr:
+        raise SystemExit("HL_WALLET_ADDRESS not in env or .env")
+
+    from hyperliquid.info import Info
+    from hyperliquid.utils import constants
+
+    sources = [(Info(constants.MAINNET_API_URL, skip_ws=True), "native")]
+    for dex in ("xyz", "vntl", "hyna", "flx", "km", "cash", "para"):
+        try:
+            sources.append(
+                (Info(constants.MAINNET_API_URL, skip_ws=True, perp_dexs=[dex]), dex)
+            )
+        except Exception as e:
+            print(f"# warn: builder {dex} init failed: {e}", file=sys.stderr)
+
+    per_sym: dict[str, float] = defaultdict(float)
+    per_day: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    fees_per_sym: dict[str, float] = defaultdict(float)
+    for info, label in sources:
+        try:
+            fills = (
+                info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False)
+                or []
+            )
+        except Exception as e:
+            print(f"# warn: {label} user_fills_by_time failed: {e}", file=sys.stderr)
+            continue
+        for f in fills:
+            sym = _norm(f.get("coin", ""))
+            if not sym:
+                continue
+            try:
+                pnl = float(f.get("closedPnl", 0) or 0)
+                fee = float(f.get("fee", 0) or 0)
+                ts_ms = int(f.get("time", 0))
+            except (TypeError, ValueError):
+                continue
+            if pnl == 0.0 and fee == 0.0:
+                continue  # opening fill, no realized component
+            per_sym[sym] += pnl
+            fees_per_sym[sym] += fee
+            day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+            per_day[sym][day] += pnl
+    return dict(per_sym), {s: dict(d) for s, d in per_day.items()}, dict(fees_per_sym)
+
+
 def parse_exit_signals(from_ms: int, to_ms: int):
     """Return (per_sym_pnl, per_sym_daily_pnl[sym][day_iso] -> pnl)."""
     per_sym: dict[str, float] = defaultdict(float)
@@ -166,9 +232,10 @@ def main():
 
     print(f"# window: {window_days}d  [{from_ms}..{to_ms})", file=sys.stderr)
 
-    live_per_sym, live_per_day = parse_exit_signals(from_ms, to_ms)
+    live_per_sym, live_per_day, live_fees = parse_hl_closed_pnl(from_ms, to_ms)
     print(
-        f"# live exit_signal events covered {len(live_per_sym)} symbols",
+        f"# live HL closedPnl covers {len(live_per_sym)} symbols  "
+        f"(gross ${sum(live_per_sym.values()):+.2f}, fees ${sum(live_fees.values()):+.2f})",
         file=sys.stderr,
     )
 
@@ -202,7 +269,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
-    lines.append("# Phase 4 Validation Report — gated replay vs live exit_signal")
+    lines.append("# Phase 4 Validation Report — gated replay vs HL closedPnl (venue truth)")
     lines.append("")
     lines.append(f"- window: **{window_days}d**  `[{from_ms}..{to_ms})`")
     lines.append(
@@ -233,14 +300,37 @@ def main():
         )
     out_path.write_text("\n".join(lines) + "\n")
 
-    # Console summary
+    # Console summary — explicit source labels prevent misreading future
+    # results against the wrong baseline (HL closedPnl vs broken
+    # exit_signal, plain replay vs cooldown-flagged replay).
     print("=" * 60)
+    print("live_pnl_source         : hl_closed_pnl_gross")
+    cooldown_cfg = os.environ.get("REENTRY_COOLDOWN_BY_SYMBOL", "")
+    cooldown_global = os.environ.get("MIN_REENTRY_COOLDOWN_S", "0")
+    if cooldown_cfg:
+        print(f"reentry_cooldown_config : {cooldown_cfg}")
+    elif int(cooldown_global) > 0:
+        print(f"reentry_cooldown_config : global_{cooldown_global}s")
+    else:
+        print("reentry_cooldown_config : none (default off)")
+    ratchet_model = os.environ.get("RATCHET_EXIT_MODEL", "full")
+    if ratchet_model != "full":
+        print(f"ratchet_exit_model      : {ratchet_model}")
     print(
-        f"portfolio rho: {portfolio_rho:.4f}"
+        f"portfolio rho           : {portfolio_rho:.4f}"
         if portfolio_rho is not None
-        else "portfolio rho: N/A"
+        else "portfolio rho           : N/A"
     )
-    print(f"GATE: {'PASS (>=0.80)' if gate_pass else 'FAIL (<0.80)'}")
+    # Δρ vs published HL-truth baseline (constant from
+    # autoresearch_gated/calibration_baseline_hl_truth_bucketed_3600.md).
+    BASELINE_HL_TRUTH_RHO = 0.4529
+    if portfolio_rho is not None:
+        delta = portfolio_rho - BASELINE_HL_TRUTH_RHO
+        print(
+            f"rho_delta_vs_baseline   : {delta:+.4f}  "
+            f"(baseline_hl_truth_rho={BASELINE_HL_TRUTH_RHO:.4f})"
+        )
+    print(f"GATE                    : {'PASS (>=0.80)' if gate_pass else 'FAIL (<0.80)'}")
     print(
         f"live ${live_sum:+.2f}  replay ${sim_sum:+.2f}  diff ${sim_sum - live_sum:+.2f}"
     )

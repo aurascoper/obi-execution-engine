@@ -57,7 +57,7 @@ from scripts.z_entry_replay_gated import (  # noqa: E402
     mark_at,
     thresholds_for,
 )
-from scripts.validate_replay_fit import parse_exit_signals, pearson  # noqa: E402
+from scripts.validate_replay_fit import parse_hl_closed_pnl, pearson  # noqa: E402
 
 WINDOW_DAYS_DEFAULT = 14
 
@@ -301,9 +301,12 @@ def main():
     trades = load_live_trades(from_ms, to_ms)
     print(f"#   live trades: {len(trades)}")
 
-    print("# loading live exit_signal-derived per-symbol PnL (ground truth)...")
-    live_per_sym, _ = parse_exit_signals(from_ms, to_ms)
-    print(f"#   exit_signal symbols: {len(live_per_sym)}")
+    print("# loading HL closedPnl per-symbol (venue ground truth)...")
+    live_per_sym, _, live_fees = parse_hl_closed_pnl(from_ms, to_ms)
+    print(
+        f"#   HL closedPnl symbols: {len(live_per_sym)}  "
+        f"(gross ${sum(live_per_sym.values()):+.2f}, fees ${sum(live_fees.values()):+.2f})"
+    )
 
     # Mode B: live entries → replay X1-X4 exits
     mode_b_per_sym: dict[str, float] = defaultdict(float)

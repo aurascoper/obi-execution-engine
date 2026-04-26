@@ -1,0 +1,31 @@
+{
+  "_doc": "Phase 3 cardinality gate. Structural buckets only — DO NOT add symbols here based on backtest residual deltas. HIP-3 equity perps + ZEC are known high-churn under replay; long-hold natives are exempt.",
+  "default": 0,
+  "groups": {
+    "hip3_equity_perps": {
+      "_doc": "All xyz: equity perps. Replay over-trades these dramatically (50-90 opens per 14d). Live tends to hold them as positions through the trading day.",
+      "symbols": [
+        "xyz:MSTR", "xyz:AMZN", "xyz:NVDA", "xyz:INTC", "xyz:COIN",
+        "xyz:CRCL", "xyz:CRWV", "xyz:SKHX", "xyz:HIMS", "xyz:HOOD",
+        "xyz:ORCL", "xyz:EWY", "xyz:TSLA", "xyz:SNDK", "xyz:MSFT",
+        "xyz:MU", "xyz:SP500", "xyz:AMD", "xyz:PLTR", "xyz:BRENTOIL",
+        "xyz:GOLD", "xyz:SILVER", "xyz:NATGAS", "xyz:COPPER",
+        "xyz:PLATINUM", "xyz:TSM", "xyz:GOOGL", "xyz:META",
+        "xyz:CL", "xyz:LLY", "xyz:NFLX", "xyz:AAPL", "xyz:COST",
+        "xyz:BABA", "xyz:JP225", "xyz:RIVN", "xyz:JPY", "xyz:XYZ100"
+      ],
+      "cooldown_s": 3600
+    },
+    "churn_native_exceptions": {
+      "_doc": "ZEC has auto_topup watcher + ratchet activity that produces churn equivalent to xyz: equities.",
+      "symbols": ["ZEC"],
+      "cooldown_s": 3600
+    },
+    "long_hold_natives": {
+      "_doc": "Pure mean-reversion natives. Live holds these for days through drawdowns. Cooldown-3600 deleted a structurally valid AAVE trade (-$122 over 71h); explicitly exempt.",
+      "symbols": ["AAVE", "ETH", "BTC", "SOL", "LDO", "CRV", "BNB", "SUI", "TAO", "DOGE", "LINK", "ADA", "AVAX", "LTC", "BCH", "DOT", "UNI", "POL", "RENDER", "FIL", "HYPE", "NEAR", "ENA", "PAXG", "ARB", "XRP"],
+      "cooldown_s": 0
+    }
+  },
+  "overrides": {}
+}

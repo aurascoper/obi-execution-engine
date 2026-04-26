@@ -190,12 +190,35 @@ class HyperliquidFeed:
         else:
             return None
 
+        # closedPnl + fee are venue-realized fields needed for live PnL
+        # ground truth without API re-pulls. Emit a one-shot audit event if
+        # absent so we can detect schema drift.
+        if "closedPnl" not in fill or "fee" not in fill:
+            log.warning(
+                "hl_fill_schema_missing_closed_pnl",
+                keys=sorted(fill.keys()),
+                symbol=coin,
+                ts=str(fill.get("time", "")),
+            )
+
+        try:
+            closed_pnl = float(fill.get("closedPnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            closed_pnl = 0.0
+        try:
+            fee = float(fill.get("fee", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            fee = 0.0
+
         return {
             "type": "hl_fill",
             "symbol": coin,
             "side": side,
             "px": px,
             "sz": sz,
+            "fee": fee,
+            "closed_pnl": closed_pnl,
+            "hash": fill.get("hash"),
             "oid": fill.get("oid"),
             "cloid": fill.get("cloid"),
             "crossed": bool(fill.get("crossed", True)),
@@ -254,6 +277,9 @@ class HyperliquidFeed:
                     side=norm["side"],
                     px=norm["px"],
                     sz=norm["sz"],
+                    fee=norm["fee"],
+                    closed_pnl=norm["closed_pnl"],
+                    hash=norm.get("hash"),
                     oid=norm["oid"],
                     cloid=norm["cloid"],
                     crossed=norm["crossed"],
