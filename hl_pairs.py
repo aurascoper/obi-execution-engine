@@ -150,6 +150,16 @@ DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
 
 BUILDER_DEXS = ["xyz", "para", "hyna", "flx", "vntl", "km", "cash"]
 
+# ── OBI shadow gate (pass-through; see pair_obi_shadow events) ────────────────
+OBI_PAIRS_SHADOW = os.environ.get("OBI_PAIRS_SHADOW", "0").strip() in (
+    "1",
+    "true",
+    "yes",
+)
+OBI_PAIRS_LEVELS = int(os.environ.get("OBI_PAIRS_LEVELS", "20"))
+OBI_PAIRS_THETA = float(os.environ.get("OBI_PAIRS_THETA", "0.0"))
+OBI_PAIRS_TTL_S = float(os.environ.get("OBI_PAIRS_TTL_S", "10.0"))
+
 
 # ── Whitelist loader ──────────────────────────────────────────────────────────
 def _load_whitelist(path: Path = WHITELIST_PATH) -> list[dict]:
@@ -642,6 +652,40 @@ class PairsEngine:
         )
         return fq, fp, err
 
+    # ── OBI shadow cache (read-only; does not gate live entries) ────────────
+    async def _get_obi(self, coin: str) -> float | None:
+        """Return cached OBI ρ_t for `coin`, polling l2Book on TTL miss.
+
+        Formula mirrors strategy/signals.py: ρ = (Σ bid_sz − Σ ask_sz) /
+        (Σ bid_sz + Σ ask_sz) over top OBI_PAIRS_LEVELS rungs. Cached per
+        symbol with TTL so the pair tick loop doesn't hammer the l2 endpoint,
+        and the blocking HTTP fetch runs in a thread so the event loop stays
+        responsive.
+        """
+        now = time.time()
+        cache = getattr(self, "_obi_cache", None)
+        if cache is None:
+            self._obi_cache = {}
+            cache = self._obi_cache
+        ts, rho = cache.get(coin, (0.0, None))
+        if now - ts < OBI_PAIRS_TTL_S and rho is not None:
+            return rho
+        try:
+            book = await asyncio.to_thread(
+                self._info.post, {"type": "l2Book", "coin": coin}
+            )
+            levels = book.get("levels", [[], []])
+            bids = levels[0][:OBI_PAIRS_LEVELS]
+            asks = levels[1][:OBI_PAIRS_LEVELS]
+            vb = sum(float(b["sz"]) for b in bids)
+            va = sum(float(a["sz"]) for a in asks)
+            rho = (vb - va) / (vb + va + 1e-8)
+            cache[coin] = (now, rho)
+            return rho
+        except Exception as e:
+            log.warning("pair_obi_fetch_err", coin=coin, err=str(e))
+            return None
+
     # ── Gates ────────────────────────────────────────────────────────────────
     async def _netting_clear(self, pair: Pair) -> bool:
         """Both legs must be flat (no other tier owns them) before we enter."""
@@ -794,34 +838,70 @@ class PairsEngine:
         # Close in reverse order of open (leg B first, then leg A) — the more
         # liquid leg unwinds faster, so the less-liquid residual is the last
         # thing we carry, minimizing time-in-limbo on the harder leg.
-        side_b = "sell" if pair.qty_b > 0 else "buy"
-        qty_b = abs(pair.qty_b)
-        fq_b, fp_b, err_b = await self._submit_leg(pair.leg_b, side_b, qty_b, px_b)
-        if fq_b <= 0:
-            log.error(
-                "pair_close_leg_b_failed",
-                pair=pair.name,
-                error=err_b,
-                reason=reason,
-            )
-            # Don't close leg A if B can't unwind — we'd be flipping from
-            # spread-neutral to outright directional. Retry next tick.
-            return
+        #
+        # If a prior attempt left one leg already flat (qty == 0), skip it.
+        # Submitting qty=0 returns "zero_size_or_price" and the old branch
+        # would short-circuit before retrying the remaining leg, creating an
+        # infinite retry loop on the surviving leg.
+        fq_b = fp_b = 0.0
+        if pair.qty_b != 0:
+            side_b = "sell" if pair.qty_b > 0 else "buy"
+            qty_b = abs(pair.qty_b)
+            fq_b, fp_b, err_b = await self._submit_leg(pair.leg_b, side_b, qty_b, px_b)
+            if fq_b <= 0:
+                # zero_size_or_price means _submit_leg floor-rounded the qty
+                # to szDecimals and got 0 — the residual is unrepresentable
+                # dust that HL cannot close. Treat leg as flat and continue.
+                if err_b == "zero_size_or_price":
+                    log.warning(
+                        "pair_close_leg_b_dust",
+                        pair=pair.name,
+                        dust_qty=pair.qty_b,
+                        reason=reason,
+                    )
+                    pair.qty_b = 0.0
+                else:
+                    log.error(
+                        "pair_close_leg_b_failed",
+                        pair=pair.name,
+                        error=err_b,
+                        reason=reason,
+                    )
+                    # Don't close leg A if B can't unwind — we'd be flipping
+                    # from spread-neutral to outright directional. Retry next
+                    # tick.
+                    return
+            else:
+                pair.qty_b = 0.0
 
-        side_a = "sell" if pair.qty_a > 0 else "buy"
-        qty_a = abs(pair.qty_a)
-        fq_a, fp_a, err_a = await self._submit_leg(pair.leg_a, side_a, qty_a, px_a)
-        if fq_a <= 0:
-            log.error(
-                "pair_close_leg_a_failed_leg_b_already_closed",
-                pair=pair.name,
-                error=err_a,
-                reason=reason,
-            )
-            # Leg B is flat but leg A is still on — we've momentarily flipped
-            # to directional. Retry leg A next tick; state stays partially open.
-            pair.qty_b = 0.0
-            return
+        if pair.qty_a != 0:
+            side_a = "sell" if pair.qty_a > 0 else "buy"
+            qty_a = abs(pair.qty_a)
+            fq_a, fp_a, err_a = await self._submit_leg(pair.leg_a, side_a, qty_a, px_a)
+            if fq_a <= 0:
+                if err_a == "zero_size_or_price":
+                    log.warning(
+                        "pair_close_leg_a_dust",
+                        pair=pair.name,
+                        dust_qty=pair.qty_a,
+                        reason=reason,
+                    )
+                    pair.qty_a = 0.0
+                    fq_a = fp_a = 0.0
+                else:
+                    log.error(
+                        "pair_close_leg_a_failed_leg_b_already_closed",
+                        pair=pair.name,
+                        error=err_a,
+                        reason=reason,
+                    )
+                    # Leg B is flat but leg A is still on — retry leg A next
+                    # tick.
+                    return
+            else:
+                pair.qty_a = 0.0
+        else:
+            fq_a = fp_a = 0.0
 
         log.info(
             "pair_close_complete",
@@ -928,6 +1008,31 @@ class PairsEngine:
                     continue
                 if not await self._netting_clear(pair):
                     continue
+                if OBI_PAIRS_SHADOW:
+                    obi_a = await self._get_obi(pair.leg_a)
+                    obi_b = await self._get_obi(pair.leg_b)
+                    would_pass: bool | None = None
+                    align: float | None = None
+                    if obi_a is not None and obi_b is not None:
+                        # Long-spread (direction=+1) buys A, sells B → want
+                        # bid pressure on A and ask pressure on B:
+                        #   align = +1 · (obi_a − obi_b)
+                        # Short-spread flips the sign.
+                        align = direction * (obi_a - obi_b)
+                        would_pass = align > OBI_PAIRS_THETA
+                    log.info(
+                        "pair_obi_shadow",
+                        pair=pair.name,
+                        leg_a=pair.leg_a,
+                        leg_b=pair.leg_b,
+                        obi_a=(round(obi_a, 4) if obi_a is not None else None),
+                        obi_b=(round(obi_b, 4) if obi_b is not None else None),
+                        align=(round(align, 4) if align is not None else None),
+                        theta=OBI_PAIRS_THETA,
+                        direction=direction,
+                        would_pass=would_pass,
+                    )
+                    # Shadow — entry proceeds regardless of the signal above.
                 log.info(
                     "pair_entry", pair=pair.name, z=round(z, 4), direction=direction
                 )

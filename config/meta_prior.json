@@ -1,0 +1,33 @@
+{
+  "arms": [
+    "hl_z",
+    "momentum"
+  ],
+  "discount": 0.991,
+  "alpha": [
+    327.0,
+    1084.0
+  ],
+  "beta": [
+    306.0,
+    893.0
+  ],
+  "pulls": [
+    631,
+    1975
+  ],
+  "_built_from": {
+    "engine_log": "/Users/aurascoper/Developer/live_trading/logs/hl_engine.jsonl",
+    "pairs_log": "/Users/aurascoper/Developer/live_trading/logs/hl_pairs.jsonl",
+    "lookback_days": 90,
+    "threshold_pct": 0.05,
+    "wins": {
+      "hl_z": 326,
+      "momentum": 1083
+    },
+    "losses": {
+      "hl_z": 305,
+      "momentum": 892
+    }
+  }
+}
