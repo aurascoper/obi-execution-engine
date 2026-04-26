@@ -140,6 +140,11 @@ REGIME_PAUSE_SECONDS = int(
 # Populated by main() after bars are loaded; consulted by simulate_symbol_gated.
 _regime_trips: list[tuple[int, int]] = []
 
+# Optional opens-emission file handle (for diagnose_entry_alignment.py and
+# similar tooling). Set when REPLAY_OPENS_OUT env var points at a writable
+# path. None disables emission entirely (zero overhead).
+_OPENS_OUT_FH = None
+
 
 def build_regime_trips(bars: dict) -> list[tuple[int, int]]:
     """Return a sorted list of (trip_ts_ms, pause_until_ms) for any tick where
@@ -718,6 +723,21 @@ def simulate_symbol_gated(
             "qty": qty,
             "ratchet": None,
         }
+        # Optional opens emission for diagnostic tooling (e.g. entry alignment).
+        if _OPENS_OUT_FH is not None:
+            _OPENS_OUT_FH.write(
+                json.dumps(
+                    {
+                        "ts": ts,
+                        "symbol": sym,
+                        "side": side,
+                        "z": z,
+                        "mark": m,
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
 
     return total, n_trades, dict(exit_reasons)
 
@@ -746,6 +766,12 @@ def main():
 
     sink = AttributionSink(ATTRIBUTION_FILE)
 
+    # Diagnostic: opens emission for entry-alignment analysis.
+    global _OPENS_OUT_FH
+    _opens_out_path = os.environ.get("REPLAY_OPENS_OUT")
+    if _opens_out_path:
+        _OPENS_OUT_FH = open(_opens_out_path, "w")
+
     per_sym: dict[str, float] = {}
     per_sym_trades: dict[str, int] = {}
     per_sym_exit_reasons: dict[str, dict[str, int]] = {}
@@ -772,6 +798,8 @@ def main():
         total += pnl
 
     sink.flush()
+    if _OPENS_OUT_FH is not None:
+        _OPENS_OUT_FH.close()
 
     # ── Guard: worst per-symbol regression vs baseline ─────────────────────
     worst_sym = None
