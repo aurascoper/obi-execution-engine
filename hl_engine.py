@@ -1056,6 +1056,20 @@ class HLEngine:
         if not is_entry:
             return True
 
+        # Manage-only mode — env-driven kill of new entries. Exits/cancels/
+        # ratchets/stop_loss continue to fire (they returned True above).
+        # Set PAUSE_NEW_ENTRIES=1 to halt fresh exposure during recalibration
+        # / forensic windows / loss-regime holds. Both mean-rev and momentum
+        # entries are blocked since this gate runs for the full entry path.
+        if os.environ.get("PAUSE_NEW_ENTRIES", "0") == "1":
+            log.info(
+                "risk_gate_pause_new_entries",
+                symbol=sym,
+                tag=tag,
+                side=sig["side"].name if hasattr(sig["side"], "name") else str(sig["side"]),
+            )
+            return False
+
         now_mono = time.monotonic()
 
         # Regime pause: re-check lazily so a new trip extends the deadline.
