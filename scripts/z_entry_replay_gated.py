@@ -763,11 +763,11 @@ def simulate_portfolio_gated(
         open_positions[sym] = pos
 
     per_sym = {sym: s["total_pnl"] for sym, s in state.items() if s["n_trades"] > 0}
-    per_sym_trades = {sym: s["n_trades"] for sym, s in state.items() if s["n_trades"] > 0}
+    per_sym_trades = {
+        sym: s["n_trades"] for sym, s in state.items() if s["n_trades"] > 0
+    }
     per_sym_exits = {
-        sym: dict(s["exit_reasons"])
-        for sym, s in state.items()
-        if s["n_trades"] > 0
+        sym: dict(s["exit_reasons"]) for sym, s in state.items() if s["n_trades"] > 0
     }
     return per_sym, per_sym_trades, per_sym_exits, n_net_cap_blocks
 
