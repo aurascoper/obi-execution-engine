@@ -35,6 +35,7 @@ Preconditions before first run:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -52,6 +53,27 @@ from data.feed import LiveFeed
 from data.hl_feed import HyperliquidFeed
 from execution.hl_manager import HyperliquidOrderManager
 from strategy.signals import SignalEngine, MOMENTUM_TAG
+from config.risk_params import (
+    MAKER_LATENCY_WINDOW,
+    MAKER_POLICY,
+    MAKER_POLICY_WEIGHTS,
+    MAKER_SHADOW,
+)
+from strategy.maker_shadow import (
+    MakerShadow,
+    build_state as build_maker_state,
+    outcome_payload as maker_outcome_payload,
+    shadow_event_payload as maker_shadow_payload,
+)
+from strategy.latent_regime_detector import LatentRegimeDetector
+from strategy.macro_sizing_tier import compute_multiplier as compute_macro_multiplier
+
+# ── Macro shadow (plan proud-conjuring-pebble.md) ────────────────────────────
+# Coins whose bars trigger macro_sizing_shadow emission and whose orderbook
+# ticks drive a latent-regime detector. Shadow-only: risk path always applies
+# multiplier=1.00; these events are for offline calibration.
+MACRO_SHADOW_COINS: tuple[str, ...] = ("BTC", "ETH", "SOL", "ADA")
+REGIME_THROTTLE_SEC: float = 1.0  # paper 2604.20949 specifies 1 Hz
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -331,14 +353,65 @@ class HLEngine:
             c: 1.5 * (10**-dec) for c, dec in self._sz_decimals.items()
         }
 
-        self._per_pair_notional = 250.0
+        self._per_pair_notional = float(os.environ.get("PER_PAIR_NOTIONAL", "250"))
+
+        # Phase 2: single BasketAggregator shared across the SignalEngine.
+        # Always instantiated so SIGNAL_MODE can be flipped between `raw` and
+        # `basket_residual` without a config rewire; the engine only *consults*
+        # residual_z() when SIGNAL_MODE=="basket_residual".
+        from config.risk_params import BASKET_WINDOW
+        from strategy.baskets import BasketAggregator
+
+        try:
+            self._basket_agg = BasketAggregator(window=BASKET_WINDOW)
+        except FileNotFoundError:
+            log.warning("basket_agg_config_missing", fallback="raw_z")
+            self._basket_agg = None
 
         self._signals = SignalEngine(
             symbols=self._hl_symbols,
             strategy_tag=STRATEGY_TAG,
             allow_short=True,
             notional_per_trade=self._per_pair_notional,
+            basket_agg=self._basket_agg,
         )
+
+        # Phase 5: POW-dTS meta-controller. Three arms — hl_z (mean-rev),
+        # momentum (evaluate_momentum path), pairs (runs in its own process;
+        # an arm pick is just a soft budget allowance, dispatch is a no-op).
+        # Default META_CONTROLLER=off preserves the legacy static branch.
+        from config.risk_params import (
+            META_CONTROLLER,
+            META_PRIOR_FILE,
+            META_DISCOUNT,
+            FEE_ROUND_TRIP_BPS,
+            META_SNAPSHOT_EVERY,
+        )
+        from strategy.meta_controller import POWdTSBandit
+
+        self._meta_mode = META_CONTROLLER
+        self._meta_fee_pct = FEE_ROUND_TRIP_BPS / 100.0
+        self._meta_snapshot_every = max(1, int(META_SNAPSHOT_EVERY))
+        self._meta_iter = 0
+        if META_CONTROLLER == "pow_dts":
+            # v1: two engine-side arms. `pairs` is a separate process and not
+            # arm-selected here; when pairs proves dispatchable from the main
+            # engine it becomes a third arm (plan §Phase 7e).
+            self._meta = POWdTSBandit.load_or_init(
+                path=META_PRIOR_FILE,
+                arms=[STRATEGY_TAG, MOMENTUM_TAG],
+                discount=META_DISCOUNT,
+            )
+            log.info(
+                "meta_controller_init",
+                mode="pow_dts",
+                prior_file=META_PRIOR_FILE,
+                discount=META_DISCOUNT,
+                fee_threshold_pct=self._meta_fee_pct,
+                snapshot=self._meta.snapshot(),
+            )
+        else:
+            self._meta = None
 
         # Inject _QTY_DECIMALS for HIP-3 coins from venue meta (dynamic, not hardcoded).
         from strategy.signals import _QTY_DECIMALS
@@ -409,6 +482,17 @@ class HLEngine:
 
         self._pending_resting: dict[str, dict] = {}
 
+        # Phase 7d maker-policy shadow: built only when MAKER_SHADOW is on or
+        # MAKER_POLICY="rl" (latter is future-work; today the flag just gates
+        # the instrumentation). Lazy weights-load, never crashes engine.
+        if MAKER_SHADOW or MAKER_POLICY == "rl":
+            self._maker_shadow: MakerShadow | None = MakerShadow(
+                weights_path=MAKER_POLICY_WEIGHTS,
+                latency_window=MAKER_LATENCY_WINDOW,
+            )
+        else:
+            self._maker_shadow = None
+
         # P0 regime-pause state: monotonic deadline; entries blocked while > now().
         self._regime_pause_until: float = 0.0
 
@@ -426,6 +510,165 @@ class HLEngine:
                 "mode": self._cfg.execution_mode.value,
             },
         )
+
+        # ── Macro shadow (plan proud-conjuring-pebble.md Steps 1–4) ──────────
+        # Load-only at startup. Risk path applies 1.00 always; these emissions
+        # are for offline calibration, not sizing.
+        self._macro_snapshot: dict = self._load_macro_snapshot()
+        self._regime_detectors: dict[str, LatentRegimeDetector] = {}
+        self._regime_last_update: dict[str, float] = {}
+        for _coin in MACRO_SHADOW_COINS:
+            _sym = self._coin_to_symbol.get(_coin)
+            if _sym and _sym in self._signals._state:
+                self._regime_detectors[_sym] = LatentRegimeDetector(_coin)
+        log.info(
+            "macro_shadow_init",
+            contracts=sorted((self._macro_snapshot.get("contracts") or {}).keys()),
+            history_counts={
+                k: len(v)
+                for k, v in (self._macro_snapshot.get("history") or {}).items()
+            },
+            detectors=sorted(self._regime_detectors.keys()),
+            ts_poll_utc=self._macro_snapshot.get("ts_poll_utc"),
+        )
+
+    @staticmethod
+    def _load_macro_snapshot() -> dict:
+        """Compose Kalshi snapshot + per-contract history for macro_sizing_tier.
+
+        Returns an empty dict if kalshi_latest.json is missing/unreadable;
+        compute_multiplier falls back to 1.00 with note='stale_snapshot'.
+        """
+        root = Path(__file__).resolve().parent
+        latest_path = root / "data" / "macro" / "kalshi_latest.json"
+        history_path = root / "data" / "macro" / "kalshi_history.jsonl"
+        try:
+            snap = json.loads(latest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        per_contract: dict[str, list[float]] = {}
+        if history_path.exists():
+            try:
+                with history_path.open() as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        for ct, v in (rec.get("contracts") or {}).items():
+                            p = v.get("prob")
+                            if p is not None:
+                                per_contract.setdefault(ct, []).append(float(p))
+            except OSError:
+                pass
+        snap["history"] = per_contract
+        return snap
+
+    def _emit_regime_shadow(self, msg: dict) -> None:
+        """Feed per-tick top-of-book to the regime detector for MACRO_SHADOW_COINS.
+
+        1 Hz throttle per symbol (paper 2604.20949). Exceptions are caught and
+        logged — detector must never block the strategy loop.
+        """
+        sym = msg.get("symbol")
+        det = self._regime_detectors.get(sym) if sym else None
+        if det is None:
+            return
+        now = time.time()
+        if now - self._regime_last_update.get(sym, 0.0) < REGIME_THROTTLE_SEC:
+            return
+        self._regime_last_update[sym] = now
+        try:
+            bids = msg.get("bids") or []
+            asks = msg.get("asks") or []
+            if not bids or not asks:
+                return
+            bid_px = float(bids[0][0])
+            ask_px = float(asks[0][0])
+            bid_sz = float(bids[0][1])
+            ask_sz = float(asks[0][1])
+            if bid_px <= 0 or ask_px <= 0 or ask_px < bid_px:
+                return
+            mid = 0.5 * (bid_px + ask_px)
+            trig = det.update(now, mid, bid_sz, ask_sz, bid_px, ask_px)
+            if trig is not None:
+                log.info(
+                    "regime_shift_shadow",
+                    symbol=trig.symbol,
+                    channel=trig.channel,
+                    raw=trig.raw,
+                    z=trig.z,
+                    threshold=trig.threshold,
+                    reason=trig.reason,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("regime_shadow_emit_failed", symbol=sym, error=str(exc))
+
+    def _emit_macro_shadow(self, msg: dict) -> None:
+        """Per-bar shadow-log macro sizing multiplier for MACRO_SHADOW_COINS.
+
+        Engine never applies the multiplier; risk path stays at 1.00.
+        """
+        sym = msg.get("symbol")
+        coin = self._symbol_to_coin.get(sym, "") if sym else ""
+        if coin not in MACRO_SHADOW_COINS:
+            return
+        try:
+            mult, reason = compute_macro_multiplier(coin, self._macro_snapshot)
+            log.info(
+                "macro_sizing_shadow",
+                symbol=coin,
+                multiplier=mult,
+                tier=reason.get("tier"),
+                raw_w=reason.get("raw_w"),
+                percentile=reason.get("percentile"),
+                overlay=reason.get("overlay"),
+                contract=reason.get("contract"),
+                note=reason.get("note"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("macro_shadow_emit_failed", symbol=sym, error=str(exc))
+
+    def _emit_maker_outcome(
+        self,
+        *,
+        event: str,  # "maker_fill" | "maker_cancel" | "maker_taker"
+        cloid: str,
+        symbol: str,
+        reason: str | None = None,
+        slippage_bps: float | None = None,
+        fill_qty: float | None = None,
+        fill_px: float | None = None,
+    ) -> None:
+        """Emit a maker-outcome log event keyed by cloid for scripts/maker_gate.py.
+
+        Phase 7d V1: V1 leaves adverse_selection_bps unmeasured (V2 wires the
+        deferred mid capture +30s post-fill). No-op when MAKER_SHADOW is off so
+        the gate's promotion experiment can be toggled by env alone.
+        """
+        if not MAKER_SHADOW or not cloid:
+            return
+        try:
+            log.info(
+                event,
+                **maker_outcome_payload(
+                    event=event,
+                    cloid=cloid,
+                    symbol=symbol,
+                    reason=reason,
+                    slippage_bps=slippage_bps,
+                    fill_qty=fill_qty,
+                    fill_px=fill_px,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "maker_outcome_emit_failed",
+                event=event,
+                cloid=cloid,
+                symbol=symbol,
+                error=str(exc),
+            )
 
     # ── Boot: seed in-memory state from on-chain positions ───────────────────
     async def _reconcile_startup(self) -> None:
@@ -922,7 +1165,50 @@ class HLEngine:
             "reduce_only": False,
             "cloid": cloid,
         }
+
+        # Phase 7d shadow: log policy-suggested action alongside heuristic POST.
+        # Runs only when MAKER_SHADOW=1 (else self._maker_shadow is None). The
+        # heuristic action is always submitted below — this block is log-only.
+        if self._maker_shadow is not None:
+            try:
+                bid, ask = st.best_bid, st.best_ask
+                if math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask > 0:
+                    mid = 0.5 * (bid + ask)
+                    spread_bps = (ask - bid) / mid * 10_000.0 if mid > 0 else 0.0
+                else:
+                    spread_bps = 0.0
+                p50, p95 = self._maker_shadow.latency_features()
+                maker_state = build_maker_state(
+                    obi=float(st.obi),
+                    log_gofi=float(st.log_gofi),
+                    mlofi=float(st.mlofi),
+                    spread_bps=spread_bps,
+                    depth_top3_bps=0.0,  # not exposed on _SymbolState yet
+                    my_rest_age_ms=0.0,  # fresh intent
+                    my_rest_dist_bps=0.0,  # posted at best
+                    latency_p50_ms=p50,
+                    latency_p95_ms=p95,
+                    queue_position_pct=0.0,
+                    inventory_notional=0.0,
+                )
+                suggestion = self._maker_shadow.suggest(maker_state, deterministic=True)
+                log.info(
+                    **maker_shadow_payload(
+                        symbol=sym,
+                        cloid=cloid.lower(),
+                        heuristic_action="POST_ALO",
+                        suggestion=suggestion,
+                        state=maker_state,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("maker_shadow_emit_failed", symbol=sym, error=str(exc))
+
+        t0_ns = time.perf_counter_ns()
         result = await self._hl.submit_order(hl_order)
+        wall_ms = (time.perf_counter_ns() - t0_ns) / 1_000_000.0
+        if self._maker_shadow is not None:
+            self._maker_shadow.record_rpc_latency(wall_ms)
         log.info("hl_maker_result", client_order_id=cid, cloid=cloid, result=result)
 
         # Detect immediate rejection — HL returns status=ok with an `error`
@@ -939,6 +1225,12 @@ class HLEngine:
                         client_order_id=cid,
                         cloid=cloid,
                         error=s["error"],
+                    )
+                    self._emit_maker_outcome(
+                        event="maker_cancel",
+                        cloid=cloid,
+                        symbol=sym,
+                        reason="inner_rejection",
                     )
                     return None
         except Exception:
@@ -975,6 +1267,32 @@ class HLEngine:
             return False
         statuses = resp.get("response", {}).get("data", {}).get("statuses", [])
         return any(isinstance(s, str) and s == "success" for s in statuses)
+
+    @staticmethod
+    def _cancel_terminal(resp: dict | None) -> bool:
+        """
+        True iff the order is definitively no longer on the book — either we
+        just canceled it, or HL reports it was never placed / already
+        canceled / already filled. Used only by the lifetime-giveup path:
+        by the time we reach this branch, any genuine fill would already
+        have cleared pending via userFills, so a persistent "never placed"
+        response indicates a ghost cloid safe to retire.
+        """
+        if HLEngine._cancel_ok(resp):
+            return True
+        if not resp or resp.get("status") != "ok":
+            return False
+        statuses = resp.get("response", {}).get("data", {}).get("statuses", [])
+        for s in statuses:
+            if isinstance(s, dict):
+                err = s.get("error", "")
+                if (
+                    "never placed" in err
+                    or "already canceled" in err
+                    or "already filled" in err
+                ):
+                    return True
+        return False
 
     def _rollback_pending(self, sym: str, is_entry: bool) -> None:
         if is_entry:
@@ -1019,17 +1337,23 @@ class HLEngine:
             )
             resp = None
 
-        if self._cancel_ok(resp):
-            # Order was resting and is now gone. Safe to clear pending and
-            # roll back memory.
+        if self._cancel_terminal(resp):
+            # Order is no longer on the book (canceled by us, or HL reports
+            # it was never placed / already canceled / already filled). By
+            # the time giveup fires, any real fill would already have
+            # cleared pending via userFills, so treat as retired.
+            self._emit_maker_outcome(
+                event="maker_cancel",
+                cloid=cloid,
+                symbol=sym,
+                reason=f"giveup:{reason}",
+            )
             self._pending_resting.pop(sym, None)
             self._rollback_pending(sym, pending["is_entry"])
             return
 
-        # Cancel reported failure — most commonly because the order just
-        # filled. Leave pending alone so the userFills WS event clears it
-        # and fires on_fill. If the order is truly gone but we don't know,
-        # the lifetime check on the next watchdog tick will pop it.
+        # Non-terminal response — unusual. Leave pending for userFills to
+        # resolve; next watchdog tick will retry.
         log.warning(
             "hl_maker_giveup_cancel_unconfirmed", symbol=sym, cloid=cloid, resp=resp
         )
@@ -1068,6 +1392,14 @@ class HLEngine:
             return
 
         new_cloid = f"0x{secrets.randbits(128):032x}"
+        # Old cloid is now off the book — emit its outcome before the new one
+        # gets registered. Joins to its original maker_shadow intent.
+        self._emit_maker_outcome(
+            event="maker_cancel",
+            cloid=old_cl,
+            symbol=sym,
+            reason="reprice",
+        )
         log.info(
             "hl_maker_reprice",
             symbol=sym,
@@ -1451,6 +1783,20 @@ class HLEngine:
         # the last chunk size (→ under-sized exit → dust residual), and
         # multi-chunk exits resurrect a phantom position after the close.
         if terminal:
+            # Maker outcome: terminal fill on the original maker_shadow intent.
+            # `crossed` distinguishes a true maker fill (False) from a fill
+            # that was actually a taker IOC sneaking through this code path
+            # (rare; would happen if a taker order's cloid collides into
+            # _pending_resting via reprice race). Treat crossed=True as taker
+            # so the gate doesn't double-credit it as a maker fill.
+            self._emit_maker_outcome(
+                event="maker_taker" if msg.get("crossed") else "maker_fill",
+                cloid=cloid_lc,
+                symbol=sym,
+                slippage_bps=slip_bps,
+                fill_qty=cumulative,
+                fill_px=fill_px,
+            )
             self._signals.on_fill(
                 client_order_id=pending["cid"],
                 symbol=sym,
@@ -1473,6 +1819,7 @@ class HLEngine:
                 # engine (HL pump rewrites coin→symbol before enqueueing).
                 if msg.get("symbol") in self._signals._state:
                     self._signals.update_orderbook(msg)
+                    self._emit_regime_shadow(msg)
                 continue
 
             if msg["type"] == "hl_fill":
@@ -1481,6 +1828,9 @@ class HLEngine:
 
             if msg["type"] != "bar":
                 continue
+
+            # Macro shadow (log-only, independent of signal / meta / resting gates).
+            self._emit_macro_shadow(msg)
 
             # Maker gate: if a resting Alo order for this symbol is still
             # awaiting a fill, don't run evaluate() — the strategy already
@@ -1491,9 +1841,24 @@ class HLEngine:
 
             bar_sym = msg.get("symbol", "")
             bar_coin = self._symbol_to_coin.get(bar_sym, "")
-            is_momentum = bar_coin in self._momentum_coins
+            is_momentum_sym = bar_coin in self._momentum_coins
 
-            if is_momentum:
+            # Phase 5 arm gate: when the bandit is live, sample an arm and
+            # veto mismatched dispatches. The bandit can still pick an arm
+            # whose bar we haven't received this tick — in that case we defer.
+            # Eligibility: hl_z/momentum fire only on their own-bucket symbols;
+            # "pairs" is satisfied by letting the pairs process consume its
+            # own budget externally, so a "pairs" pick is a no-op this tick.
+            if self._meta is not None:
+                arm = self._meta.select()
+                route_momentum = arm == MOMENTUM_TAG
+                if route_momentum != is_momentum_sym:
+                    # Wrong bar-type for the sampled arm — skip this tick.
+                    continue
+            else:
+                route_momentum = is_momentum_sym
+
+            if route_momentum:
                 # Push buffers via evaluate(), ignore mean-reversion signal
                 self._signals.evaluate(msg)
                 sig = self._signals.evaluate_momentum(msg)
@@ -1503,7 +1868,8 @@ class HLEngine:
             if sig is None:
                 continue
 
-            active_tag = MOMENTUM_TAG if is_momentum else STRATEGY_TAG
+            active_tag = MOMENTUM_TAG if route_momentum else STRATEGY_TAG
+            is_momentum = route_momentum
 
             if not self._risk_gate_ok(sig, tag=active_tag, is_momentum=is_momentum):
                 continue
@@ -1512,6 +1878,25 @@ class HLEngine:
                 continue
 
             result = await self._submit(sig)
+
+            # Phase 5: on a successful exit fill, feed pnl into the bandit.
+            if (
+                result is not None
+                and self._meta is not None
+                and sig.get("_exit_tag") is not None
+            ):
+                pnl_pct = sig.get("_exit_pnl_pct")
+                if pnl_pct is not None and not math.isnan(float(pnl_pct)):
+                    reward = float(pnl_pct) - self._meta_fee_pct
+                    self._meta.update(sig["_exit_tag"], reward)
+                    self._meta_iter += 1
+                    if self._meta_iter % self._meta_snapshot_every == 0:
+                        log.info(
+                            "meta_snapshot",
+                            iter=self._meta_iter,
+                            snapshot=self._meta.snapshot(),
+                        )
+
             if result is None:
                 # Order rejected by hl_manager (malformed / SDK error). Roll
                 # back the optimistic memory write so the next bar retries.
