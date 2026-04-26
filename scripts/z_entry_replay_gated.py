@@ -84,7 +84,7 @@ ATTRIBUTION_FILE = Path(
 )
 
 # ── Constants (copied inline from strategy/signals.py + z_entry_replay.py) ─
-NOTIONAL_PER_TRADE = 750.0
+NOTIONAL_PER_TRADE = float(os.environ.get("NOTIONAL_PER_TRADE", "750.0"))
 STOP_LOSS_PCT = 0.010  # X4
 TIME_STOP_S = 60 * 60  # X3: 1h MAX_HOLD_S
 # X1 dampers: imported from strategy.signals so /autoresearch sees fresh values
@@ -139,6 +139,19 @@ REGIME_PAUSE_SECONDS = int(
 
 # Populated by main() after bars are loaded; consulted by simulate_symbol_gated.
 _regime_trips: list[tuple[int, int]] = []
+
+# ── G6: portfolio net_cap gate (Phase A — timeline walk only) ─────────────
+# When PORTFOLIO_TIMELINE=1, main() runs simulate_portfolio_gated which
+# enforces |signed_net_notional| <= MAX_NET_NOTIONAL_REPLAY across all open
+# sim positions. Mirrors hl_engine.py:912-931 (~2K live risk_gate_net_cap
+# rejections that the per-symbol replay treats as fills).
+PORTFOLIO_TIMELINE = os.environ.get("PORTFOLIO_TIMELINE", "0") == "1"
+MAX_NET_NOTIONAL_REPLAY = float(
+    os.environ.get(
+        "MAX_NET_NOTIONAL",
+        str(_read_regime_default("MAX_NET_NOTIONAL", 200.0)),
+    )
+)
 
 
 def build_regime_trips(bars: dict) -> list[tuple[int, int]]:
@@ -522,6 +535,243 @@ def _counterfactual_pnl(
     return (cur - entry_mark) * side * qty
 
 
+# ── Portfolio-timeline simulation (Phase A: G6 net_cap support) ──────────
+def simulate_portfolio_gated(
+    ticks: dict[str, list[tuple[int, float, float, float]]],
+    allowed: set[str] | None,
+    bars,
+    thr_for,
+    sink: AttributionSink,
+) -> tuple[dict[str, float], dict[str, int], dict[str, dict], int]:
+    """Unified timeline walk across all symbols with shared portfolio state.
+
+    Returns (per_sym_pnl, per_sym_trades, per_sym_exit_reasons, n_net_cap_blocks).
+
+    Differs from simulate_symbol_gated in:
+        * Builds a single ts-sorted stream of (ts, sym, z, obi, z4) across syms.
+        * Maintains open_positions keyed by sym; computes signed net notional
+          before each entry to enforce G6 net_cap.
+        * Per-symbol state (pos, last_closed_side, exit_reasons) lives in dict.
+    All other gate logic mirrors simulate_symbol_gated 1:1.
+    """
+    # Build merged stream + per-symbol ts index for counterfactual lookup.
+    stream: list[tuple[int, str, float, float, float]] = []
+    sym_ts_lists: dict[str, list[int]] = {}
+    eligible_syms: set[str] = set()
+    for sym, ticks_sym in ticks.items():
+        if len(ticks_sym) < MIN_TICKS:
+            continue
+        if sym not in bars:
+            continue
+        if allowed is not None and sym not in allowed:
+            continue
+        eligible_syms.add(sym)
+        sym_ts_lists[sym] = [t[0] for t in ticks_sym]
+        for ts, z, obi, z4 in ticks_sym:
+            stream.append((ts, sym, z, obi, z4))
+    stream.sort(key=lambda r: r[0])
+
+    state: dict[str, dict] = {
+        sym: {
+            "pos": None,
+            "last_closed_side": 0,
+            "exit_reasons": defaultdict(int),
+            "total_pnl": 0.0,
+            "n_trades": 0,
+        }
+        for sym in eligible_syms
+    }
+    open_positions: dict[str, dict] = {}
+    n_net_cap_blocks = 0
+
+    for ts, sym, z, obi, z4 in stream:
+        s = state[sym]
+        z_entry, z_exit, z_short_entry, z_exit_short = thr_for(sym)
+        ticks_sym = ticks[sym]
+        idx = bisect_left(sym_ts_lists[sym], ts)
+
+        # ── Exit processing (if in position) ──────────────────────────────
+        pos = s["pos"]
+        if pos is not None:
+            side = pos["side"]
+            entry_ts = pos["entry_ts"]
+            entry_mark = pos["entry_mark"]
+            qty = pos["qty"]
+            age_s = (ts - entry_ts) / 1000.0
+            cur = mark_at(bars, sym, ts)
+            if cur is None:
+                continue
+            adverse = (cur - entry_mark) / entry_mark * side
+            exit_reason = None
+
+            # X1 z_revert (with live-engine dampers)
+            z_revert_candidate = False
+            if side == 1 and z >= z_exit:
+                z_revert_candidate = True
+            elif side == -1 and z <= z_exit_short:
+                z_revert_candidate = True
+            if z_revert_candidate:
+                ex = Z4H_EXIT_MAP.get(sym)
+                if ex is not None and z4 == z4:
+                    ex_long, ex_short = ex
+                    patient_block = (side == 1 and z4 < ex_long) or (
+                        side == -1 and z4 > ex_short
+                    )
+                    if patient_block:
+                        z_revert_candidate = False
+                favorable = (cur - entry_mark) / entry_mark * side
+                if z_revert_candidate and (
+                    age_s < MIN_HOLD_FOR_REVERT_S or favorable < MIN_REVERT_BPS
+                ):
+                    z_revert_candidate = False
+                if z_revert_candidate:
+                    exit_reason = "z_revert"
+
+            # X2 ratchet
+            if exit_reason is None and z4 == z4:
+                rs = pos.get("ratchet")
+                if rs is None:
+                    if side * z4 >= SHOCK_ARM:
+                        pos["ratchet"] = {
+                            "peak_abs": abs(z4),
+                            "peak_sign": side,
+                            "tranches_done": 0,
+                        }
+                else:
+                    if side * z4 > rs["peak_abs"]:
+                        rs["peak_abs"] = side * z4
+                    retrace = rs["peak_abs"] - side * z4
+                    done = rs["tranches_done"]
+                    if done == 0 and retrace >= SHOCK_STEP:
+                        rs["tranches_done"] = 1
+                        exit_reason = "ratchet_1"
+                    elif done == 1 and retrace >= 2 * SHOCK_STEP:
+                        rs["tranches_done"] = 2
+                        exit_reason = "ratchet_2"
+                    elif done == 2 and (
+                        retrace >= RATCHET_TRANCHES * SHOCK_STEP or side * z4 <= 0
+                    ):
+                        rs["tranches_done"] = RATCHET_TRANCHES
+                        exit_reason = "ratchet_final"
+
+            if exit_reason is None and adverse <= -STOP_LOSS_PCT:
+                exit_reason = "stop_loss"
+            if exit_reason is None and age_s >= TIME_STOP_S:
+                exit_reason = "time_stop"
+
+            if exit_reason is not None:
+                pnl = (cur - entry_mark) * side * qty
+                s["total_pnl"] += pnl
+                s["n_trades"] += 1
+                s["last_closed_side"] = side
+                s["exit_reasons"][exit_reason] += 1
+                s["pos"] = None
+                open_positions.pop(sym, None)
+            continue  # don't try to open on the same tick we exited on
+
+        # ── Entry processing ──────────────────────────────────────────────
+        want_long = z <= z_entry
+        want_short = z >= z_short_entry
+        if not (want_long or want_short):
+            continue
+        side = 1 if want_long else -1
+
+        # G0 regime_pause
+        if REGIME_GATE and is_regime_paused(_regime_trips, ts):
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
+            sink.record("regime_pause", sym, ts, cf, side, z)
+            continue
+
+        # G1 obi_gate
+        if OBI_DIRECTION_MODE == "signed":
+            if side * obi <= OBI_THETA:
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
+                sink.record("obi_gate", sym, ts, cf, side, z)
+                continue
+
+        # G2 trend_regime
+        sma = trend_sma_at(bars, sym, ts)
+        cur_close = mark_at(bars, sym, ts)
+        if sma is not None and cur_close is not None:
+            if side == 1 and cur_close < sma:
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
+                sink.record("trend_regime", sym, ts, cf, side, z)
+                continue
+            if side == -1 and cur_close > sma:
+                cf = _counterfactual_pnl(
+                    ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+                )
+                sink.record("trend_regime", sym, ts, cf, side, z)
+                continue
+
+        # G3 flip_guard (per-symbol last_closed_side)
+        if s["last_closed_side"] != 0 and s["last_closed_side"] == -side:
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
+            sink.record("flip_guard", sym, ts, cf, side, z)
+            s["last_closed_side"] = 0
+            continue
+
+        # G4 momentum_dedup
+        if abs(z) >= Z_MOMENTUM_ENTRY:
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
+            sink.record("momentum_dedup", sym, ts, cf, side, z)
+            continue
+
+        # Compute mark + qty for the candidate entry.
+        m = mark_at(bars, sym, ts)
+        if m is None or m <= 0:
+            continue
+        qty = NOTIONAL_PER_TRADE / m
+
+        # G6 net_cap — sum signed notional across all open sim positions at
+        # current marks; block entry if it would push |net| past the cap.
+        # Mirrors hl_engine.py:912-931 risk_gate_net_cap.
+        current_net = 0.0
+        for op_sym, op_pos in open_positions.items():
+            op_mark = mark_at(bars, op_sym, ts)
+            if op_mark is None or op_mark <= 0:
+                op_mark = op_pos["entry_mark"]
+            current_net += op_pos["side"] * op_pos["qty"] * op_mark
+        new_signed = side * qty * m
+        if abs(current_net + new_signed) > MAX_NET_NOTIONAL_REPLAY:
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
+            sink.record("net_cap", sym, ts, cf, side, z)
+            n_net_cap_blocks += 1
+            continue
+
+        # G5 z_threshold (already satisfied). OPEN.
+        pos = {
+            "side": side,
+            "entry_ts": ts,
+            "entry_mark": m,
+            "qty": qty,
+            "ratchet": None,
+        }
+        s["pos"] = pos
+        open_positions[sym] = pos
+
+    per_sym = {sym: s["total_pnl"] for sym, s in state.items() if s["n_trades"] > 0}
+    per_sym_trades = {sym: s["n_trades"] for sym, s in state.items() if s["n_trades"] > 0}
+    per_sym_exits = {
+        sym: dict(s["exit_reasons"])
+        for sym, s in state.items()
+        if s["n_trades"] > 0
+    }
+    return per_sym, per_sym_trades, per_sym_exits, n_net_cap_blocks
+
+
 # ── Gate-aware simulation ─────────────────────────────────────────────────
 def simulate_symbol_gated(
     sym: str,
@@ -753,23 +1003,36 @@ def main():
     skipped_no_bars = 0
     skipped_few_ticks = 0
 
-    # iterate deterministically
-    for sym in sorted(ticks.keys()):
-        ticks_sym = ticks[sym]
-        if len(ticks_sym) < MIN_TICKS:
-            skipped_few_ticks += 1
-            continue
-        if sym not in bars:
-            skipped_no_bars += 1
-            continue
-        if allowed is not None and sym not in allowed:
-            continue
-        thr = thresholds_for(sym)
-        pnl, n, reasons = simulate_symbol_gated(sym, ticks_sym, bars, thr, sink)
-        per_sym[sym] = pnl
-        per_sym_trades[sym] = n
-        per_sym_exit_reasons[sym] = reasons
-        total += pnl
+    # ── Phase A: portfolio-timeline path with G6 net_cap ──────────────────
+    if PORTFOLIO_TIMELINE:
+        print(
+            f"# G6 net_cap: ENABLED  "
+            f"max_net_notional=${MAX_NET_NOTIONAL_REPLAY}  "
+            f"mode=portfolio_timeline"
+        )
+        per_sym, per_sym_trades, per_sym_exit_reasons, n_net_cap = (
+            simulate_portfolio_gated(ticks, allowed, bars, thresholds_for, sink)
+        )
+        total = sum(per_sym.values())
+        print(f"# net_cap_blocks={n_net_cap}")
+    else:
+        # Default per-symbol path (legacy; preserves prior baselines).
+        for sym in sorted(ticks.keys()):
+            ticks_sym = ticks[sym]
+            if len(ticks_sym) < MIN_TICKS:
+                skipped_few_ticks += 1
+                continue
+            if sym not in bars:
+                skipped_no_bars += 1
+                continue
+            if allowed is not None and sym not in allowed:
+                continue
+            thr = thresholds_for(sym)
+            pnl, n, reasons = simulate_symbol_gated(sym, ticks_sym, bars, thr, sink)
+            per_sym[sym] = pnl
+            per_sym_trades[sym] = n
+            per_sym_exit_reasons[sym] = reasons
+            total += pnl
 
     sink.flush()
 
