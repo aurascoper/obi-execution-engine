@@ -99,6 +99,100 @@ from strategy.signals import (  # noqa: E402
     MIN_REVERT_BPS,
 )
 
+# ── G0: regime pause gate (optional, off by default) ───────────────────────
+# Mirrors hl_engine.py:140-141 + REGIME_PROXIES gating: if any proxy's 1h
+# absolute return crosses REGIME_1H_ABS_RETURN, all entries are blocked for
+# REGIME_PAUSE_SECONDS. Read tunables from env first (for grid sweeps),
+# falling back to the literal defaults in hl_engine.py.
+import re as _regex  # noqa: E402
+
+REGIME_PROXIES_REPLAY = ("BTC", "xyz:SP500")
+
+
+def _read_regime_default(key: str, fallback: float) -> float:
+    """Parse the default literal from hl_engine.py (e.g. '0.015' or '3600')."""
+    try:
+        src = (Path(_REPO_ROOT) / "hl_engine.py").read_text()
+        m = _regex.search(rf'{key}"[^"]*"([0-9.]+)"', src)
+        if m:
+            return float(m.group(1))
+    except OSError:
+        pass
+    return float(fallback)
+
+
+REGIME_GATE = os.environ.get("REGIME_GATE", "0") == "1"
+REGIME_1H_ABS_RETURN = float(
+    os.environ.get(
+        "REGIME_1H_ABS_RETURN",
+        str(_read_regime_default("REGIME_1H_ABS_RETURN", 0.015)),
+    )
+)
+REGIME_PAUSE_SECONDS = int(
+    float(
+        os.environ.get(
+            "REGIME_PAUSE_SECONDS",
+            str(_read_regime_default("REGIME_PAUSE_SECONDS", 3600)),
+        )
+    )
+)
+
+# Populated by main() after bars are loaded; consulted by simulate_symbol_gated.
+_regime_trips: list[tuple[int, int]] = []
+
+
+def build_regime_trips(bars: dict) -> list[tuple[int, int]]:
+    """Return a sorted list of (trip_ts_ms, pause_until_ms) for any tick where
+    a REGIME_PROXIES_REPLAY symbol's |1h return| crosses REGIME_1H_ABS_RETURN.
+
+    Uses the same bar interval as the rest of the replay (15m when
+    available, 1h fallback). For 15m bars, 1h-window = 4 bars back; for 1h
+    bars, 1 bar back.
+    """
+    trips: list[tuple[int, int]] = []
+    pause_ms = REGIME_PAUSE_SECONDS * 1000
+    for sym in REGIME_PROXIES_REPLAY:
+        if sym not in bars:
+            continue
+        ts_list, closes = bars[sym]
+        if len(ts_list) < 2:
+            continue
+        # Detect bar interval from the first two timestamps (in ms).
+        bar_ms = ts_list[1] - ts_list[0]
+        window_bars = max(1, int(round(3600_000 / bar_ms)))
+        for i in range(window_bars, len(ts_list)):
+            prev = closes[i - window_bars]
+            cur = closes[i]
+            if prev <= 0:
+                continue
+            ret_abs = abs(cur - prev) / prev
+            if ret_abs >= REGIME_1H_ABS_RETURN:
+                trips.append((ts_list[i], ts_list[i] + pause_ms))
+    trips.sort()
+    return trips
+
+
+def is_regime_paused(trips: list[tuple[int, int]], ts_ms: int) -> bool:
+    """True iff `ts_ms` is inside any (trip_ts, pause_until_ts) window in trips.
+
+    O(log n) via bisect on the trip_ts axis.
+    """
+    if not trips:
+        return False
+    trip_ts_only = [t[0] for t in trips]  # could pre-extract; cheap on small lists
+    j = bisect_right(trip_ts_only, ts_ms) - 1
+    while j >= 0:
+        trip_ts, pause_until = trips[j]
+        if pause_until > ts_ms:
+            return True
+        # Earlier trips have older pause_until; still walk back while we may
+        # find an overlap (windows can stack via max() in the engine; for
+        # replay we treat any covering trip as a hit).
+        if trip_ts + REGIME_PAUSE_SECONDS * 1000 < ts_ms - REGIME_PAUSE_SECONDS * 1000:
+            break
+        j -= 1
+    return False
+
 
 def _load_z4h_exit_map() -> dict[str, tuple[float, float]]:
     """Parse Z4H_EXIT_<COIN>=long,short from env.sh. Keys are normalized
@@ -550,6 +644,16 @@ def simulate_symbol_gated(
         # Record direction sign for gate checks (long=+1, short=-1)
         side = 1 if want_long else -1
 
+        # G0 regime_pause: portfolio-level pause when BTC/SP500 1h |return|
+        # crossed REGIME_1H_ABS_RETURN within the last REGIME_PAUSE_SECONDS.
+        # Off by default; enabled with REGIME_GATE=1 env (autoresearch driver).
+        if REGIME_GATE and is_regime_paused(_regime_trips, ts):
+            cf = _counterfactual_pnl(
+                ticks_sym, idx, side, bars, sym, z_exit, z_exit_short
+            )
+            sink.record("regime_pause", sym, ts, cf, side, z)
+            continue
+
         # G1 obi_gate: signed(direction · obi) >= OBI_THETA
         # Per strategy/signals.py:589-592:
         #   long  requires  obi >  +OBI_THETA
@@ -627,6 +731,18 @@ def main():
     allowed = None
     if SYMBOL_FILTER != "all":
         allowed = {_norm(s) for s in SYMBOL_FILTER.split(",")}
+
+    # G0 prep: build regime-pause trip index if the gate is enabled.
+    global _regime_trips
+    if REGIME_GATE:
+        _regime_trips = build_regime_trips(bars)
+        print(
+            f"# G0 regime_pause: ENABLED  "
+            f"thresh={REGIME_1H_ABS_RETURN}  pause={REGIME_PAUSE_SECONDS}s  "
+            f"trips={len(_regime_trips)}"
+        )
+    else:
+        _regime_trips = []
 
     sink = AttributionSink(ATTRIBUTION_FILE)
 

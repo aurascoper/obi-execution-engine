@@ -137,8 +137,8 @@ MAX_NET_NOTIONAL = float(os.environ.get("MAX_NET_NOTIONAL", "200.0"))
 # Regime pause: if BTC/USD OR xyz:SP500/USD 1h absolute return exceeds this,
 # block NEW entries for REGIME_PAUSE_SECONDS. Exits still fire. 60-bar
 # _RollingBuffer at 1m bars = exact 1h window.
-REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.015"))
-REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "3600"))
+REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.010"))
+REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "10800"))
 REGIME_PROXIES = ("BTC/USD", "xyz:SP500/USD")
 
 # ── HL venue price precision ──────────────────────────────────────────────────
