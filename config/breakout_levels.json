@@ -1,0 +1,14 @@
+{
+  "_doc": "Allowlisted breakout levels. Natives only — explicitly NO HIP-3 or builder-DEX symbols (those are the cardinality-mismatch bucket we keep paused). Levels are price thresholds; watcher emits cross_up / cross_down events when mid crosses any level in either direction.",
+  "poll_interval_s": 5,
+  "alert_log_path": "logs/breakout_alerts.jsonl",
+  "engine_log_path": "logs/hl_engine.jsonl",
+  "max_signal_tick_age_s": 60,
+  "levels": {
+    "ETH":  [2400, 2500, 2600],
+    "DOGE": [0.10, 0.12],
+    "AAVE": [98, 100, 105],
+    "BTC":  [80000, 85000, 90000],
+    "SOL":  [90, 95, 100]
+  }
+}
