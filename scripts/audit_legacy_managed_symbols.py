@@ -91,7 +91,7 @@ def configured_universe() -> set[str]:
         for line in env_file.read_text().splitlines():
             for var in ("HL_UNIVERSE=", "HIP3_UNIVERSE="):
                 if line.startswith(var):
-                    v = line[len(var):]
+                    v = line[len(var) :]
                     for tok in v.split(","):
                         s = _norm(tok.strip())
                         if s:
@@ -179,7 +179,9 @@ def hl_fills_in_window(from_ms: int, to_ms: int):
 
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     try:
-        fills = info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        fills = (
+            info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        )
     except Exception as e:
         print(f"# warn: fills fetch failed: {e}", file=sys.stderr)
         fills = []
@@ -246,7 +248,10 @@ def count_ratchet_per_sym(from_ms: int, to_ms: int) -> dict[str, int]:
             if m_ts:
                 try:
                     ts_ms = int(
-                        dt.datetime.fromisoformat(m_ts.group(1).replace(" ", "T") + "+00:00").timestamp() * 1000
+                        dt.datetime.fromisoformat(
+                            m_ts.group(1).replace(" ", "T") + "+00:00"
+                        ).timestamp()
+                        * 1000
                     )
                 except Exception:
                     ts_ms = 0
@@ -270,7 +275,10 @@ def count_topup_per_sym(from_ms: int, to_ms: int) -> dict[str, int]:
                 continue
             try:
                 ts_ms = int(
-                    dt.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp() * 1000
+                    dt.datetime.fromisoformat(
+                        m.group(1).replace("Z", "+00:00")
+                    ).timestamp()
+                    * 1000
                 )
             except Exception:
                 continue
@@ -327,19 +335,25 @@ def classify(row: dict) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--window-days", type=int, default=14)
-    ap.add_argument("--out", default=str(ROOT / "autoresearch_gated" / "legacy_audit.md"))
+    ap.add_argument(
+        "--out", default=str(ROOT / "autoresearch_gated" / "legacy_audit.md")
+    )
     args = ap.parse_args()
 
     to_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
     from_ms = to_ms - args.window_days * 86_400_000
 
-    print(f"# legacy audit — {args.window_days}d  [{from_ms}..{to_ms})", file=sys.stderr)
+    print(
+        f"# legacy audit — {args.window_days}d  [{from_ms}..{to_ms})", file=sys.stderr
+    )
 
     cfg = configured_universe()
     print(f"# configured_live: {len(cfg)} syms", file=sys.stderr)
 
     held_start = held_at_start_from_engine_log(from_ms)
-    print(f"# held @ window start (engine_log): {len(held_start)} syms", file=sys.stderr)
+    print(
+        f"# held @ window start (engine_log): {len(held_start)} syms", file=sys.stderr
+    )
 
     held_now_set = held_now()
     print(f"# held now (HL API): {len(held_now_set)} syms", file=sys.stderr)
@@ -368,10 +382,14 @@ def main():
             "n_reductions": f["n_reductions"].get(s, 0),
             "first_fill_ts": dt.datetime.fromtimestamp(
                 f["first_ts"].get(s, 0) / 1000, tz=dt.timezone.utc
-            ).strftime("%Y-%m-%d %H:%M") if f["first_ts"].get(s, 0) else "-",
+            ).strftime("%Y-%m-%d %H:%M")
+            if f["first_ts"].get(s, 0)
+            else "-",
             "last_fill_ts": dt.datetime.fromtimestamp(
                 f["last_ts"].get(s, 0) / 1000, tz=dt.timezone.utc
-            ).strftime("%Y-%m-%d %H:%M") if f["last_ts"].get(s, 0) else "-",
+            ).strftime("%Y-%m-%d %H:%M")
+            if f["last_ts"].get(s, 0)
+            else "-",
             "ratchet_tranches": ratchet.get(s, 0),
             "auto_topup_count": topup.get(s, 0),
             "manual_script_hits": manual.get(s, 0),

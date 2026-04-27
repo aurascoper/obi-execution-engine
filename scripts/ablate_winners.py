@@ -54,7 +54,9 @@ def run_validate() -> AblationResult:
     # validate_replay_fit returns 1 when ρ < 0.80 (gate fail) but the run
     # succeeded; only rc>=2 (or signals) are real errors.
     if r.returncode not in (0, 1):
-        return AblationResult("?", None, 0.0, 0.0, 0.0, f"FAIL rc={r.returncode}: {r.stderr[-200:]}")
+        return AblationResult(
+            "?", None, 0.0, 0.0, 0.0, f"FAIL rc={r.returncode}: {r.stderr[-200:]}"
+        )
     out = (r.stdout or "") + "\n" + (r.stderr or "")
     rho = None
     rt = lt = 0.0
@@ -96,7 +98,9 @@ def ablate_min_hold_revert() -> AblationResult:
         flags=re.M,
     )
     if new == body:
-        return AblationResult("min_hold_revert", None, 0.0, 0.0, 0.0, "no match — line drift?")
+        return AblationResult(
+            "min_hold_revert", None, 0.0, 0.0, 0.0, "no match — line drift?"
+        )
     with with_file_swap(sig, new):
         r = run_validate()
     r.name = "min_hold_revert (60→900)"
@@ -181,7 +185,9 @@ def main():
     print("# skipped (out-of-replay):")
     print("  shock_ratchet step/slip       — daemon, not in replay exit chain")
     print("  meta_discount γ=0.991         — META_CONTROLLER=off in production")
-    print("  regime_pause REGIME_1H_ABS_RETURN — engine-side gate, replay only with REGIME_GATE=1")
+    print(
+        "  regime_pause REGIME_1H_ABS_RETURN — engine-side gate, replay only with REGIME_GATE=1"
+    )
 
     out = ROOT / "autoresearch_gated" / "ablation_report.json"
     out.parent.mkdir(parents=True, exist_ok=True)

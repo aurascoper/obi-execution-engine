@@ -269,7 +269,9 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
-    lines.append("# Phase 4 Validation Report — gated replay vs HL closedPnl (venue truth)")
+    lines.append(
+        "# Phase 4 Validation Report — gated replay vs HL closedPnl (venue truth)"
+    )
     lines.append("")
     lines.append(f"- window: **{window_days}d**  `[{from_ms}..{to_ms})`")
     lines.append(
@@ -330,7 +332,9 @@ def main():
             f"rho_delta_vs_baseline   : {delta:+.4f}  "
             f"(baseline_hl_truth_rho={BASELINE_HL_TRUTH_RHO:.4f})"
         )
-    print(f"GATE                    : {'PASS (>=0.80)' if gate_pass else 'FAIL (<0.80)'}")
+    print(
+        f"GATE                    : {'PASS (>=0.80)' if gate_pass else 'FAIL (<0.80)'}"
+    )
     print(
         f"live ${live_sum:+.2f}  replay ${sim_sum:+.2f}  diff ${sim_sum - live_sum:+.2f}"
     )

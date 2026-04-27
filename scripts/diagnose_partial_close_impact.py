@@ -82,7 +82,9 @@ def fills_inventory(from_ms: int, to_ms: int):
 
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     try:
-        fills = info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        fills = (
+            info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        )
     except Exception as e:
         print(f"# warn: fills fetch failed: {e}", file=sys.stderr)
         fills = []
@@ -135,7 +137,8 @@ def count_ratchet(from_ms: int, to_ms: int) -> dict[str, int]:
                     ts_ms = int(
                         dt.datetime.fromisoformat(
                             m_ts.group(1).replace(" ", "T") + "+00:00"
-                        ).timestamp() * 1000
+                        ).timestamp()
+                        * 1000
                     )
                 except Exception:
                     ts_ms = 0
@@ -159,7 +162,10 @@ def count_topup(from_ms: int, to_ms: int) -> dict[str, int]:
                 continue
             try:
                 ts_ms = int(
-                    dt.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp() * 1000
+                    dt.datetime.fromisoformat(
+                        m.group(1).replace("Z", "+00:00")
+                    ).timestamp()
+                    * 1000
                 )
             except Exception:
                 continue
@@ -209,7 +215,11 @@ def run_window(window_days: int):
         hl = hl_pnl.get(s, 0.0)
         sim = sim_pnl.get(s, 0.0)
         residual = hl - sim
-        path = (n_partial.get(s, 0) > 0) or (ratchet.get(s, 0) > 0) or (topup.get(s, 0) > 0)
+        path = (
+            (n_partial.get(s, 0) > 0)
+            or (ratchet.get(s, 0) > 0)
+            or (topup.get(s, 0) > 0)
+        )
         rows.append(
             {
                 "symbol": s,
@@ -250,7 +260,9 @@ def run_window(window_days: int):
 
     n_path = sum(1 for r in rows if r["partial_close_path"])
     abs_residual_path = sum(r["abs_residual"] for r in rows if r["partial_close_path"])
-    abs_residual_other = sum(r["abs_residual"] for r in rows if not r["partial_close_path"])
+    abs_residual_other = sum(
+        r["abs_residual"] for r in rows if not r["partial_close_path"]
+    )
 
     return {
         "window_days": window_days,
@@ -302,7 +314,9 @@ def report(result: dict):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--windows", default="14,7")
-    ap.add_argument("--out", default=str(ROOT / "autoresearch_gated" / "partial_close_oracle.json"))
+    ap.add_argument(
+        "--out", default=str(ROOT / "autoresearch_gated" / "partial_close_oracle.json")
+    )
     args = ap.parse_args()
 
     windows = [int(w) for w in args.windows.split(",") if w]
@@ -345,7 +359,9 @@ def main():
             for row in r["rows"]
         ]
         rr["oracle_rho"] = {str(k): v for k, v in r["oracle_rho"].items()}
-        rr["oracle_replay_total"] = {str(k): v for k, v in r["oracle_replay_total"].items()}
+        rr["oracle_replay_total"] = {
+            str(k): v for k, v in r["oracle_replay_total"].items()
+        }
         serial.append(rr)
     out.write_text(json.dumps(serial, indent=2, default=str))
     print(f"\n# wrote {out}")

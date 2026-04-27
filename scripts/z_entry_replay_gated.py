@@ -280,7 +280,10 @@ def _load_reentry_cooldown_by_symbol(path: str) -> dict[str, int]:
     try:
         cfg = json.loads(Path(path).read_text())
     except Exception as e:
-        print(f"# WARN: cooldown-by-symbol load failed: {e}", file=__import__("sys").stderr)
+        print(
+            f"# WARN: cooldown-by-symbol load failed: {e}",
+            file=__import__("sys").stderr,
+        )
         return {}
     out: dict[str, int] = {}
     for grp in (cfg.get("groups") or {}).values():
@@ -622,7 +625,9 @@ def _side_sign(side) -> float:
     return 1.0 if side >= 0 else -1.0
 
 
-def reduce_position(position: dict, close_qty: float, px: float, ts_ms: int, reason: str) -> float:
+def reduce_position(
+    position: dict, close_qty: float, px: float, ts_ms: int, reason: str
+) -> float:
     """Realize PnL on `close_qty` units at `px` and shrink position.
 
     Returns the incremental realized PnL (signed). Caller adds this to the
@@ -762,7 +767,9 @@ def simulate_symbol_gated(
                 is_ratchet = exit_reason.startswith("ratchet")
                 is_final_ratchet = exit_reason == "ratchet_final"
                 tranche_mode = (
-                    RATCHET_EXIT_MODEL == "tranche" and is_ratchet and not is_final_ratchet
+                    RATCHET_EXIT_MODEL == "tranche"
+                    and is_ratchet
+                    and not is_final_ratchet
                 )
                 if tranche_mode:
                     fired = pos["ratchet_tranches_fired"]
@@ -770,7 +777,9 @@ def simulate_symbol_gated(
                         close_qty = pos["initial_qty"] * RATCHET_TRANCHE_FRAC
                     else:
                         close_qty = pos["qty"]
-                    increment_pnl = reduce_position(pos, close_qty, cur, ts, exit_reason)
+                    increment_pnl = reduce_position(
+                        pos, close_qty, cur, ts, exit_reason
+                    )
                     total += increment_pnl
                     pos["ratchet_tranches_fired"] += 1
                     exit_reasons[exit_reason] += 1
@@ -807,7 +816,9 @@ def simulate_symbol_gated(
                                     "pnl": pos["realized_pnl"],
                                     "reason": exit_reason,
                                     "n_reductions": len(pos["reductions"]),
-                                    "ratchet_tranches_fired": pos["ratchet_tranches_fired"],
+                                    "ratchet_tranches_fired": pos[
+                                        "ratchet_tranches_fired"
+                                    ],
                                 },
                                 separators=(",", ":"),
                             )
@@ -923,7 +934,7 @@ def simulate_symbol_gated(
         opens_per_day[day_key] += 1
         pos = {
             "symbol": sym,
-            "side": side,             # int ±1 (kept for back-compat with downstream code)
+            "side": side,  # int ±1 (kept for back-compat with downstream code)
             "qty": qty,
             "initial_qty": qty,
             "entry_px": m,
@@ -978,7 +989,10 @@ def _load_universe_live_fills(from_ms: int, to_ms: int, min_fills: int = 1) -> s
             elif isinstance(ts_raw, str):
                 try:
                     s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
-                    ts_ms = int(__import__("datetime").datetime.fromisoformat(s).timestamp() * 1000)
+                    ts_ms = int(
+                        __import__("datetime").datetime.fromisoformat(s).timestamp()
+                        * 1000
+                    )
                 except Exception:
                     continue
             else:
@@ -1008,7 +1022,10 @@ def _load_universe_entry_signals(from_ms: int, to_ms: int) -> set[str]:
             if isinstance(ts_raw, str):
                 try:
                     s = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
-                    ts_ms = int(__import__("datetime").datetime.fromisoformat(s).timestamp() * 1000)
+                    ts_ms = int(
+                        __import__("datetime").datetime.fromisoformat(s).timestamp()
+                        * 1000
+                    )
                 except Exception:
                     continue
             elif isinstance(ts_raw, (int, float)):
@@ -1144,7 +1161,9 @@ def _load_held_at_start_from_engine_log(start_ms: int) -> set[str]:
     return {s for s, q in last_szi.items() if abs(q) > eps}
 
 
-def _load_held_at_start_from_hl_history(start_ms: int, lookback_days: int = 30) -> set[str]:
+def _load_held_at_start_from_hl_history(
+    start_ms: int, lookback_days: int = 30
+) -> set[str]:
     """Reconstruct positions at start_ms by walking HL API user_fills_by_time
     over [start_ms - lookback_days, start_ms). Non-lookahead w.r.t. the
     validation window. Use when local log doesn't span far enough back."""
@@ -1166,7 +1185,10 @@ def _load_held_at_start_from_hl_history(start_ms: int, lookback_days: int = 30) 
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     from_ms = start_ms - lookback_days * 86_400_000
     try:
-        fills = info.user_fills_by_time(addr, from_ms, start_ms, aggregate_by_time=False) or []
+        fills = (
+            info.user_fills_by_time(addr, from_ms, start_ms, aggregate_by_time=False)
+            or []
+        )
     except Exception as e:
         print(f"# WARN: hl_history fills fetch failed: {e}", file=_sys.stderr)
         return set()
@@ -1267,8 +1289,7 @@ def _load_held_at_start(start_ms: int, end_ms: int) -> set[str]:
             held = _load_held_at_start_from_hl_history(start_ms)
             if held:
                 print(
-                    f"# NOTE: held reconstructed from HL API history: "
-                    f"{len(held)} syms",
+                    f"# NOTE: held reconstructed from HL API history: {len(held)} syms",
                     file=_sys.stderr,
                 )
     return held
@@ -1281,24 +1302,32 @@ def _resolve_universe(from_ms: int | None, to_ms: int | None) -> set[str] | None
         return None
     if mode == "live_fills_window":
         if from_ms is None or to_ms is None:
-            print("# WARN: live_fills_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all")
+            print(
+                "# WARN: live_fills_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all"
+            )
             return None
         return _load_universe_live_fills(from_ms, to_ms, REPLAY_MIN_LIVE_FILLS)
     if mode == "entry_signal_window":
         if from_ms is None or to_ms is None:
-            print("# WARN: entry_signal_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all")
+            print(
+                "# WARN: entry_signal_window needs REPLAY_FROM_MS/REPLAY_TO_MS; falling back to all"
+            )
             return None
         return _load_universe_entry_signals(from_ms, to_ms)
     if mode == "configured_live":
         u = _load_universe_configured_live()
         if not u:
-            print("# WARN: configured_live mode but HL_UNIVERSE/HIP3_UNIVERSE empty; falling back to all")
+            print(
+                "# WARN: configured_live mode but HL_UNIVERSE/HIP3_UNIVERSE empty; falling back to all"
+            )
             return None
         return u
     if mode == "configured_or_held":
         u = _load_universe_configured_live()
         if from_ms is None:
-            print("# WARN: configured_or_held needs REPLAY_FROM_MS; using configured_live alone")
+            print(
+                "# WARN: configured_or_held needs REPLAY_FROM_MS; using configured_live alone"
+            )
             return u or None
         held = _load_held_at_start(from_ms, to_ms or from_ms)
         if not u and not held:
@@ -1482,8 +1511,13 @@ def main():
     # ── Attribution block ──────────────────────────────────────────────────
     print("\n=== GATE ATTRIBUTION ===")
     for gate in (
-        "regime_pause", "obi_gate", "trend_regime", "flip_guard",
-        "momentum_dedup", "reentry_cooldown", "max_opens_day",
+        "regime_pause",
+        "obi_gate",
+        "trend_regime",
+        "flip_guard",
+        "momentum_dedup",
+        "reentry_cooldown",
+        "max_opens_day",
     ):
         cnt = sink.gate_counts.get(gate, 0)
         saved = sink.gate_saved.get(gate, 0.0)
@@ -1493,7 +1527,8 @@ def main():
         )
     # Structured emission for tooling — single line, parseable.
     print(
-        "REPLAY_GATE_COUNTS_JSON " + json.dumps(
+        "REPLAY_GATE_COUNTS_JSON "
+        + json.dumps(
             {"event": "replay_gate_counts", "gate_counts": dict(sink.gate_counts)},
             separators=(",", ":"),
         )

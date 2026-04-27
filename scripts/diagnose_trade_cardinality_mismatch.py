@@ -181,7 +181,10 @@ def live_sessions(from_ms: int, to_ms: int):
                 if cur_session is not None:
                     cur_session["close_ts"] = ts_ms
                     cur_session["close_px"] = px
-                    if cur_session["open_ts"] >= from_ms and cur_session["open_ts"] < to_ms:
+                    if (
+                        cur_session["open_ts"] >= from_ms
+                        and cur_session["open_ts"] < to_ms
+                    ):
                         sessions[sym].append(cur_session)
                 cur_session = None
             elif pos * new_pos < 0:
@@ -189,7 +192,10 @@ def live_sessions(from_ms: int, to_ms: int):
                 if cur_session is not None:
                     cur_session["close_ts"] = ts_ms
                     cur_session["close_px"] = px
-                    if cur_session["open_ts"] >= from_ms and cur_session["open_ts"] < to_ms:
+                    if (
+                        cur_session["open_ts"] >= from_ms
+                        and cur_session["open_ts"] < to_ms
+                    ):
                         sessions[sym].append(cur_session)
                 cur_session = {
                     "open_ts": ts_ms,
@@ -261,7 +267,9 @@ def run_window(window_days: int):
                 "hold_delta_s": abs(replay_total_hold_s - live_total_s),
                 "replay_mean_hold_s": replay_mean_hold_s,
                 "live_mean_session_s": live_mean_s,
-                "hold_ratio": (replay_mean_hold_s / live_mean_s) if live_mean_s > 0 else 0.0,
+                "hold_ratio": (replay_mean_hold_s / live_mean_s)
+                if live_mean_s > 0
+                else 0.0,
                 "replay_turnover": replay_turnover,
                 "live_turnover": live_turnover,
                 "turnover_delta": abs(replay_turnover - live_turnover),
@@ -326,15 +334,23 @@ def report(r: dict):
     if r["top10"]:
         ratios = sorted(x["open_count_ratio"] for x in r["top10"])
         med_ratio = ratios[len(ratios) // 2]
-        live_means = [x["live_mean_session_s"] for x in r["top10"] if x["live_mean_session_s"] > 0]
-        replay_means = [x["replay_mean_hold_s"] for x in r["top10"] if x["replay_mean_hold_s"] > 0]
+        live_means = [
+            x["live_mean_session_s"] for x in r["top10"] if x["live_mean_session_s"] > 0
+        ]
+        replay_means = [
+            x["replay_mean_hold_s"] for x in r["top10"] if x["replay_mean_hold_s"] > 0
+        ]
         if replay_means and live_means:
-            mean_ratio = (sum(live_means) / len(live_means)) / (sum(replay_means) / len(replay_means))
+            mean_ratio = (sum(live_means) / len(live_means)) / (
+                sum(replay_means) / len(replay_means)
+            )
         else:
             mean_ratio = None
         print(f"\n  top-10 median open_count_ratio: {med_ratio:.2f}x")
         if mean_ratio is not None:
-            print(f"  top-10 mean(live_session_s) / mean(replay_hold_s): {mean_ratio:.2f}x")
+            print(
+                f"  top-10 mean(live_session_s) / mean(replay_hold_s): {mean_ratio:.2f}x"
+            )
 
 
 def verdict(results):
@@ -349,26 +365,38 @@ def verdict(results):
             continue
         ratios = sorted(x["open_count_ratio"] for x in top)
         med_ratio = ratios[len(ratios) // 2]
-        live_means = [x["live_mean_session_s"] for x in top if x["live_mean_session_s"] > 0]
-        replay_means = [x["replay_mean_hold_s"] for x in top if x["replay_mean_hold_s"] > 0]
+        live_means = [
+            x["live_mean_session_s"] for x in top if x["live_mean_session_s"] > 0
+        ]
+        replay_means = [
+            x["replay_mean_hold_s"] for x in top if x["replay_mean_hold_s"] > 0
+        ]
         hold_ratio_top = None
         if replay_means and live_means:
-            hold_ratio_top = (sum(live_means) / len(live_means)) / (sum(replay_means) / len(replay_means))
+            hold_ratio_top = (sum(live_means) / len(live_means)) / (
+                sum(replay_means) / len(replay_means)
+            )
         flags = []
         # Falsifier check
         if (
-            sp_ratio is not None and sp_delta is not None
-            and abs(sp_ratio) < 0.35 and abs(sp_delta) < 0.35
+            sp_ratio is not None
+            and sp_delta is not None
+            and abs(sp_ratio) < 0.35
+            and abs(sp_delta) < 0.35
             and med_ratio < 3.0
         ):
             flags.append("FALSIFIED — both Spearman <0.35 and top median ratio <3×")
         # Confirmed checks
         confirmed = False
         if sp_ratio is not None and sp_ratio >= 0.50:
-            flags.append(f"Spearman(|res|, open_count_ratio)={sp_ratio:+.3f} ≥+0.50 (confirmed)")
+            flags.append(
+                f"Spearman(|res|, open_count_ratio)={sp_ratio:+.3f} ≥+0.50 (confirmed)"
+            )
             confirmed = True
         if med_ratio >= 5.0:
-            flags.append(f"top-10 median open_count_ratio={med_ratio:.1f}x ≥5× (confirmed)")
+            flags.append(
+                f"top-10 median open_count_ratio={med_ratio:.1f}x ≥5× (confirmed)"
+            )
             confirmed = True
         if hold_ratio_top is not None and hold_ratio_top >= 5.0:
             flags.append(
@@ -386,7 +414,9 @@ def verdict(results):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--windows", default="14,7")
-    ap.add_argument("--out", default=str(ROOT / "autoresearch_gated" / "cardinality_mismatch.json"))
+    ap.add_argument(
+        "--out", default=str(ROOT / "autoresearch_gated" / "cardinality_mismatch.json")
+    )
     args = ap.parse_args()
 
     windows = [int(w) for w in args.windows.split(",") if w]

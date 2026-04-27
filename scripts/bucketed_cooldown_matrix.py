@@ -33,9 +33,32 @@ sys.path.insert(0, str(ROOT))
 from scripts.validate_replay_fit import parse_hl_closed_pnl, pearson  # noqa: E402
 
 LONG_HOLD_NATIVES = {
-    "AAVE", "ETH", "BTC", "SOL", "LDO", "CRV", "BNB", "SUI", "TAO",
-    "DOGE", "LINK", "ADA", "AVAX", "LTC", "BCH", "DOT", "UNI", "POL",
-    "RENDER", "FIL", "HYPE", "NEAR", "ENA", "PAXG", "ARB", "XRP",
+    "AAVE",
+    "ETH",
+    "BTC",
+    "SOL",
+    "LDO",
+    "CRV",
+    "BNB",
+    "SUI",
+    "TAO",
+    "DOGE",
+    "LINK",
+    "ADA",
+    "AVAX",
+    "LTC",
+    "BCH",
+    "DOT",
+    "UNI",
+    "POL",
+    "RENDER",
+    "FIL",
+    "HYPE",
+    "NEAR",
+    "ENA",
+    "PAXG",
+    "ARB",
+    "XRP",
 }
 
 
@@ -81,7 +104,9 @@ def run_replay(env_overrides: dict, from_ms: int, to_ms: int):
     return pnl, dict(trades_by_sym), n_trades
 
 
-def measure(name: str, env_overrides: dict, window_days: int, baseline_trades=None) -> dict:
+def measure(
+    name: str, env_overrides: dict, window_days: int, baseline_trades=None
+) -> dict:
     to_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
     from_ms = to_ms - window_days * 86_400_000
     sim_pnl, trades_by_sym, n_trades = run_replay(env_overrides, from_ms, to_ms)
@@ -91,13 +116,15 @@ def measure(name: str, env_overrides: dict, window_days: int, baseline_trades=No
 
     rows = []
     for s in shared:
-        rows.append({
-            "sym": s,
-            "hl": hl_pnl[s],
-            "sim": sim_pnl[s],
-            "residual": hl_pnl[s] - sim_pnl[s],
-            "abs_residual": abs(hl_pnl[s] - sim_pnl[s]),
-        })
+        rows.append(
+            {
+                "sym": s,
+                "hl": hl_pnl[s],
+                "sim": sim_pnl[s],
+                "residual": hl_pnl[s] - sim_pnl[s],
+                "abs_residual": abs(hl_pnl[s] - sim_pnl[s]),
+            }
+        )
     rows.sort(key=lambda r: -r["abs_residual"])
 
     # Per-symbol replay PnL for delta computation
@@ -131,14 +158,24 @@ def measure(name: str, env_overrides: dict, window_days: int, baseline_trades=No
 
 
 CONFIGS = [
-    ("baseline",                {}),
-    ("global_3600",             {"MIN_REENTRY_COOLDOWN_S": "3600"}),
-    ("bucketed_1800",           {"REENTRY_COOLDOWN_BY_SYMBOL":
-                                 "config/gates/reentry_cooldown_by_symbol_1800.json"}),
-    ("bucketed_3600",           {"REENTRY_COOLDOWN_BY_SYMBOL":
-                                 "config/gates/reentry_cooldown_by_symbol.json"}),
-    ("bucketed_7200",           {"REENTRY_COOLDOWN_BY_SYMBOL":
-                                 "config/gates/reentry_cooldown_by_symbol_7200.json"}),
+    ("baseline", {}),
+    ("global_3600", {"MIN_REENTRY_COOLDOWN_S": "3600"}),
+    (
+        "bucketed_1800",
+        {
+            "REENTRY_COOLDOWN_BY_SYMBOL": "config/gates/reentry_cooldown_by_symbol_1800.json"
+        },
+    ),
+    (
+        "bucketed_3600",
+        {"REENTRY_COOLDOWN_BY_SYMBOL": "config/gates/reentry_cooldown_by_symbol.json"},
+    ),
+    (
+        "bucketed_7200",
+        {
+            "REENTRY_COOLDOWN_BY_SYMBOL": "config/gates/reentry_cooldown_by_symbol_7200.json"
+        },
+    ),
 ]
 
 
@@ -171,18 +208,26 @@ def main():
         aave_row = next((r for r in b["rows"] if r["sym"] == "AAVE"), None)
         base_aave[w] = aave_row["residual"] if aave_row else 0.0
         base_top10_abs[w] = sum(r["abs_residual"] for r in b["rows"][:10])
-        base_xyz_abs[w] = sum(r["abs_residual"] for r in b["rows"] if is_xyz_equity(r["sym"]))
+        base_xyz_abs[w] = sum(
+            r["abs_residual"] for r in b["rows"] if is_xyz_equity(r["sym"])
+        )
 
     for name, _ in CONFIGS:
         for w in (14, 7):
             r = results[name][w]
             base_rho = results["baseline"][w]["rho"]
-            d_rho = (r["rho"] - base_rho) if (r["rho"] is not None and base_rho is not None) else None
+            d_rho = (
+                (r["rho"] - base_rho)
+                if (r["rho"] is not None and base_rho is not None)
+                else None
+            )
             d_s = f"{d_rho:+.4f}" if d_rho is not None else "  N/A"
             aave_row = next((x for x in r["rows"] if x["sym"] == "AAVE"), None)
             aave_res = aave_row["residual"] if aave_row else 0.0
             top10_abs = sum(x["abs_residual"] for x in r["rows"][:10])
-            xyz_abs = sum(x["abs_residual"] for x in r["rows"] if is_xyz_equity(x["sym"]))
+            xyz_abs = sum(
+                x["abs_residual"] for x in r["rows"] if is_xyz_equity(x["sym"])
+            )
             print(
                 f"  {name:22s}  {w:>3d}  {r['rho']:+.4f}  {d_s}  "
                 f"${r['replay_total']:>+8.2f}  {r['n_trades']:>6d}  "
@@ -207,7 +252,9 @@ def main():
         aave_delta_abs = abs(aave_res_now) - abs(base_aave[14])
         top10_abs_now = sum(x["abs_residual"] for x in r14["rows"][:10])
         top10_delta = top10_abs_now - base_top10_abs[14]
-        xyz_abs_now = sum(x["abs_residual"] for x in r14["rows"] if is_xyz_equity(x["sym"]))
+        xyz_abs_now = sum(
+            x["abs_residual"] for x in r14["rows"] if is_xyz_equity(x["sym"])
+        )
         xyz_delta = xyz_abs_now - base_xyz_abs[14]
         long_hold_del = r14["long_hold_deleted_pnl"]
 
@@ -215,10 +262,21 @@ def main():
             ("14d Δρ ≥ +0.04", d14 >= 0.04, f"{d14:+.4f}"),
             ("7d ρ doesn't drop >0.02", d7 >= -0.02, f"{d7:+.4f}"),
             ("AAVE Δ|residual| < $25", aave_delta_abs < 25.0, f"{aave_delta_abs:+.2f}"),
-            ("top-10 abs residual improves ≥ $50", top10_delta <= -50.0, f"{top10_delta:+.2f}"),
-            ("xyz equity bucket residual improves", xyz_delta < 0.0, f"{xyz_delta:+.2f}"),
-            ("longhold deleted counterfactual PnL not strongly positive (≤ +$10)",
-             long_hold_del <= 10.0, f"{long_hold_del:+.2f}"),
+            (
+                "top-10 abs residual improves ≥ $50",
+                top10_delta <= -50.0,
+                f"{top10_delta:+.2f}",
+            ),
+            (
+                "xyz equity bucket residual improves",
+                xyz_delta < 0.0,
+                f"{xyz_delta:+.2f}",
+            ),
+            (
+                "longhold deleted counterfactual PnL not strongly positive (≤ +$10)",
+                long_hold_del <= 10.0,
+                f"{long_hold_del:+.2f}",
+            ),
         ]
         verdict = "ACCEPT" if all(ok for _, ok, _ in rules) else "REJECT"
         print(f"\n  -- {name} --")

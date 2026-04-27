@@ -59,15 +59,23 @@ def main() -> int:
         )
 
     # ZEC must be 3600s (auto_topup watcher)
-    check("ZEC cooldown=3600 (auto_topup watcher)", cooldown.get("ZEC", default) == 3600)
+    check(
+        "ZEC cooldown=3600 (auto_topup watcher)", cooldown.get("ZEC", default) == 3600
+    )
 
     # Default must be 0
     check("default cooldown = 0", default == 0)
 
     # Module-level default behavior: when REENTRY_COOLDOWN_BY_SYMBOL is unset,
     # the replay's MIN_REENTRY_COOLDOWN_S also defaults to 0 (off).
-    saved = {k: os.environ.pop(k, None) for k in
-             ("MIN_REENTRY_COOLDOWN_S", "REENTRY_COOLDOWN_BY_SYMBOL", "MAX_OPENS_PER_SYMBOL_PER_DAY")}
+    saved = {
+        k: os.environ.pop(k, None)
+        for k in (
+            "MIN_REENTRY_COOLDOWN_S",
+            "REENTRY_COOLDOWN_BY_SYMBOL",
+            "MAX_OPENS_PER_SYMBOL_PER_DAY",
+        )
+    }
     try:
         # Reload module fresh to read defaults
         for mod_name in list(sys.modules):

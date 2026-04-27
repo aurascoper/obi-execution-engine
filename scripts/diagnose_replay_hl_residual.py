@@ -84,7 +84,9 @@ def hl_closed_pnl(from_ms: int, to_ms: int):
 
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     try:
-        fills = info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        fills = (
+            info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False) or []
+        )
     except Exception as e:
         print(f"# warn: user_fills_by_time failed: {e}", file=sys.stderr)
         fills = []
@@ -137,7 +139,9 @@ def replay_per_sym(from_ms: int, to_ms: int) -> dict[str, float]:
     return data
 
 
-def count_event_per_sym(path: Path, event_name: str, from_ms: int, to_ms: int) -> dict[str, int]:
+def count_event_per_sym(
+    path: Path, event_name: str, from_ms: int, to_ms: int
+) -> dict[str, int]:
     """Count occurrences of `event_name` per symbol in [from_ms, to_ms)."""
     cnt = defaultdict(int)
     if not path.exists():
@@ -163,7 +167,9 @@ def count_event_per_sym(path: Path, event_name: str, from_ms: int, to_ms: int) -
     return dict(cnt)
 
 
-def grep_log_per_sym(path: Path, tag_pattern: str, from_ms: int, to_ms: int) -> dict[str, int]:
+def grep_log_per_sym(
+    path: Path, tag_pattern: str, from_ms: int, to_ms: int
+) -> dict[str, int]:
     """Grep a non-jsonl log for tag=<pattern> lines and bucket per-symbol."""
     cnt = defaultdict(int)
     if not path.exists():
@@ -212,7 +218,9 @@ def classify(row: dict) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--window-days", type=int, default=14)
-    ap.add_argument("--out", default=str(ROOT / "autoresearch_gated" / "residual_report.md"))
+    ap.add_argument(
+        "--out", default=str(ROOT / "autoresearch_gated" / "residual_report.md")
+    )
     args = ap.parse_args()
 
     to_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
@@ -244,7 +252,10 @@ def main():
                 if ts_match:
                     try:
                         ts_ms = int(
-                            dt.datetime.fromisoformat(ts_match.group(1) + "+00:00").timestamp() * 1000
+                            dt.datetime.fromisoformat(
+                                ts_match.group(1) + "+00:00"
+                            ).timestamp()
+                            * 1000
                         )
                     except Exception:
                         ts_ms = 0
@@ -316,11 +327,15 @@ def main():
     ]
     for b, v in sorted(bucket_totals.items(), key=lambda kv: -kv[1]["abs"]):
         pct = (v["abs"] / total_abs * 100.0) if total_abs > 0 else 0.0
-        lines.append(f"| {b} | {v['n']} | {v['abs']:.2f} | {pct:.1f}% | {v['signed']:+.2f} |")
+        lines.append(
+            f"| {b} | {v['n']} | {v['abs']:.2f} | {pct:.1f}% | {v['signed']:+.2f} |"
+        )
     lines.append("")
     lines.append("## Per-symbol detail (top 30 by |residual|)")
     lines.append("")
-    lines.append("| # | sym | HL$ gross | fees | net | replay$ | residual | fills | partial | topup | ratchet | bucket |")
+    lines.append(
+        "| # | sym | HL$ gross | fees | net | replay$ | residual | fills | partial | topup | ratchet | bucket |"
+    )
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows[:30]:
         lines.append(
@@ -340,7 +355,9 @@ def main():
         print(
             f"  {b:22s}  n={v['n']:3d}  abs=${v['abs']:9.2f}  {pct:5.1f}%  signed=${v['signed']:+8.2f}"
         )
-    print(f"  {'TOTAL':22s}  n={len(rows):3d}  abs=${total_abs:9.2f}          signed=${total_signed:+8.2f}")
+    print(
+        f"  {'TOTAL':22s}  n={len(rows):3d}  abs=${total_abs:9.2f}          signed=${total_signed:+8.2f}"
+    )
     print(f"\n# wrote {out}")
     return 0
 

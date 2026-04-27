@@ -141,8 +141,15 @@ def run_one(env_overrides: dict, window_days: int, focus_syms: list[str]) -> dic
     rows = []
     for s in shared:
         residual = hl_pnl[s] - sim_pnl[s]
-        rows.append({"sym": s, "residual": residual, "abs_residual": abs(residual),
-                     "hl": hl_pnl[s], "sim": sim_pnl[s]})
+        rows.append(
+            {
+                "sym": s,
+                "residual": residual,
+                "abs_residual": abs(residual),
+                "hl": hl_pnl[s],
+                "sim": sim_pnl[s],
+            }
+        )
     rows.sort(key=lambda r: -r["abs_residual"])
 
     focus = {}
@@ -159,7 +166,8 @@ def run_one(env_overrides: dict, window_days: int, focus_syms: list[str]) -> dic
     open_count_ratios = []
     for r2 in rows[:10]:
         n_replay = sum(
-            1 for t in [None]  # placeholder; we already know totals
+            1
+            for t in [None]  # placeholder; we already know totals
         )
         # Use sim_pnl-derived count proxy: we don't keep per-sym opens easily;
         # use n_trades aggregate ratio instead. For top-10 use live session
@@ -184,13 +192,13 @@ def run_one(env_overrides: dict, window_days: int, focus_syms: list[str]) -> dic
 
 
 CONFIGS = [
-    ("baseline",                    {}),
-    ("cooldown_900s",               {"MIN_REENTRY_COOLDOWN_S": "900"}),
-    ("cooldown_1800s",              {"MIN_REENTRY_COOLDOWN_S": "1800"}),
-    ("cooldown_3600s",              {"MIN_REENTRY_COOLDOWN_S": "3600"}),
-    ("cooldown_7200s",              {"MIN_REENTRY_COOLDOWN_S": "7200"}),
-    ("max_opens_per_day_3",         {"MAX_OPENS_PER_SYMBOL_PER_DAY": "3"}),
-    ("max_opens_per_day_1_DIAG",    {"MAX_OPENS_PER_SYMBOL_PER_DAY": "1"}),
+    ("baseline", {}),
+    ("cooldown_900s", {"MIN_REENTRY_COOLDOWN_S": "900"}),
+    ("cooldown_1800s", {"MIN_REENTRY_COOLDOWN_S": "1800"}),
+    ("cooldown_3600s", {"MIN_REENTRY_COOLDOWN_S": "3600"}),
+    ("cooldown_7200s", {"MIN_REENTRY_COOLDOWN_S": "7200"}),
+    ("max_opens_per_day_3", {"MAX_OPENS_PER_SYMBOL_PER_DAY": "3"}),
+    ("max_opens_per_day_1_DIAG", {"MAX_OPENS_PER_SYMBOL_PER_DAY": "1"}),
 ]
 
 FOCUS = ["ZEC", "AAVE", "xyz:MSTR"]
@@ -204,7 +212,10 @@ def main():
             r = run_one(env, w, FOCUS)
             rows.append({"name": name, "env": env, **r})
 
-    base = {w: next(r for r in rows if r["name"] == "baseline" and r["window_days"] == w) for w in (14, 7)}
+    base = {
+        w: next(r for r in rows if r["name"] == "baseline" and r["window_days"] == w)
+        for w in (14, 7)
+    }
 
     print()
     print(
@@ -215,7 +226,11 @@ def main():
     print("  " + "-" * 130)
     for r in rows:
         b = base[r["window_days"]]
-        d_rho = (r["rho"] - b["rho"]) if (r["rho"] is not None and b["rho"] is not None) else None
+        d_rho = (
+            (r["rho"] - b["rho"])
+            if (r["rho"] is not None and b["rho"] is not None)
+            else None
+        )
         d_s = f"{d_rho:+.4f}" if d_rho is not None else "  N/A"
         print(
             f"  {r['name']:28s}  {r['window_days']:>3d}  {r['rho']:+.4f}  {d_s}  "
@@ -233,7 +248,7 @@ def main():
         if name == "baseline":
             continue
         r14 = next(r for r in rows if r["name"] == name and r["window_days"] == 14)
-        r7  = next(r for r in rows if r["name"] == name and r["window_days"] == 7)
+        r7 = next(r for r in rows if r["name"] == name and r["window_days"] == 7)
         b14 = base[14]
         b7 = base[7]
         d14 = r14["rho"] - b14["rho"]
@@ -250,12 +265,16 @@ def main():
         rules = [
             ("14d Δρ ≥ +0.04", d14 >= 0.04, f"{d14:+.4f}"),
             ("7d ρ doesn't drop >0.02", d7 >= -0.02, f"{d7:+.4f}"),
-            ("focus syms |residual| no worse",
-             focus_better,
-             "+".join(f"{s}={r14['focus'][s]['residual']:+.0f}" for s in FOCUS)),
-            ("replay$ drift ≤ 30% of live$",
-             replay_share <= 0.30,
-             f"{replay_share:.1%}  drift=${replay_drift:+.0f}"),
+            (
+                "focus syms |residual| no worse",
+                focus_better,
+                "+".join(f"{s}={r14['focus'][s]['residual']:+.0f}" for s in FOCUS),
+            ),
+            (
+                "replay$ drift ≤ 30% of live$",
+                replay_share <= 0.30,
+                f"{replay_share:.1%}  drift=${replay_drift:+.0f}",
+            ),
         ]
         verdict = "ACCEPT" if all(ok for _, ok, _ in rules) else "REJECT"
         if "DIAG" in name:

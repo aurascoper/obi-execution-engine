@@ -69,7 +69,7 @@ FIRE_RE = re.compile(
 
 def parse_topup_events(from_ms: int, to_ms: int):
     """Walk /tmp/auto_topup.log and return per-symbol:
-        n_fires, topup_notional_sum (USD), first_ts, last_ts.
+    n_fires, topup_notional_sum (USD), first_ts, last_ts.
     """
     n_fires = defaultdict(int)
     topup_notional = defaultdict(float)
@@ -84,7 +84,10 @@ def parse_topup_events(from_ms: int, to_ms: int):
                 continue
             try:
                 ts_ms = int(
-                    dt.datetime.fromisoformat(m.group("ts").replace("Z", "+00:00")).timestamp() * 1000
+                    dt.datetime.fromisoformat(
+                        m.group("ts").replace("Z", "+00:00")
+                    ).timestamp()
+                    * 1000
                 )
             except Exception:
                 continue
@@ -166,7 +169,9 @@ def run_window(window_days: int):
         notional_initial = NOTIONAL_PER_TRADE * max(n_opens.get(s, 1), 1)
         notional_topup = topup_notional.get(s, 0.0)
         multiplier = (
-            (notional_initial + notional_topup) / notional_initial if topup_active else 1.0
+            (notional_initial + notional_topup) / notional_initial
+            if topup_active
+            else 1.0
         )
         rows.append(
             {
@@ -180,7 +185,9 @@ def run_window(window_days: int):
                 "topup_notional_sum": notional_topup,
                 "n_replay_opens": n_opens.get(s, 0),
                 "initial_replay_notional": notional_initial,
-                "topup_to_replay_ratio": (notional_topup / notional_initial) if notional_initial > 0 else 0.0,
+                "topup_to_replay_ratio": (notional_topup / notional_initial)
+                if notional_initial > 0
+                else 0.0,
                 "multiplier_uncapped": multiplier,
                 "first_topup": first_ts.get(s),
                 "last_topup": last_ts.get(s),
@@ -266,7 +273,9 @@ def report(r: dict):
                 cap_s = "uncapped" if cap == float("inf") else f"≤{cap:.2f}"
                 v = r["zec_oracle_by_cap"][cap]
                 resid = (r["zec_hl"] - v) if r["zec_hl"] is not None else None
-                base_resid = r["zec_hl"] - r["zec_sim_base"] if r["zec_hl"] is not None else 0
+                base_resid = (
+                    r["zec_hl"] - r["zec_sim_base"] if r["zec_hl"] is not None else 0
+                )
                 imp = (
                     1.0 - abs(resid) / abs(base_resid)
                     if base_resid not in (0, None) and resid is not None
@@ -298,7 +307,9 @@ def report(r: dict):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--windows", default="14,7")
-    ap.add_argument("--out", default=str(ROOT / "autoresearch_gated" / "topup_vwap_oracle.json"))
+    ap.add_argument(
+        "--out", default=str(ROOT / "autoresearch_gated" / "topup_vwap_oracle.json")
+    )
     args = ap.parse_args()
 
     windows = [int(w) for w in args.windows.split(",") if w]
@@ -358,7 +369,9 @@ def main():
     for r in results:
         rr = dict(r)
         rr["oracle_rho"] = {str(k): v for k, v in r["oracle_rho"].items()}
-        rr["oracle_replay_total"] = {str(k): v for k, v in r["oracle_replay_total"].items()}
+        rr["oracle_replay_total"] = {
+            str(k): v for k, v in r["oracle_replay_total"].items()
+        }
         rr["zec_oracle_by_cap"] = {str(k): v for k, v in r["zec_oracle_by_cap"].items()}
         serial.append(rr)
     out.write_text(json.dumps(serial, indent=2, default=str))

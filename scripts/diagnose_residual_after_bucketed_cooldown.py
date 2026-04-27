@@ -147,7 +147,9 @@ def live_session_stats(from_ms: int, to_ms: int):
         if cur_open is not None:
             sessions.append((cur_open, to_ms))
         n_sess = len(sessions)
-        mean_s = sum((c - o) / 1000 for o, c in sessions) / n_sess if n_sess > 0 else 0.0
+        mean_s = (
+            sum((c - o) / 1000 for o, c in sessions) / n_sess if n_sess > 0 else 0.0
+        )
         out[sym] = {"n_sessions": n_sess, "mean_session_s": mean_s}
     return out
 
@@ -167,7 +169,10 @@ def count_ratchet(from_ms: int, to_ms: int) -> dict[str, int]:
             if m_ts:
                 try:
                     ts_ms = int(
-                        dt.datetime.fromisoformat(m_ts.group(1).replace(" ", "T") + "+00:00").timestamp() * 1000
+                        dt.datetime.fromisoformat(
+                            m_ts.group(1).replace(" ", "T") + "+00:00"
+                        ).timestamp()
+                        * 1000
                     )
                 except Exception:
                     ts_ms = 0
@@ -191,7 +196,10 @@ def count_topup(from_ms: int, to_ms: int) -> dict[str, int]:
                 continue
             try:
                 ts_ms = int(
-                    dt.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp() * 1000
+                    dt.datetime.fromisoformat(
+                        m.group(1).replace("Z", "+00:00")
+                    ).timestamp()
+                    * 1000
                 )
             except Exception:
                 continue
@@ -237,22 +245,24 @@ def main():
         exit_reasons = defaultdict(int)
         for t in ts:
             exit_reasons[t.get("reason", "?")] += 1
-        rows.append({
-            "sym": s,
-            "bucket": buckets.get(s, "other"),
-            "hl": hl_pnl[s],
-            "sim": pnl[s],
-            "residual": hl_pnl[s] - pnl[s],
-            "abs_residual": abs(hl_pnl[s] - pnl[s]),
-            "n_replay_opens": n_replay,
-            "n_live_sessions": ls["n_sessions"],
-            "mean_replay_hold_h": mean_replay_hold_h,
-            "mean_live_session_h": ls["mean_session_s"] / 3600,
-            "ratchet_count": ratchet.get(s, 0),
-            "auto_topup_count": topup.get(s, 0),
-            "manual_close_evidence": manual_evidence.get(s, []),
-            "exit_reasons": dict(exit_reasons),
-        })
+        rows.append(
+            {
+                "sym": s,
+                "bucket": buckets.get(s, "other"),
+                "hl": hl_pnl[s],
+                "sim": pnl[s],
+                "residual": hl_pnl[s] - pnl[s],
+                "abs_residual": abs(hl_pnl[s] - pnl[s]),
+                "n_replay_opens": n_replay,
+                "n_live_sessions": ls["n_sessions"],
+                "mean_replay_hold_h": mean_replay_hold_h,
+                "mean_live_session_h": ls["mean_session_s"] / 3600,
+                "ratchet_count": ratchet.get(s, 0),
+                "auto_topup_count": topup.get(s, 0),
+                "manual_close_evidence": manual_evidence.get(s, []),
+                "exit_reasons": dict(exit_reasons),
+            }
+        )
     rows.sort(key=lambda r: -r["abs_residual"])
     for i, r in enumerate(rows):
         r["abs_residual_rank"] = i + 1
@@ -284,7 +294,8 @@ def main():
     for r in rows[:20]:
         manual = "Y" if r["manual_close_evidence"] else "n"
         exits_compact = "+".join(
-            f"{k[:4]}={v}" for k, v in sorted(r["exit_reasons"].items(), key=lambda kv: -kv[1])[:3]
+            f"{k[:4]}={v}"
+            for k, v in sorted(r["exit_reasons"].items(), key=lambda kv: -kv[1])[:3]
         )
         print(
             f"  {r['abs_residual_rank']:>2d}  {r['sym']:<14s}  {r['bucket']:<26s}  "
@@ -296,10 +307,16 @@ def main():
 
     out = ROOT / "autoresearch_gated" / "residual_after_bucketed_cooldown.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({
-        "buckets": dict(bucket_abs),
-        "rows": rows,
-    }, indent=2, default=str))
+    out.write_text(
+        json.dumps(
+            {
+                "buckets": dict(bucket_abs),
+                "rows": rows,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     print(f"\n# wrote {out}")
     return 0
 

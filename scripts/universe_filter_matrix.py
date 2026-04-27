@@ -77,7 +77,9 @@ def run(mode: str) -> tuple[float | None, float, float, int]:
 
 
 def main():
-    print(f"# universe-filter matrix — window {WINDOW_DAYS}d, ground truth = HL closedPnl")
+    print(
+        f"# universe-filter matrix — window {WINDOW_DAYS}d, ground truth = HL closedPnl"
+    )
     print()
     modes = [
         "all",
@@ -115,15 +117,23 @@ def main():
     deploy = next((r for r in rows if r[0] == "configured_or_held"), None)
     if deploy_strict and deploy_strict[1] is not None and base_rho is not None:
         d_strict = deploy_strict[1] - base_rho
-        print(f"  entry_policy_ρ      = {deploy_strict[1]:.4f}  (Δ={d_strict:+.4f})  configured_live, narrow")
+        print(
+            f"  entry_policy_ρ      = {deploy_strict[1]:.4f}  (Δ={d_strict:+.4f})  configured_live, narrow"
+        )
     if diag and diag[1] is not None and base_rho is not None:
         d_diag = diag[1] - base_rho
-        d_deploy = (deploy[1] - base_rho) if (deploy and deploy[1] is not None) else None
+        d_deploy = (
+            (deploy[1] - base_rho) if (deploy and deploy[1] is not None) else None
+        )
         print("=== verdict ===")
         if d_diag >= 0.05:
-            print(f"  Δρ(live_fills_window) = {d_diag:+.4f} >= +0.05  → phantom-symbol mismatch CONFIRMED")
+            print(
+                f"  Δρ(live_fills_window) = {d_diag:+.4f} >= +0.05  → phantom-symbol mismatch CONFIRMED"
+            )
         else:
-            print(f"  Δρ(live_fills_window) = {d_diag:+.4f}  → phantom-symbol effect smaller than expected")
+            print(
+                f"  Δρ(live_fills_window) = {d_diag:+.4f}  → phantom-symbol effect smaller than expected"
+            )
         if d_deploy is not None and deploy is not None:
             print(
                 f"  production_state_ρ  = {deploy[1]:.4f}  (Δ={d_deploy:+.4f})  configured_or_held, deployable"

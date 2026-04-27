@@ -64,7 +64,8 @@ def ratchet_active_syms(from_ms: int, to_ms: int) -> set[str]:
                     ts_ms = int(
                         dt.datetime.fromisoformat(
                             m_ts.group(1).replace(" ", "T") + "+00:00"
-                        ).timestamp() * 1000
+                        ).timestamp()
+                        * 1000
                     )
                 except Exception:
                     ts_ms = 0
@@ -137,13 +138,23 @@ def measure(mode_name: str, env_overrides: dict, window_days: int) -> dict:
 
 
 MODES = [
-    ("full",                   {"RATCHET_EXIT_MODEL": "full"}),
-    ("tranche_f=0.333_N=3",    {"RATCHET_EXIT_MODEL": "tranche",
-                                "RATCHET_TRANCHE_FRAC": "0.333333",
-                                "RATCHET_TRANCHES_TOTAL": "3"}),
-    ("tranche_f=0.5_N=2",      {"RATCHET_EXIT_MODEL": "tranche",
-                                "RATCHET_TRANCHE_FRAC": "0.5",
-                                "RATCHET_TRANCHES_TOTAL": "2"}),
+    ("full", {"RATCHET_EXIT_MODEL": "full"}),
+    (
+        "tranche_f=0.333_N=3",
+        {
+            "RATCHET_EXIT_MODEL": "tranche",
+            "RATCHET_TRANCHE_FRAC": "0.333333",
+            "RATCHET_TRANCHES_TOTAL": "3",
+        },
+    ),
+    (
+        "tranche_f=0.5_N=2",
+        {
+            "RATCHET_EXIT_MODEL": "tranche",
+            "RATCHET_TRANCHE_FRAC": "0.5",
+            "RATCHET_TRANCHES_TOTAL": "2",
+        },
+    ),
 ]
 
 
@@ -168,7 +179,11 @@ def main():
     for mode_name, _ in MODES:
         for w in (14, 7):
             r = results[mode_name][w]
-            d_rho = (r["rho"] - base[w]) if (r["rho"] is not None and base[w] is not None) else None
+            d_rho = (
+                (r["rho"] - base[w])
+                if (r["rho"] is not None and base[w] is not None)
+                else None
+            )
             d_rho_s = f"{d_rho:+.4f}" if d_rho is not None else "  N/A"
             print(
                 f"  {mode_name:22s}  {w:>3d}  {r['rho']:+.4f}  {d_rho_s:>10s}  "
@@ -182,7 +197,9 @@ def main():
     print("=== top-10 |residual| by symbol (14d) ===")
     for mode_name, _ in MODES:
         print(f"\n  -- {mode_name} --")
-        print(f"    {'sym':<14s}  {'hl$':>9s}  {'sim$':>9s}  {'residual':>9s}  ratchet?")
+        print(
+            f"    {'sym':<14s}  {'hl$':>9s}  {'sim$':>9s}  {'residual':>9s}  ratchet?"
+        )
         for r in results[mode_name][14]["top10"]:
             print(
                 f"    {r['sym']:<14s}  ${r['hl']:>+8.2f}  ${r['sim']:>+8.2f}  "
@@ -204,12 +221,16 @@ def main():
         rules = [
             ("14d Δρ ≥ +0.03", d14 >= 0.03, f"{d14:+.4f}"),
             ("7d ρ doesn't drop >0.02", d7 >= -0.02, f"{d7:+.4f}"),
-            ("ratchet-path |residual| improves",
-             path_better,
-             f"${r14['ratchet_path_abs_residual']:.2f} vs base ${base_path[14]:.2f}"),
-            ("non-ratchet |residual| not worse >5%",
-             other_not_worse,
-             f"${r14['non_ratchet_abs_residual']:.2f} vs base ${base_other[14]:.2f}"),
+            (
+                "ratchet-path |residual| improves",
+                path_better,
+                f"${r14['ratchet_path_abs_residual']:.2f} vs base ${base_path[14]:.2f}",
+            ),
+            (
+                "non-ratchet |residual| not worse >5%",
+                other_not_worse,
+                f"${r14['non_ratchet_abs_residual']:.2f} vs base ${base_other[14]:.2f}",
+            ),
         ]
         print(f"\n  -- {mode_name} --")
         for name, ok, val in rules:

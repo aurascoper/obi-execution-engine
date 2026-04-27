@@ -132,9 +132,7 @@ def main():
 
         deleted_pnl_sum = sum(t["pnl"] for t in deleted)
         kept_pnl_sum = sum(t["pnl"] for t in kept)
-        deleted_holds = [
-            (t["exit_ts"] - t["entry_ts"]) / 1000.0 for t in deleted
-        ]
+        deleted_holds = [(t["exit_ts"] - t["entry_ts"]) / 1000.0 for t in deleted]
         deleted_mean_age_s = (
             sum(deleted_holds) / len(deleted_holds) if deleted_holds else 0.0
         )
@@ -144,28 +142,30 @@ def main():
         b_total_hold = sum((t["exit_ts"] - t["entry_ts"]) / 1000.0 for t in bt)
         c_total_hold = sum((t["exit_ts"] - t["entry_ts"]) / 1000.0 for t in ct)
 
-        rows.append({
-            "sym": s,
-            "hl_pnl": hl_pnl[s],
-            "baseline_replay": base_pnl[s],
-            "cooldown_replay": cd_pnl[s],
-            "baseline_residual": b_resid,
-            "cooldown_residual": c_resid,
-            "delta_residual": delta_resid,
-            "abs_baseline_residual": abs(b_resid),
-            "baseline_n_opens": len(bt),
-            "cooldown_n_opens": len(ct),
-            "deleted_n": len(deleted),
-            "deleted_pnl_sum": deleted_pnl_sum,
-            "kept_pnl_sum": kept_pnl_sum,
-            "deleted_mean_age_s": deleted_mean_age_s,
-            "deleted_long_n": long_n,
-            "deleted_short_n": short_n,
-            "baseline_total_hold_s": b_total_hold,
-            "cooldown_total_hold_s": c_total_hold,
-            "baseline_mean_hold_s": (b_total_hold / len(bt)) if bt else 0.0,
-            "cooldown_mean_hold_s": (c_total_hold / len(ct)) if ct else 0.0,
-        })
+        rows.append(
+            {
+                "sym": s,
+                "hl_pnl": hl_pnl[s],
+                "baseline_replay": base_pnl[s],
+                "cooldown_replay": cd_pnl[s],
+                "baseline_residual": b_resid,
+                "cooldown_residual": c_resid,
+                "delta_residual": delta_resid,
+                "abs_baseline_residual": abs(b_resid),
+                "baseline_n_opens": len(bt),
+                "cooldown_n_opens": len(ct),
+                "deleted_n": len(deleted),
+                "deleted_pnl_sum": deleted_pnl_sum,
+                "kept_pnl_sum": kept_pnl_sum,
+                "deleted_mean_age_s": deleted_mean_age_s,
+                "deleted_long_n": long_n,
+                "deleted_short_n": short_n,
+                "baseline_total_hold_s": b_total_hold,
+                "cooldown_total_hold_s": c_total_hold,
+                "baseline_mean_hold_s": (b_total_hold / len(bt)) if bt else 0.0,
+                "cooldown_mean_hold_s": (c_total_hold / len(ct)) if ct else 0.0,
+            }
+        )
     rows.sort(key=lambda r: -r["abs_baseline_residual"])
 
     # Focus + top-10 union (deduplicated)
@@ -196,13 +196,16 @@ def main():
     # Aggregate top-10 residual
     top10_baseline_abs = sum(abs(r["baseline_residual"]) for r in rows[:10])
     top10_cooldown_abs = sum(abs(r["cooldown_residual"]) for r in rows[:10])
-    print(f"\n  top-10 abs residual:  baseline ${top10_baseline_abs:.2f}  "
-          f"cooldown ${top10_cooldown_abs:.2f}  "
-          f"Δ ${top10_cooldown_abs - top10_baseline_abs:+.2f}")
+    print(
+        f"\n  top-10 abs residual:  baseline ${top10_baseline_abs:.2f}  "
+        f"cooldown ${top10_cooldown_abs:.2f}  "
+        f"Δ ${top10_cooldown_abs - top10_baseline_abs:+.2f}"
+    )
 
     # Count "worsened by >$50" symbols within top-15
     worsened = [
-        r for r in rows[:15]
+        r
+        for r in rows[:15]
         if abs(r["cooldown_residual"]) - abs(r["baseline_residual"]) > 50.0
     ]
     print(f"\n  top-15 symbols worsened by >$50: {len(worsened)}")
@@ -247,7 +250,9 @@ def main():
         key=lambda r: abs(r["cooldown_residual"]) - abs(r["baseline_residual"]),
     )
     print("\n=== top symbols where cooldown helped (|residual| dropped) ===")
-    print(f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n")
+    print(
+        f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n"
+    )
     for r in sym_helped[:10]:
         diff = abs(r["cooldown_residual"]) - abs(r["baseline_residual"])
         if diff >= 0:
@@ -258,7 +263,9 @@ def main():
         )
 
     print("\n=== top symbols where cooldown hurt (|residual| rose) ===")
-    print(f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n")
+    print(
+        f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n"
+    )
     sym_hurt = list(reversed(sym_helped))
     for r in sym_hurt[:10]:
         diff = abs(r["cooldown_residual"]) - abs(r["baseline_residual"])
@@ -271,8 +278,17 @@ def main():
 
     out = ROOT / "autoresearch_gated" / "cooldown_aave_delta.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"rows": rows, "top10_baseline_abs": top10_baseline_abs,
-                                "top10_cooldown_abs": top10_cooldown_abs}, indent=2, default=str))
+    out.write_text(
+        json.dumps(
+            {
+                "rows": rows,
+                "top10_baseline_abs": top10_baseline_abs,
+                "top10_cooldown_abs": top10_cooldown_abs,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     print(f"\n# wrote {out}")
     return 0
 
