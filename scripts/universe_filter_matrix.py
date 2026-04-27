@@ -130,17 +130,17 @@ def main():
             )
             if d_deploy >= 0.04:
                 print(
-                    f"  → PROMOTE configured_or_held as default validation universe (production_state_ρ improves materially)."
+                    "  → PROMOTE configured_or_held as default validation universe (production_state_ρ improves materially)."
                 )
             elif d_diag >= 0.05 and d_deploy < 0.04:
                 print(
-                    f"  → universe list alone insufficient. Live entry gating filters more than the configured list. "
-                    f"Diagnose entry-gate identity per symbol next."
+                    "  → universe list alone insufficient. Live entry gating filters more than the configured list. "
+                    "Diagnose entry-gate identity per symbol next."
                 )
             else:
                 print(
-                    f"  → no significant production_state_ρ lift; legacy positions are NOT the main residual driver. "
-                    f"Hold off on universe-filter promotion."
+                    "  → no significant production_state_ρ lift; legacy positions are NOT the main residual driver. "
+                    "Hold off on universe-filter promotion."
                 )
     return 0
 

@@ -246,7 +246,7 @@ def main():
         rows,
         key=lambda r: abs(r["cooldown_residual"]) - abs(r["baseline_residual"]),
     )
-    print(f"\n=== top symbols where cooldown helped (|residual| dropped) ===")
+    print("\n=== top symbols where cooldown helped (|residual| dropped) ===")
     print(f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n")
     for r in sym_helped[:10]:
         diff = abs(r["cooldown_residual"]) - abs(r["baseline_residual"])
@@ -257,7 +257,7 @@ def main():
             f"${abs(r['cooldown_residual']):>12.2f}  ${diff:>+7.2f}  {r['deleted_n']}"
         )
 
-    print(f"\n=== top symbols where cooldown hurt (|residual| rose) ===")
+    print("\n=== top symbols where cooldown hurt (|residual| rose) ===")
     print(f"  {'sym':<14s}  {'baseline|res|':>12s}  {'cooldown|res|':>13s}  {'Δ':>8s}  del_n")
     sym_hurt = list(reversed(sym_helped))
     for r in sym_hurt[:10]:

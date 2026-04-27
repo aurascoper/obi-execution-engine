@@ -104,8 +104,8 @@ def main() -> int:
     print("PASS — all assertions hold")
     print(f"  symbols configured:   {len(cooldown)}")
     print(f"  default cooldown:     {default}")
-    print(f"  longhold exempt:      AAVE/ETH/BTC/SOL/LDO/CRV/...")
-    print(f"  HIP-3 / xyz / ZEC:    3600s")
+    print("  longhold exempt:      AAVE/ETH/BTC/SOL/LDO/CRV/...")
+    print("  HIP-3 / xyz / ZEC:    3600s")
     return 0
 
 

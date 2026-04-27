@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import os
 import re
 import subprocess
@@ -287,7 +286,7 @@ def report(result: dict):
         f"other: ${result['abs_residual_other']:.2f}"
     )
     print(f"  baseline ρ: {fmt_rho(base)}")
-    print(f"  oracle ρ at attribution weights:")
+    print("  oracle ρ at attribution weights:")
     for w_attr in ATTRIBUTION_WEIGHTS:
         rho = result["oracle_rho"][w_attr]
         d = (rho - base) if (rho is not None and base is not None) else None

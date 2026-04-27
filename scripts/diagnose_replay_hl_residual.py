@@ -302,7 +302,7 @@ def main():
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        f"# Residual decomposition — replay vs HL closedPnl",
+        "# Residual decomposition — replay vs HL closedPnl",
         "",
         f"- window: **{args.window_days}d**  `[{from_ms}..{to_ms})`",
         f"- symbols: {len(rows)}",

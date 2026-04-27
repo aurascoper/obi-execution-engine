@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import os
 import subprocess
 import sys
@@ -296,7 +295,7 @@ def fmt(x):
 def report(r: dict):
     w = r["window_days"]
     print(f"\n=== window {w}d (shared n={r['shared_n']}) ===")
-    print(f"  correlations of |residual| vs ...")
+    print("  correlations of |residual| vs ...")
     for key in (
         "open_count_delta",
         "open_count_ratio",
@@ -307,7 +306,7 @@ def report(r: dict):
         p = r.get(f"pearson_{key}")
         s = r.get(f"spearman_{key}")
         print(f"    {key:22s}  Pearson={fmt(p)}  Spearman={fmt(s)}")
-    print(f"\n  top-10 by |residual|:")
+    print("\n  top-10 by |residual|:")
     print(
         f"    {'#':>2s}  {'sym':<14s}  {'|res|':>7s}  "
         f"{'rOpens':>6s}  {'lSess':>5s}  {'ratio':>6s}  "

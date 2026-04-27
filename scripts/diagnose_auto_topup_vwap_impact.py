@@ -248,7 +248,7 @@ def report(r: dict):
     )
     base = r["base_rho"]
     print(f"  baseline ρ: {fmt(base)}")
-    print(f"  oracle ρ at exposure-multiplier caps:")
+    print("  oracle ρ at exposure-multiplier caps:")
     for cap in CAPS:
         rho = r["oracle_rho"][cap]
         d = (rho - base) if (rho is not None and base is not None) else None
@@ -281,7 +281,7 @@ def report(r: dict):
     # Top topup-active rows by abs residual
     topup_rows = [r2 for r2 in r["rows"] if r2["topup_active"]]
     topup_rows.sort(key=lambda x: -x["abs_residual"])
-    print(f"\n  topup-active symbols ranked by |residual|:")
+    print("\n  topup-active symbols ranked by |residual|:")
     print(
         f"    {'sym':<14s}  {'hl$':>9s}  {'sim$':>9s}  {'residual':>9s}  "
         f"{'fires':>5s}  {'top$':>7s}  {'replay$':>8s}  {'mult':>6s}"
