@@ -133,10 +133,15 @@ OBI_LEVELS = 20  # top N order-book levels (deepened from 5:
 # specifically a "bid-side façade at levels 1-5
 # over an ask-heavy levels 6-20" trap on ETH.
 LIMIT_SLIPPAGE = 0.0010  # limit price = close × (1 + LIMIT_SLIPPAGE)
-NOTIONAL_PER_TRADE = (
+# Default sizing per execution mode. Override via NOTIONAL_PER_TRADE_OVERRIDE
+# env (used for dust-test smoke runs — set to e.g. "25" before unpausing).
+DEFAULT_NOTIONAL_PER_TRADE = (
     750.0
     if __import__("os").environ.get("EXECUTION_MODE", "PAPER").upper() == "LIVE"
     else 2_000.0
+)
+NOTIONAL_PER_TRADE = float(
+    __import__("os").environ.get("NOTIONAL_PER_TRADE_OVERRIDE", DEFAULT_NOTIONAL_PER_TRADE)
 )
 
 # Alpaca minimum qty precision per symbol (fractional crypto)

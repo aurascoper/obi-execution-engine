@@ -141,6 +141,25 @@ REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.010"))
 REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "10800"))
 REGIME_PROXIES = ("BTC/USD", "xyz:SP500/USD")
 
+# ── Dust-test safety caps (P3, off by default) ───────────────────────────────
+# All four default OFF / 0; activate explicitly for a smoke-test session.
+# MAX_NEW_ENTRIES_PER_SESSION    : per-engine-instance ceiling on accepted entries.
+# SMOKE_TEST_SYMBOLS             : comma-separated allowlist (e.g. "ETH,AAVE").
+#                                  When set, blocks any entry whose normalized
+#                                  symbol isn't in the list.
+# HL_SESSION_LOSS_GUARD_USD      : positive number of dollars; halt new entries
+#                                  when (closedPnl - fees) since engine start
+#                                  drops to -threshold. Lazy poll (60s cache).
+MAX_NEW_ENTRIES_PER_SESSION = int(os.environ.get("MAX_NEW_ENTRIES_PER_SESSION", "0"))
+SMOKE_TEST_SYMBOLS_RAW = os.environ.get("SMOKE_TEST_SYMBOLS", "").strip()
+SMOKE_TEST_SYMBOLS: frozenset[str] = frozenset(
+    s.strip().replace("/USD", "").replace("/USDC", "")
+    for s in SMOKE_TEST_SYMBOLS_RAW.split(",")
+    if s.strip()
+)
+HL_SESSION_LOSS_GUARD_USD = float(os.environ.get("HL_SESSION_LOSS_GUARD_USD", "0"))
+HL_SESSION_LOSS_POLL_S = float(os.environ.get("HL_SESSION_LOSS_POLL_S", "60"))
+
 # ── HL venue price precision ──────────────────────────────────────────────────
 # HL rule: price decimals ≤ max(6 - szDecimals, 0) AND significant figures ≤ 5.
 # szDecimals is queried at boot via Info.meta(); dust caps derived from it.
@@ -495,6 +514,15 @@ class HLEngine:
 
         # P0 regime-pause state: monotonic deadline; entries blocked while > now().
         self._regime_pause_until: float = 0.0
+
+        # Dust-test caps state — all default-off; populated only if env vars
+        # were set at startup. _engine_start_ms is the reference for the
+        # session-loss guard's HL closedPnl window.
+        self._engine_start_ms: int = int(time.time() * 1000)
+        self._new_entries_this_session: int = 0
+        self._loss_guard_last_poll_mono: float = 0.0
+        self._loss_guard_cached_loss_usd: float | None = None
+        self._loss_guard_tripped: bool = False
 
         # ── Control plane (Phase 1: read-only) ──────────────────────────────
         self._control = ControlPlaneServer(
@@ -1070,6 +1098,67 @@ class HLEngine:
             )
             return False
 
+        # P3 dust-test caps — all default-off. Activated only when the
+        # corresponding env var is set explicitly at engine startup.
+        # Order: symbol allowlist → max-entries-per-session → session-loss
+        # guard (the most expensive — does an HL API poll).
+        if SMOKE_TEST_SYMBOLS:
+            sym_norm = (sym or "").replace("/USD", "").replace("/USDC", "")
+            if sym_norm not in SMOKE_TEST_SYMBOLS:
+                log.info(
+                    "risk_gate_smoke_symbol_block",
+                    symbol=sym,
+                    tag=tag,
+                    allowlist=sorted(SMOKE_TEST_SYMBOLS),
+                )
+                return False
+
+        if (
+            MAX_NEW_ENTRIES_PER_SESSION > 0
+            and self._new_entries_this_session >= MAX_NEW_ENTRIES_PER_SESSION
+        ):
+            log.info(
+                "risk_gate_max_new_entries_session",
+                symbol=sym,
+                tag=tag,
+                count=self._new_entries_this_session,
+                cap=MAX_NEW_ENTRIES_PER_SESSION,
+            )
+            return False
+
+        if HL_SESSION_LOSS_GUARD_USD > 0:
+            if self._loss_guard_tripped:
+                log.info(
+                    "risk_gate_session_loss_tripped",
+                    symbol=sym,
+                    tag=tag,
+                    cached_loss_usd=self._loss_guard_cached_loss_usd,
+                    threshold=-HL_SESSION_LOSS_GUARD_USD,
+                )
+                return False
+            now_mono_ = time.monotonic()
+            stale = (now_mono_ - self._loss_guard_last_poll_mono) >= HL_SESSION_LOSS_POLL_S
+            if stale or self._loss_guard_cached_loss_usd is None:
+                self._loss_guard_last_poll_mono = now_mono_
+                try:
+                    realized = self._poll_session_realized_pnl()
+                    self._loss_guard_cached_loss_usd = realized
+                    if realized <= -HL_SESSION_LOSS_GUARD_USD:
+                        self._loss_guard_tripped = True
+                        log.warning(
+                            "risk_gate_session_loss_trip",
+                            realized_usd=round(realized, 4),
+                            threshold=-HL_SESSION_LOSS_GUARD_USD,
+                        )
+                        return False
+                except Exception as e:
+                    # Don't block on transient API failure — log + continue.
+                    log.warning(
+                        "risk_gate_session_loss_poll_failed",
+                        exc_type=type(e).__name__,
+                        exc_msg=str(e)[:120],
+                    )
+
         now_mono = time.monotonic()
 
         # Regime pause: re-check lazily so a new trip extends the deadline.
@@ -1114,7 +1203,36 @@ class HLEngine:
                     )
                     return False
 
+        # All gates passed — entry will be issued. Increment session counter
+        # only on actual acceptance (not on candidate-attempt). Used by the
+        # MAX_NEW_ENTRIES_PER_SESSION cap above.
+        self._new_entries_this_session += 1
         return True
+
+    def _poll_session_realized_pnl(self) -> float:
+        """Pull HL closedPnl - fees since engine start.
+        Sync call (we're already in a non-async context). Returns USD net.
+        Raises on API failure — caller handles gracefully.
+        """
+        from hyperliquid.info import Info as _Info
+        from hyperliquid.utils import constants as _constants
+
+        addr = os.environ.get("HL_WALLET_ADDRESS", "").strip()
+        if not addr:
+            return 0.0
+        info = _Info(_constants.MAINNET_API_URL, skip_ws=True)
+        now_ms = int(time.time() * 1000)
+        fills = info.user_fills_by_time(addr, self._engine_start_ms, now_ms,
+                                         aggregate_by_time=False) or []
+        closed = 0.0
+        fees = 0.0
+        for f in fills:
+            try:
+                closed += float(f.get("closedPnl", 0) or 0)
+                fees += float(f.get("fee", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return closed - fees
 
     # ── Maker (Alo) path ─────────────────────────────────────────────────────
     async def _submit_maker(self, sig: dict) -> dict | None:
