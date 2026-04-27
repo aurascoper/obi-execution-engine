@@ -69,13 +69,75 @@ def pearson(xs: list[float], ys: list[float]) -> float | None:
     return num / (dx * dy)
 
 
-def parse_hl_closed_pnl(from_ms: int, to_ms: int):
-    """Pull HL user_fills_by_time from native + builder DEXes; aggregate
-    `closedPnl` per symbol. This is the AUTHORITATIVE live realized PnL.
+def fetch_user_fills_all(info, address: str, start_ms: int, end_ms: int) -> list[dict]:
+    """Paginated user_fills_by_time fetch. The HL API caps each call at
+    2000 records — windows with more fills require iterating forward by
+    advancing the start cursor past the last seen timestamp.
 
-    Replaces parse_exit_signals as the default ground truth source —
-    audit_live_pnl_ground_truth.py showed exit_signal.pnl_est correlates
-    only ρ≈0.6 with this venue-truth value.
+    Dedup key uses (hash, oid, time, coin, side, px, sz) since the same
+    fill can theoretically appear at the cursor-boundary timestamp.
+
+    NOTE: user_fills_by_time IGNORES the perp_dexs parameter on Info;
+    the single-address fill stream contains ALL fills across native +
+    builder DEXes encoded by the `coin` field (e.g., "xyz:CL"). DO NOT
+    iterate over per-DEX Info instances — that 8×-double-counts.
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    cursor_start = start_ms
+    iter_count = 0
+    while cursor_start < end_ms and iter_count < 50:
+        iter_count += 1
+        try:
+            batch = (
+                info.user_fills_by_time(address, cursor_start, end_ms, aggregate_by_time=False)
+                or []
+            )
+        except Exception as e:
+            print(f"# warn: user_fills_by_time iter={iter_count} failed: {e}", file=sys.stderr)
+            break
+        if not batch:
+            break
+        new_count = 0
+        max_time = cursor_start
+        for f in batch:
+            try:
+                t = int(f.get("time", 0))
+            except (TypeError, ValueError):
+                continue
+            if t > max_time:
+                max_time = t
+            key = (
+                f.get("hash"),
+                f.get("oid"),
+                t,
+                f.get("coin"),
+                f.get("side"),
+                f.get("px"),
+                f.get("sz"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f)
+            new_count += 1
+        if new_count == 0:
+            break
+        if len(batch) < 2000:
+            break
+        cursor_start = max_time + 1
+    return out
+
+
+def parse_hl_closed_pnl(from_ms: int, to_ms: int):
+    """Pull HL user_fills_by_time once (paginated), aggregate `closedPnl`
+    per coin. This is the AUTHORITATIVE live realized PnL.
+
+    The fill stream already encodes builder-DEX symbols in the `coin`
+    field (e.g., "xyz:CL", "vntl:SPACEX"). Earlier versions iterated
+    `perp_dexs=[d]` for 8 DEX values — that 8×-double-counted because
+    `user_fills_by_time` ignores the `perp_dexs` parameter and returns
+    the same per-address stream every time.
 
     Returns (per_sym_pnl_dollars, per_sym_daily_pnl, fees_per_sym).
     """
@@ -93,45 +155,30 @@ def parse_hl_closed_pnl(from_ms: int, to_ms: int):
     from hyperliquid.info import Info
     from hyperliquid.utils import constants
 
-    sources = [(Info(constants.MAINNET_API_URL, skip_ws=True), "native")]
-    for dex in ("xyz", "vntl", "hyna", "flx", "km", "cash", "para"):
-        try:
-            sources.append(
-                (Info(constants.MAINNET_API_URL, skip_ws=True, perp_dexs=[dex]), dex)
-            )
-        except Exception as e:
-            print(f"# warn: builder {dex} init failed: {e}", file=sys.stderr)
+    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    fills = fetch_user_fills_all(info, addr, from_ms, to_ms)
 
     per_sym: dict[str, float] = defaultdict(float)
     per_day: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     fees_per_sym: dict[str, float] = defaultdict(float)
-    for info, label in sources:
-        try:
-            fills = (
-                info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False)
-                or []
-            )
-        except Exception as e:
-            print(f"# warn: {label} user_fills_by_time failed: {e}", file=sys.stderr)
+    for f in fills:
+        sym = _norm(f.get("coin", ""))
+        if not sym:
             continue
-        for f in fills:
-            sym = _norm(f.get("coin", ""))
-            if not sym:
-                continue
-            try:
-                pnl = float(f.get("closedPnl", 0) or 0)
-                fee = float(f.get("fee", 0) or 0)
-                ts_ms = int(f.get("time", 0))
-            except (TypeError, ValueError):
-                continue
-            if pnl == 0.0 and fee == 0.0:
-                continue  # opening fill, no realized component
-            per_sym[sym] += pnl
-            fees_per_sym[sym] += fee
-            day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
-                "%Y-%m-%d"
-            )
-            per_day[sym][day] += pnl
+        try:
+            pnl = float(f.get("closedPnl", 0) or 0)
+            fee = float(f.get("fee", 0) or 0)
+            ts_ms = int(f.get("time", 0))
+        except (TypeError, ValueError):
+            continue
+        if pnl == 0.0 and fee == 0.0:
+            continue  # opening fill, no realized component
+        per_sym[sym] += pnl
+        fees_per_sym[sym] += fee
+        day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
+        per_day[sym][day] += pnl
     return dict(per_sym), {s: dict(d) for s, d in per_day.items()}, dict(fees_per_sym)
 
 

@@ -1,28 +1,53 @@
-# Calibration Baseline — HL closedPnl truth + bucketed cooldown (flagged)
+# Calibration Baseline — HL closedPnl truth (PATCHED 2026-04-27)
 
-## Live PnL source
+> **2026-04-27: foundational correction.** The HL truth loader was
+> 8×-double-counting and missing fills past the 2000-record cap. After
+> patching `parse_hl_closed_pnl` (single-source, paginated, deduped),
+> the canonical baselines below are SUPERSEDED. See
+> `calibration_correction_note.md` for the full audit.
+
+## Live PnL source (PATCHED)
 
 ```
 live_pnl_source         : hl_closed_pnl_gross
-api_call                : Info.user_fills_by_time(addr, from_ms, to_ms, aggregate_by_time=False)
-                          summed `closedPnl` per coin across native + 7 builder-DEX
-                          clearinghouses (xyz, vntl, hyna, flx, km, cash, para)
-loader                  : scripts/validate_replay_fit.py:parse_hl_closed_pnl
-prior (broken) source   : exit_signal pnl_est event (correlation ρ ≈ 0.6 with HL truth)
-                          replaced 2026-04-26 — see feedback_replay_pnl_metric_overfits_truth.md
+api_call                : Info.user_fills_by_time(addr, from_ms, to_ms, ...)
+                          single fetch (NOT iterated per-DEX), paginated by
+                          cursor advancement, deduped on (hash, oid, time,
+                          coin, side, px, sz)
+loader                  : scripts/validate_replay_fit.py:fetch_user_fills_all
+                          + parse_hl_closed_pnl
+prior (broken) sources  :
+  exit_signal pnl_est   replaced 2026-04-26 (ρ ≈ 0.6 with venue truth)
+  iterated 8 DEX Info   replaced 2026-04-27 (8× double-count + truncation)
 ```
 
-## Baselines
+## Patched baselines (canonical anchor)
 
 ```
-window                  : 14d primary, 7d holdout
-baseline_hl_truth_rho   : 0.4529   (no replay-side flags)
-candidate_bucketed_3600 : 0.6125   (REENTRY_COOLDOWN_BY_SYMBOL=...)
-delta                   : +0.1596
-gate_target             : 0.80
-remaining_gap           : 0.19
-7d_baseline_rho         : 0.0145
-7d_candidate_rho        : 0.0210   (Δ +0.0066 — passes "≥-0.02 worsening" rule)
+                          14d ρ         7d ρ
+patched baseline         +0.2582       −0.0604
+patched bucketed_3600    +0.2921       −0.1013
+  Δρ                     +0.0339       −0.0410
+patched Mode 1 audit
+  (boundary-fixed)       +0.6788       −0.0554
+  Δρ                     +0.4206       +0.0050
+
+gate_target              0.80          0.80
+remaining_gap (14d)      0.54          —
+```
+
+## Bugged baselines (SUPERSEDED — do not use for decisions)
+
+```
+SUPERSEDED 2026-04-27:
+  baseline 14d ρ          : 0.4529   →  0.2582
+  bucketed_3600 14d ρ     : 0.6125   →  0.2921
+  bucketed_3600 14d Δρ    : +0.1596  →  +0.0339   (now BELOW +0.04 acceptance)
+  Mode 1 audit 14d ρ      : 0.8358   →  0.6788   (still passes 0.65 threshold)
+  baseline 7d ρ           : 0.0145   →  −0.0604
+  bucketed_3600 7d ρ      : 0.0210   →  −0.1013
+
+  net realized $-2,608 / 14d  →  −$402 / 14d   (6.5× overstated)
 ```
 
 ## Candidate config
@@ -43,26 +68,26 @@ bucket assignment (structural — not metric-chasing):
                                  NEAR, ENA, PAXG, ARB, XRP
 ```
 
-## Acceptance scorecard (14d)
+## Acceptance scorecard (14d) — PATCHED 2026-04-27
 
 ```
-[PASS]  14d Δρ ≥ +0.04                          +0.1596
-[PASS]  7d ρ doesn't drop >0.02                 +0.0066
-[PASS]  AAVE Δ|residual| < $25                  +0.00
-[PASS]  top-10 abs residual improves ≥ $50      -$108.29
-[PASS]  xyz equity bucket residual improves     -$167.07
-[PASS]  longhold deleted counterfactual ≤ +$10  +$0.00
+[FAIL]  14d Δρ ≥ +0.04                          +0.0339   (was +0.1596 with bug)
+[FAIL]  7d ρ doesn't drop >0.02                 −0.0410   (was +0.0066 with bug)
+
+bucketed_3600 NO LONGER passes acceptance under patched truth.
+Demoted from "flag candidate" to "diagnostic only".
+The flag remains in config/gates/ for reproducibility but is NOT
+the active candidate baseline for further experiments.
 ```
 
-## Promotion status
+## Promotion status — PATCHED
 
 ```
-default_status          : OFF
-promotion_status        : paper-soak / forward validation only
-do_not_default_until    :
-  - 24h calibration gate passes (corr(logged closed_pnl, HL API closedPnl) ≥ 0.98)
-  - bucketed_3600 result reproduced on a window not used in tuning
-  - top-10 residual improvement holds on the new window
+default_status          : OFF (unchanged)
+promotion_status        : DEMOTED — fails acceptance under patched truth
+diagnostic_use          : retained for cross-validation only
+do_not_promote          : never, until a new candidate exceeds patched
+                          baseline by ≥ +0.04 / 14d AND 7d ≥ −0.02
 ```
 
 ## Reproduction command
