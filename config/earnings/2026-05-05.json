@@ -1,0 +1,29 @@
+{
+  "date": "2026-05-05",
+  "schema_version": 1,
+  "names": [
+    {
+      "company": "Advanced Micro Devices, Inc.",
+      "ticker": "AMD",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-05-05T20:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Strategy Inc",
+      "ticker": "MSTR",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-05-05T20:00:00+00:00",
+      "source": "yfinance"
+    }
+  ],
+  "_provenance": {
+    "source": "yfinance",
+    "fetched_at": "2026-04-28T23:29:51.063528+00:00",
+    "window_h": 36,
+    "n_universe": 38,
+    "n_skipped_non_earnings": 15,
+    "n_errors": 0,
+    "errors": {}
+  }
+}

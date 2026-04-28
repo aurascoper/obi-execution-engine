@@ -47,7 +47,7 @@ HIP3_XYZ_TRADABLE: tuple[str, ...] = (
     "SKHX", "MSFT", "MU", "SP500", "AMD", "PLTR", "BRENTOIL", "GOLD",
     "SILVER", "NATGAS", "COPPER", "PLATINUM", "TSM", "GOOGL", "META",
     "AAPL", "LLY", "NFLX", "COST", "BABA", "RKLB", "MRVL", "EUR", "JP225",
-    "XLE", "PALLADIUM", "URANIUM", "RIVN",
+    "XLE", "PALLADIUM", "URANIUM", "RIVN", "MSTR",
 )
 
 # Pure-equity subset — the rest are commodity / index / FX baskets that

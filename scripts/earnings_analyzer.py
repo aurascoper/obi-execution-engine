@@ -78,7 +78,7 @@ HIP3_XYZ_TRADABLE: frozenset[str] = frozenset({
     "SKHX", "MSFT", "MU", "SP500", "AMD", "PLTR", "BRENTOIL", "GOLD",
     "SILVER", "NATGAS", "COPPER", "PLATINUM", "TSM", "GOOGL", "META",
     "AAPL", "LLY", "NFLX", "COST", "BABA", "RKLB", "MRVL", "EUR", "JP225",
-    "XLE", "PALLADIUM", "URANIUM", "RIVN",
+    "XLE", "PALLADIUM", "URANIUM", "RIVN", "MSTR",
 })
 
 HIP3_OTHER_EQUITY: dict[str, str] = {
