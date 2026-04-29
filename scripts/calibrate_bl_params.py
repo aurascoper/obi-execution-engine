@@ -157,6 +157,7 @@ def collect(jsonl_path: Path, start_ts: str) -> dict:
                         "fee": fee,
                         "closed_pnl": cp_f,
                         "cloid": cloid or "",
+                        "crossed": bool(r.get("crossed", False)),
                     })
                 except (TypeError, ValueError):
                     continue
@@ -347,6 +348,19 @@ def main() -> int:
                     help="Per-symbol table row count (top N by signal_tick count)")
     ap.add_argument("--verbose", action="store_true",
                     help="Surface diagnostic stderr")
+    ap.add_argument(
+        "--taker-only",
+        action="store_true",
+        help=(
+            "Filter η fit to taker fills only (crossed=true). REQUIRED for a "
+            "Bechler-Ludkovski-compatible η: the BL formula models temporary "
+            "impact as a strictly positive friction term, which only makes "
+            "sense for liquidity-consuming (taker) trades. Maker fills "
+            "produce negative η — that's opportunity cost, not impact, and "
+            "needs a separate Avellaneda-Stoikov-style framework. β and σ "
+            "fits are unaffected by this flag (they come from signal_tick.obi)."
+        ),
+    )
     args = ap.parse_args()
 
     log_path = Path(args.log)
@@ -370,34 +384,49 @@ def main() -> int:
     obi = data["obi"]
     sends = data["sends"]
     sends_by_cloid = data["sends_by_cloid"]
-    fills = data["fills"]
+    all_fills = data["fills"]
 
     n_obi_total = sum(len(v) for v in obi.values())
     n_sends_total = sum(len(v) for v in sends.values())
-    n_fills = len(fills)
+    n_fills_all = len(all_fills)
+    n_fills_taker = sum(1 for f in all_fills if f.get("crossed"))
+    n_fills_maker = n_fills_all - n_fills_taker
+
+    # η fit gets the (possibly-filtered) subset; β/σ/holds use the full set.
+    if args.taker_only:
+        fills_for_eta = [f for f in all_fills if f.get("crossed")]
+    else:
+        fills_for_eta = all_fills
+    n_fills_eta = len(fills_for_eta)
 
     ou_fits = {sym: fit_ou(series) for sym, series in obi.items()}
-    eta_fits = fit_eta(fills, sends, sends_by_cloid)
-    holds = time_in_market(fills)
+    eta_fits = fit_eta(fills_for_eta, sends, sends_by_cloid)
+    holds = time_in_market(all_fills)
 
     # ── header ─────────────────────────────────────────────────────────────
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
-    print("# Bechler-Ludkovski (β, σ, η) calibration")
+    title_suffix = " — TAKER-ONLY η" if args.taker_only else ""
+    print(f"# Bechler-Ludkovski (β, σ, η) calibration{title_suffix}")
     print()
     print(f"**Window:** `{start_ts}` → `{now_iso}`")
     print(f"**Source:** `{log_path}` (read-only)")
     print(f"**Excluded:** manual-cloid fills (prefix `{MANUAL_PFX}`)")
+    if args.taker_only:
+        print("**η filter:** taker fills only (`crossed=true`). β/σ unaffected.")
     print()
     print("| Counter | Value |")
     print("|---|---|")
     print(f"| `signal_tick` obi observations | {n_obi_total:,} |")
     print(f"| `hl_order_submitted` | {n_sends_total:,} |")
-    print(f"| `hl_fill_received` (manual excluded) | {n_fills:,} |")
+    print(f"| `hl_fill_received` (manual excluded) | {n_fills_all:,} |")
+    print(f"|   ↳ taker (`crossed=true`) | {n_fills_taker:,} |")
+    print(f"|   ↳ maker (`crossed=false`) | {n_fills_maker:,} |")
+    print(f"| Fills used for η fit | {n_fills_eta:,} ({'taker-only' if args.taker_only else 'all'}) |")
     print(f"| OU resampling Δt | {DT_S}s |")
     print(f"| Min OU samples | {N_MIN_OU} |")
     print(f"| Min η pairs | {N_MIN_ETA} |")
     print(f"| Symbols with any obi data | {len(obi)} |")
-    print(f"| Symbols with any fill | {len({f['sym'] for f in fills})} |")
+    print(f"| Symbols with any fill | {len({f['sym'] for f in all_fills})} |")
     print()
 
     # ── per-symbol table ───────────────────────────────────────────────────
@@ -473,6 +502,10 @@ def main() -> int:
     print("- β is the OU mean-reversion rate of the OBI process. half-life = ln(2)/β. Use this as the time-scale knob in the BL closed-form (paper: 1409.2618).")
     print("- σ is the OU driving-noise vol; conditioned on β so it's directly comparable across symbols.")
     print("- η is bps of slippage per $1 of notional traded. Adverse-side convention (positive = trader paid more than expected). Linear approximation; the empirical crypto-LOB law is concave (square-root), captured later by 2503.04323.")
+    if not args.taker_only:
+        print("- ⚠️  Without `--taker-only`, η is computed across BOTH maker and taker fills. Maker fills produce structurally negative η (you capture the spread, not pay it). For Bechler-Ludkovski use, re-run with `--taker-only` to isolate the true temporary-impact friction term.")
+    else:
+        print("- ✅ η fit restricted to taker fills (`crossed=true`). Result is the structural temporary-impact coefficient for the BL Riccati formula's spread-crossing branch.")
     print("- median hold (last column) is the empirical FIFO-paired entry→exit duration. Compare to half-life: well-aligned ⇒ OU model consistent with strategy turnover.")
     print("- Status `ok` = fit accepted; `thin_sample` = below threshold; `non_stationary` / `negative_b` / `no_variance` = OU model rejected.")
     print()
