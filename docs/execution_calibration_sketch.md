@@ -85,11 +85,59 @@ Per-symbol partition: keys are the bare-form symbol (`BTC`, `xyz:GOOGL`), to mat
 
 ---
 
+## Replay slippage penalty (granularity-gap mitigation)
+
+**Problem.** Live engine signals fire on 1-minute bars (`NATIVE_BAR_INTERVAL_S = 60` at hl_engine.py:111). Replay infrastructure (`scripts/z_entry_replay.py`, `z4h_exit_replay.py`, `ratchet_replay.py`, `hmm_window_replay.py`, `train_*`) reads from `data/cache/bars.sqlite` at **15-minute and 1-hour intervals only** (line 110: `for iv in ("15m", "1h")`). Replay also reads the `c` (close) field only — no intra-bar realism.
+
+**Consequence.** Any `(β, σ, η)` calibrated against replay-derived prices will **systematically underestimate execution friction**: a 1m signal that fires at $X may actually fill at the worst price within the corresponding 15m bar (often $X ± 0.3–0.8% on thin HIP-3 books). Replay reports flat fills at $X. The Riccati boundary conditions, especially terminal-penalty `α`, are calibrated against this optimistic mark and will produce trade rates more aggressive than the venue actually supports.
+
+**Synthetic penalty (band-aid, not cure).**
+
+For each replay fill, charge a microstructure-slippage penalty against the modeled fill price:
+
+```
+slip_penalty_bps = K_SLIP × (high - low) / close × 10000
+slip_penalty_dollars = slip_penalty_bps × notional / 10000
+```
+
+Where `K_SLIP ∈ [0.25, 0.75]` represents what fraction of the bar range you charge against each fill. Suggested defaults:
+
+- `K_SLIP_TAKER = 0.50` — a taker entry/exit at random within the bar pays half the bar range on average
+- `K_SLIP_MAKER = 0.20` — a maker fill is closer to the touch but still subject to mid-walk during the bar
+- `K_SLIP_ESCALATED = 0.75` — when `hip3_taker_escalation` fires, charge most of the bar range
+
+**Application sites:**
+- `scripts/z_entry_replay.py` line ~197 (computing `adverse`): subtract penalty before STOP_LOSS_PCT comparison
+- `scripts/z4h_exit_replay.py`: same pattern at exit
+- Any future runner that calibrates `η` from synthetic replay fills MUST include the penalty in the loss function
+
+**This is a band-aid.** It approximates microstructure cost from a coarse mark; it does not fix the granularity gap, and it can only narrow the calibration error, not eliminate it.
+
+---
+
+## ⛔ HARD BLOCKER: 1-minute historical bar ingestion
+
+Before any Riccati output is trusted for live capital allocation, `data/cache/bars.sqlite` MUST be populated with **1-minute** bars matching `NATIVE_BAR_INTERVAL_S = 60`. The slippage-penalty band-aid above does NOT substitute for this — it merely makes interim replay outputs less wrong.
+
+**Acceptance criteria for the 1m data upgrade:**
+1. `bars.sqlite` schema gains rows where `interval = "1m"` for every symbol in `config/stage3_universe.json`
+2. Coverage: minimum 30 days back, ideally 90 days where the venue allows
+3. Storage retention check: HL `candleSnapshot` retention at 1m is ~3.6d empirically (per `hl_pairs_discover.py` comment line 92), so the historical pull will need to be done in rolling chunks or via a different data source
+4. The replay scripts that currently iterate `for iv in ("15m", "1h"):` get a `1m` arm added (or made the default for `(β, σ, η)` calibration specifically)
+5. Re-run baseline z_entry replay against 1m data and verify the per-symbol PnL deltas are within tolerance of live observed; if they diverge, the divergence itself is a more honest measurement of execution friction than synthetic penalties can capture
+
+**Status:** UNBLOCKED for the *exploratory* calibration runner with synthetic slippage. **BLOCKED** for any output that gets fed into a live `_size_order()` change.
+
+The exploratory runner — read-only `(β, σ, η)` fit on Stage 2.5 + Stage 3 live data — does not depend on `bars.sqlite` at all (it reads `signal_tick.obi` and fill ledger from `hl_engine.jsonl`), so this blocker does not delay step 1 of the BL integration. It DOES delay any subsequent step that uses replay for empirical rescaling.
+
+---
+
 ## Non-goals tonight
 
 - **No** runner script. The above is the spec; the implementation needs explicit authorization since it's the precursor to an order-logic change.
 - **No** Riccati ODE solver. That's a separate doc + script, gated by these calibration outputs.
 - **No** swap of `_size_order()` in `strategy/signals.py`. CLAUDE.md change-discipline applies: "do not restructure the signal pipeline ... when asked to fix a specific bug." Bechler-Ludkovski is a strict generalization of fixed sizing; even framed as "additive," the integration touches both signal evaluation and execution paths.
+- **No** 1-minute bars.sqlite hydration. Separate authorized scripted task.
 
 ## Open questions for the operator
 
