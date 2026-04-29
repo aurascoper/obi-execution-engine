@@ -60,6 +60,7 @@ from math_core.fill_model import (
     QuoteState,
     execute_ioc,
     init_state,
+    load_obi_ar1_calibration,
     post_quote,
     resolve_markout,
     step_environment,
@@ -681,10 +682,12 @@ def _run_family(
     completion_tol_dollars: float,
     seeds: list[int],
     fill_model: str = "simple",
+    obi_calibration_path: Optional[Path] = None,
 ) -> dict:
     """Run all three OFI scenarios for one scheduler family. Dispatches to
     the simple Bernoulli fill model (Tasks 19/20) or microstructure_v1
-    (Task 21). Returns the family record."""
+    (Task 21). When obi_calibration_path is set under microstructure_v1,
+    OBI AR(1) parameters are loaded from the calibration JSON (Task 23)."""
 
     if fill_model == "simple":
         common = dict(
@@ -753,29 +756,34 @@ def _run_family(
             params=params,
             completion_tol_dollars=completion_tol_dollars,
         )
+        def _ms_params_for(target: float) -> MicrostructureParams:
+            base = MicrostructureParams(
+                obi_target=target,
+                mid_drift_y_coupling_bps=1.0,
+            )
+            if obi_calibration_path is not None:
+                return load_obi_ar1_calibration(
+                    base, obi_calibration_path, obi_target=target
+                )
+            return base
+
+        label_suffix = (
+            " ar1-calibrated" if obi_calibration_path is not None else ""
+        )
         scenarios = {
             "neutral": run_scenario_microstructure(
-                "neutral OFI (μstruct v1)",
-                ms_params=MicrostructureParams(
-                    obi_target=0.0,
-                    mid_drift_y_coupling_bps=1.0,
-                ),
+                f"neutral OFI (μstruct v1{label_suffix})",
+                ms_params=_ms_params_for(0.0),
                 **ms_common,
             ),
             "toxic": run_scenario_microstructure(
-                "toxic OFI (μstruct v1)",
-                ms_params=MicrostructureParams(
-                    obi_target=0.6,
-                    mid_drift_y_coupling_bps=1.0,
-                ),
+                f"toxic OFI (μstruct v1{label_suffix})",
+                ms_params=_ms_params_for(0.6),
                 **ms_common,
             ),
             "favorable": run_scenario_microstructure(
-                "favorable OFI (μstruct v1)",
-                ms_params=MicrostructureParams(
-                    obi_target=-0.4,
-                    mid_drift_y_coupling_bps=1.0,
-                ),
+                f"favorable OFI (μstruct v1{label_suffix})",
+                ms_params=_ms_params_for(-0.4),
                 **ms_common,
             ),
         }
@@ -783,6 +791,9 @@ def _run_family(
             "scheduler_family": scheduler_name,
             "scheduler_kwargs": scheduler_kwargs,
             "fill_model": "microstructure_v1",
+            "obi_calibration_used": (
+                str(obi_calibration_path) if obi_calibration_path else None
+            ),
             "scenarios": scenarios,
         }
         record["acceptance"] = evaluate_acceptance_v2(
@@ -884,6 +895,17 @@ def main() -> int:
         default="simple",
         help="fill simulation model (Tasks 19/20 default = simple; Task 21 = microstructure_v1)",
     )
+    ap.add_argument(
+        "--calibrated-obi",
+        action="store_true",
+        help="load OBI AR(1) parameters from config/obi_ar1.json (Task 23)",
+    )
+    ap.add_argument(
+        "--obi-calibration-path",
+        type=Path,
+        default=None,
+        help="explicit path to OBI calibration JSON (overrides --calibrated-obi default)",
+    )
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -901,6 +923,13 @@ def main() -> int:
         "sinh_ratio": {"kappa": args.kappa},
     }
 
+    obi_cal_path: Optional[Path] = None
+    if args.fill_model == "microstructure_v1":
+        if args.obi_calibration_path is not None:
+            obi_cal_path = args.obi_calibration_path
+        elif args.calibrated_obi:
+            obi_cal_path = ROOT / "config/obi_ar1.json"
+
     common = dict(
         params=params,
         initial_inventory=initial_inventory,
@@ -910,6 +939,7 @@ def main() -> int:
         completion_tol_dollars=completion_tol_dollars,
         seeds=seeds,
         fill_model=args.fill_model,
+        obi_calibration_path=obi_cal_path,
     )
 
     git_sha = _git_sha()
@@ -930,6 +960,8 @@ def main() -> int:
     if args.all_families:
         if args.out is not None:
             out_path = args.out
+        elif args.fill_model == "microstructure_v1" and obi_cal_path is not None:
+            out_path = ROOT / "autoresearch_gated/quoter_family_microstructure_ar1_matrix.json"
         elif args.fill_model == "microstructure_v1":
             out_path = ROOT / "autoresearch_gated/quoter_family_microstructure_matrix.json"
         else:
@@ -963,14 +995,17 @@ def main() -> int:
             and len(families) == len(order),
         }
 
+        if args.fill_model == "microstructure_v1" and obi_cal_path is not None:
+            task_tag = "task_23_family_microstructure_ar1"
+        elif args.fill_model == "microstructure_v1":
+            task_tag = "task_22_family_microstructure_v1"
+        else:
+            task_tag = "task_20_family_sweep"
         results = {
             "kind": "quoter_family_matrix",
-            "task": (
-                "task_21_family_microstructure_v1"
-                if args.fill_model == "microstructure_v1"
-                else "task_20_family_sweep"
-            ),
+            "task": task_tag,
             "fill_model": args.fill_model,
+            "obi_calibration_used": str(obi_cal_path) if obi_cal_path else None,
             **base_meta,
             "family_kwargs": family_kwargs,
             "families": families,
@@ -988,6 +1023,8 @@ def main() -> int:
     # single-family path
     if args.out is not None:
         out_path = args.out
+    elif args.fill_model == "microstructure_v1" and obi_cal_path is not None:
+        out_path = ROOT / "autoresearch_gated/quoter_microstructure_ar1_matrix.json"
     elif args.fill_model == "microstructure_v1":
         out_path = ROOT / "autoresearch_gated/quoter_microstructure_matrix.json"
     else:

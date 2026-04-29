@@ -44,9 +44,11 @@ Sign conventions:
 
 from __future__ import annotations
 
+import json
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Optional
 
 from math_core.quoter_policy import ExecutionIntent, OrderType, Side
@@ -121,6 +123,41 @@ class FillRecord:
     regime: Optional[str] = None
     mid_at_markout: Optional[float] = None
     markout_bps: Optional[float] = None
+
+
+# ── Calibration loader ────────────────────────────────────────────────────
+
+
+def load_obi_ar1_calibration(
+    base: MicrostructureParams,
+    config_path: Path,
+    obi_target: Optional[float] = None,
+) -> MicrostructureParams:
+    """Build a MicrostructureParams with obi_phi/obi_vol/obi_clip overridden
+    from a calibration JSON written by scripts/calibrate_obi_ar1.py.
+
+    The scenario's `obi_target` is intentionally NOT overridden by the
+    calibrated `mu` — scenario targets (toxic +0.6, neutral 0, favorable
+    −0.4) are imposed conditions for the test bar, not natural baselines.
+    Pass `obi_target` explicitly to set the scenario value.
+
+    All non-OBI fields are preserved from `base`.
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(f"OBI calibration not found at {config_path}")
+    payload = json.loads(config_path.read_text())
+    pooled = payload.get("pooled") or {}
+    phi = float(pooled.get("phi", base.obi_phi))
+    sigma = float(pooled.get("sigma", base.obi_vol))
+    clip = float(pooled.get("clip", base.obi_clip))
+    overrides: dict = {
+        "obi_phi": phi,
+        "obi_vol": sigma,
+        "obi_clip": clip,
+    }
+    if obi_target is not None:
+        overrides["obi_target"] = obi_target
+    return replace(base, **overrides)
 
 
 # ── Initialization and environment step ──────────────────────────────────
