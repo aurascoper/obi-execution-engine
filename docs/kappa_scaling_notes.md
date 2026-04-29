@@ -169,6 +169,37 @@ This belongs in `strategy/optimal_rate.py` (or a thin wrapper) before any wiring
 
 ---
 
+## 6.5 Addendum (2026-04-29 morning) — `p` (terminal-penalty) needs scaling too
+
+The κ-only rule is **not sufficient**. Empirical sweep (commit pending) showed that even with `κ = c · γ/T²` for c ∈ {0.1, 0.5, 1.0}, every timestep hit the rate cap because the **inventory** feedback coefficient `(2A + η·C) / (2γ)` was unbounded near terminal.
+
+Root cause: at τ near 0, the boundary condition `A(0) = p` dominates. Then
+
+```
+α* ≈ A · x / γ  ≈  (p/γ) · x
+```
+
+With our `γ ≈ 10⁻⁶` and the default `p = 1.0`, `(p/γ) ≈ 5.6×10⁵` — six orders of magnitude too large. The optimizer "wants" to liquidate everything in microseconds because the terminal penalty `p · x_T²` is gigantic compared to anything else in the cost integral.
+
+**Both scaling rules together:**
+
+```
+κ_target = c_κ · γ / T²       (Y-feedback boundedness)
+p_target = c_p · γ / T        (inventory-feedback boundedness near terminal)
+λ_target ≈ γ / T²              (inventory risk; same order as κ)
+```
+
+Order of magnitude for our HIP-3 calibration (γ=1.77×10⁻⁶, T=3600s):
+- λ ≈ 1.4×10⁻¹³ (matches our existing γT=2 derivation: 5.5×10⁻¹³)
+- κ ≈ c_κ × 1.4×10⁻¹³
+- p ≈ c_p × 4.9×10⁻¹⁰
+
+`c_p = 1` gives `p ≈ 5×10⁻¹⁰` — to be tested in the joint sweep.
+
+**Why the cap masked this:** the cap saved us from divergence, but the underlying BL policy still demanded huge α at every step. The cap is essential as a defense-in-depth, but it shouldn't be load-bearing — we want a κ AND p such that the natural BL trajectory respects boundedness on its own.
+
+---
+
 ## 7. Concrete next-session plan
 
 1. **Read BL §3 (Proposition 2 + verification theorem)** — confirm the σ²·κ structural constraint precisely; re-derive κ_max from there rather than my hand-waved estimate.
