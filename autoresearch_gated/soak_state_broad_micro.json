@@ -1,0 +1,605 @@
+{
+  "candidate_id": "stage2_5_adaptive_shadow_2026-04-28",
+  "mode": "stage2_5_adaptive_sizing_shadow_soak",
+  "status": "STAGE3_LIVE",
+  "stage_2_5_live_ts_ms": 1777402322000,
+  "stage_2_5_live_ts": "2026-04-28T19:05:22Z",
+  "stage_2_5_pid": 78478,
+  "stage_2_5_relaunch_script": "scripts/relaunch_hl_engine_stage2_full_LIVE.sh",
+  "stage_2_5_purpose": "Adaptive-sizing SHADOW soak. Live submitted size remains FIXED at $50. Kelly adaptive notional logged via existing sizing_shadow event. Collect distribution data for Stage 3 promotion gate.",
+  "stage_2_5_caps": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 50,
+    "MAX_NET_NOTIONAL": 250,
+    "MAX_NEW_ENTRIES_PER_SESSION": 0,
+    "HL_SESSION_LOSS_GUARD_USD": 75,
+    "PAUSE_NEW_ENTRIES": 0,
+    "SIZING_MODE": "fixed (default \u2014 adaptive Kelly is shadow-only via sizing_shadow log)",
+    "SMOKE_TEST_SYMBOLS": "(empty \u2014 full universe)"
+  },
+  "stage_2_5_governance": {
+    "live_size_governor": "NOTIONAL_PER_TRADE_OVERRIDE=$50 (fixed; adaptive Kelly NOT used live)",
+    "exposure_governor": "MAX_NET_NOTIONAL=$250 (caps simultaneous open exposure)",
+    "loss_governor": "HL_SESSION_LOSS_GUARD_USD=$75 (auto-halts entries on cumulative loss)",
+    "entry_count_governor": "DISABLED (MAX_NEW=0 \u2192 no per-session count cap; net+loss caps are sufficient)"
+  },
+  "stage_2_5_shadow_fields_already_logged": [
+    "symbol",
+    "mode (fixed/kelly)",
+    "fixed_cap (=$50)",
+    "kelly_cap (THE ADAPTIVE NOTIONAL \u2014 already computed)",
+    "kelly_f",
+    "chosen_cap (currently fixed_cap, since SIZING_MODE=fixed)",
+    "z, phi, sigma (signal context)"
+  ],
+  "stage_2_5_shadow_fields_NOT_yet_logged": [
+    "max_net_notional_after_order",
+    "margin_required",
+    "leverage",
+    "symbol_cap (in SYMBOL_CAPS dict, not in event)"
+  ],
+  "stage_2_5_proposed_followup": "Optional small patch to strategy/signals.py to extend sizing_shadow event with the 4 missing fields. NOT included in this relaunch. Awaiting separate authorization if needed for Stage 3 promotion analysis.",
+  "stage_3_promotion_gates": [
+    "n_entries (sample size adequate)",
+    "submitted_notional distribution (should be tightly clustered at $50)",
+    "adaptive_notional (kelly_cap) distribution (should not exceed reasonable cap)",
+    "max adaptive size (\u2264 MAX_ORDER_NOTIONAL=$2500)",
+    "top symbols by adaptive notional (concentration check)",
+    "top DEX/bucket by adaptive notional (HIP-3 vs native)",
+    "adaptive size during losing streaks (must NOT increase)",
+    "any adaptive size > cap (MUST be 0)"
+  ],
+  "stage_2_5_hard_stops": [
+    "any order intent OR fill > $50 notional (Bug A regression)",
+    "missing fee/closed_pnl/hash on a fill",
+    "HL_SESSION_LOSS_GUARD_USD=$75 breach (engine self-halts)",
+    "MAX_NET_NOTIONAL=$250 breach (engine self-halts NEW entries)",
+    "ETH wrong-direction entry",
+    "any HIP-3 size > $50",
+    "risk_gate_net_cap_blocked_invalid_mid floods",
+    "kelly_cap consistently > $200 (would suggest adaptive sizing dangerously large at Stage 3)"
+  ],
+  "stage_2_5_halt_command": "kill -TERM 78478",
+  "_legacy_stage2_max20": "STAGE2_LIVE_FULL_UNIVERSE_MAX20 was active 2026-04-28T15:58:49Z to 2026-04-28T19:01:14Z (PID 8711)",
+  "stage2_full_max20_relaunch_ts_ms": 1777391023000,
+  "stage2_full_max20_relaunch_ts": "2026-04-28T15:58:49Z",
+  "stage2_full_max20_pid": 8711,
+  "stage2_full_max20_caps": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 50,
+    "MAX_NET_NOTIONAL": 250,
+    "MAX_NEW_ENTRIES_PER_SESSION": 20,
+    "HL_SESSION_LOSS_GUARD_USD": 75,
+    "PAUSE_NEW_ENTRIES": 0,
+    "SMOKE_TEST_SYMBOLS": "(empty \u2014 no allowlist; full universe)",
+    "rationale": "Raised from 5 to 20 to allow more fill attempts after counter exhaustion at first burst. Net exposure still bounded by MAX_NET_NOTIONAL=$250 (~5 simultaneous positions) and HL_SESSION_LOSS_GUARD_USD=$75."
+  },
+  "stage2_full_max20_prior_run_summary": {
+    "pid": 91192,
+    "live_window": "2026-04-28T15:18:29Z to 2026-04-28T15:57:58Z (~40m)",
+    "entry_signals": 21,
+    "hl_order_intent": 1,
+    "fills": 0,
+    "near_miss_intent": "vntl:NUCLEAR buy 0.352 @ $141.94 notional $49.87 (Bug A fix verified on HIP-3 at Stage 2 size)",
+    "exhaust_reason": "Budget hit 5/5 in first 23 seconds; 16 subsequent signals blocked"
+  },
+  "stage2_full_max20_hard_stops": [
+    "any order intent OR fill > $50 notional",
+    "missing fee/closed_pnl/hash on a fill",
+    "unexpected order burst (> 20 entries should not be possible)",
+    "MAX_NEW_ENTRIES_PER_SESSION=20 exceeded",
+    "HL_SESSION_LOSS_GUARD_USD=$75 breach",
+    "ETH wrong-direction entry",
+    "any HIP-3 size > $50 (Bug A regression check)",
+    "risk_gate_net_cap_blocked_invalid_mid floods (mid pipeline issue)"
+  ],
+  "_legacy_stage2_full_first_run": "STAGE2_LIVE_FULL_UNIVERSE was active 2026-04-28T15:18:29Z to 2026-04-28T15:57:58Z (PID 91192); 0 fills, 1 near-miss",
+  "stage_2_full_live_ts_ms": 1777389509000,
+  "stage_2_full_live_ts": "2026-04-28T15:18:29Z",
+  "stage_2_full_live_pid": 91192,
+  "stage_2_full_live_relaunch_script": "scripts/relaunch_hl_engine_stage2_full_LIVE.sh",
+  "stage_2_full_universe": {
+    "natives": "26 (HL_UNIVERSE)",
+    "hip3_and_builders": "60+ (HIP3_UNIVERSE: xyz/vntl/hyna/flx/km/cash/para)",
+    "engine_reported_count": 95,
+    "smoke_test_symbols": "(empty \u2014 no allowlist)"
+  },
+  "stage_2_caps_active": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 50,
+    "MAX_NET_NOTIONAL": 250,
+    "MAX_NEW_ENTRIES_PER_SESSION": 5,
+    "HL_SESSION_LOSS_GUARD_USD": 75,
+    "PAUSE_NEW_ENTRIES": 0
+  },
+  "stage_2_full_hard_stops": [
+    "any order intent OR fill > $50 notional (Bug A regression check on HIP-3)",
+    "missing fee/closed_pnl/hash on a fill",
+    "unexpected order burst",
+    "MAX_NEW_ENTRIES_PER_SESSION=5 exceeded",
+    "HL_SESSION_LOSS_GUARD_USD=$75 breach",
+    "ETH wrong-direction entry (override regression check)",
+    "any HIP-3 size > $50 (would indicate Bug A regression on builder DEX)",
+    "risk_gate_net_cap_blocked_invalid_mid floods (would suggest mid pipeline broken)"
+  ],
+  "stage_2_full_halt_command": "kill -TERM 91192",
+  "_legacy_stage2_armed_paused": "STAGE2_ARMED_PAUSED ran 2026-04-28T12:25:05Z to 2026-04-28T15:15:33Z (PID 29825)",
+  "stage_1_acceptance": {
+    "verdict": "PASS",
+    "live_window": "2026-04-28T04:42:28Z to 2026-04-28T12:23:33Z (7h 41m)",
+    "pid": 58525,
+    "checks": {
+      "all_intent_notionals_le_25": "PASS  ($24.46 max)",
+      "all_fills_carry_schema": "PASS  fee+closed_pnl+hash on all 7 fill events",
+      "no_net_cap_bypass": "PASS",
+      "no_taker_escalation_bypass": "PASS  0 hip3_taker_escalation events",
+      "no_order_burst": "PASS  5 entry_signals over 7.5h",
+      "gate_E_clean": "PASS",
+      "manual_cloid_tagging": "PASS  (BTCD + ETH closes earlier)",
+      "ETH_direction_correct": "PASS  z=+1.52 \u2192 SHORT (correct after override fix)",
+      "session_cap_or_clean_halt": "PASS  2/5 used, graceful halt clean (13s)"
+    },
+    "round_trips_completed": 2,
+    "trade_1": "BTC LONG $76811\u2192$76882  +$0.0227 closedPnl",
+    "trade_2": "BTC SHORT $76578\u2192$76437  +$0.0451 closedPnl",
+    "session_realized": 0.0678,
+    "session_fees_paid": 0.0335,
+    "session_net": 0.0343
+  },
+  "stage_2_armed_ts_ms": 1777378085000,
+  "stage_2_armed_ts": "2026-04-28T12:28:05Z",
+  "stage_2_armed_pid": 29825,
+  "stage_2_relaunch_armed_script": "scripts/relaunch_hl_engine_stage2_native.sh",
+  "stage_2_relaunch_live_script": "scripts/relaunch_hl_engine_stage2_native_LIVE.sh",
+  "stage_2_caps": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 50,
+    "MAX_NET_NOTIONAL": 250,
+    "MAX_NEW_ENTRIES_PER_SESSION": 5,
+    "HL_SESSION_LOSS_GUARD_USD": 75,
+    "SMOKE_TEST_SYMBOLS": "BTC,ETH,SOL,AAVE,ZEC",
+    "EXECUTION_MODE": "LIVE",
+    "EXECUTION_STYLE": "maker",
+    "PAUSE_NEW_ENTRIES": 1
+  },
+  "stage_2_hard_stop_conditions": [
+    "any order intent OR fill > $50 notional",
+    "missing fee/closed_pnl/hash on a fill",
+    "unexpected order burst",
+    "MAX_NEW_ENTRIES_PER_SESSION=5 exceeded",
+    "HL_SESSION_LOSS_GUARD_USD=$75 breach",
+    "ETH wrong-direction entry"
+  ],
+  "_legacy_overnight_status": "Stage 1 LIVE_ENTRIES_ENABLED_NATIVE_OVERNIGHT halted at 2026-04-28T12:23:33Z; PASS",
+  "overnight_live_ts_ms": 1777351348000,
+  "overnight_live_ts": "2026-04-28T04:42:28Z",
+  "overnight_live_pid": 58525,
+  "overnight_live_relaunch_script": "scripts/relaunch_hl_engine_native_dust_LIVE.sh",
+  "overnight_hard_stop_conditions": [
+    "any order intent OR fill > $25 notional",
+    "missing fee/closed_pnl/hash on a fill",
+    "unexpected order burst",
+    "MAX_NEW_ENTRIES_PER_SESSION=5 exceeded (engine self-halts but operator should review)",
+    "HL_SESSION_LOSS_GUARD_USD=$50 breach (engine self-halts new entries)",
+    "ETH wrong-direction entry after corrected override (e.g. SHORT on z<0)"
+  ],
+  "overnight_halt_command": "kill -TERM 58525",
+  "hl_pairs_status_at_overnight": "STOPPED (patched in code; whitelist stale; not running)",
+  "hl_pairs_shutdown_patch": {
+    "verdict": "ACCEPTED_CODE_VERIFIED_RUNTIME_TEST_BLOCKED_BY_STALE_WHITELIST",
+    "ts": "2026-04-28T04:28:47Z",
+    "evidence": [
+      "Pre-patch bug confirmed via stderr: 'Event' object is not callable TypeErrors",
+      "Patch uses same install_shutdown_event helper that acceptance-tested twice on hl_engine.py",
+      "Live runtime test blocked because pairs whitelist is 96.5h old (>48h guard)"
+    ],
+    "leave_stopped": true,
+    "whitelist_refresh_deferred": "out of scope for tonight"
+  },
+  "post_verification_state": {
+    "eth_position_closed": {
+      "ts": "2026-04-28T03:38:18Z",
+      "via_script": "close_eth.py",
+      "tagged_cloid": "0xdead00019d68a545d443f2280c96dfed",
+      "intent": "manual_close_full",
+      "reason": "cleanup_after_z_override_eth_short_threshold_bug",
+      "fill_qty": 0.0109,
+      "fill_px": 2287.0,
+      "side": "buy_to_cover_short",
+      "post_close_szi": 0,
+      "open_orders_after": 0,
+      "sidecar_logged": true
+    },
+    "z_override_eth_corrected": {
+      "old": "-1.25,5.0,-5.0,5.0",
+      "new": "-1.25,-0.5,1.25,0.5",
+      "files_updated": [
+        "scripts/relaunch_hl_engine_micro_soak.sh",
+        "scripts/relaunch_hl_engine_micro_soak_LIVE.sh",
+        "scripts/relaunch_hl_engine_native_dust.sh",
+        "scripts/relaunch_hl_engine_native_dust_LIVE.sh"
+      ],
+      "boot_verified_ts": "2026-04-28T03:42:20Z",
+      "verified_parsed_thresholds": {
+        "z_entry": -1.25,
+        "z_exit": -0.5,
+        "z_short_entry": 1.25,
+        "z_exit_short": 0.5
+      },
+      "verify_pid": 34188,
+      "verify_engine_halted_cleanly": true
+    },
+    "live_relaunch_blocked_pending": "operator decision after Mode 2 recalibration (deferred)",
+    "mode_2_recalibration_status": "DEFERRED \u2014 to run after operational dust soak resumes; not tonight"
+  },
+  "_legacy_status_post_v2_native": "COMPLETE_VERIFICATION_HALTED at 2026-04-28T03:21:06Z; all v2 verification goals met; ETH direction bug surfaced and now resolved",
+  "halt_reason": "unexpected_sizing_and_net_cap_bypass",
+  "native_halted_ts_ms": 1777346466500,
+  "native_halted_ts": "2026-04-28T03:21:06Z",
+  "native_halt_pid": 14619,
+  "entries_used": 3,
+  "session_cap_remaining": 2,
+  "fills_verified": true,
+  "schema_verified": true,
+  "sizing_verified": true,
+  "maker_path_verified": true,
+  "taker_path_verified": true,
+  "z_revert_exit_verified": true,
+  "session_loss_guard_breached": false,
+  "session_cap_breached": false,
+  "graceful_halt_verified": true,
+  "trade_summary": {
+    "entry_count": 3,
+    "fill_count": 7,
+    "realized_pnl_usd": 0.0414,
+    "fees_paid_usd": 0.0336,
+    "net_pnl_usd": 0.0078
+  },
+  "open_position_at_halt": {
+    "symbol": "para:BTCD",
+    "side": "short",
+    "size": 3.3,
+    "entry_px": 60.523,
+    "notional_usd": 199.84,
+    "unrealized_pnl_usd_at_halt": -0.11,
+    "para_clearinghouse_account_value": 9.71,
+    "fee_paid": 0.179753,
+    "fill_hash": "0x30db8e9e786ec87e3255043a22d31902021100841361e750d4a439f13762a268",
+    "fill_oid": 401136333605,
+    "fill_ts": "2026-04-27T23:40:38.756839Z",
+    "decision": "preserved_for_investigation_NOT_closed_immediately"
+  },
+  "direction_review": {
+    "symbol": "ETH",
+    "issue": "opened shorts on negative z (z=-0.65, -0.91, -1.19)",
+    "expected_for_mean_revert_long": "z<0 \u2192 buy / long candidate",
+    "observed": "z<0 \u2192 sell / short open",
+    "risk_level": "strategy_semantics_not_risk_cap",
+    "all_other_safety_checks": "PASSED",
+    "investigation_required_before": "any further ETH live entries"
+  },
+  "_legacy_native_status": "LIVE_ENTRIES_ENABLED_NATIVE was active 2026-04-28T02:53:58Z to 2026-04-28T03:21:06Z (~27 min)",
+  "native_entries_enabled_ts_ms": 1777344838598,
+  "native_entries_enabled_ts": "2026-04-28T02:53:58Z",
+  "native_live_pid": 14619,
+  "native_live_relaunch_script": "scripts/relaunch_hl_engine_native_dust_LIVE.sh",
+  "regime_at_launch": "deeply oversold + bearishly trend-aligned natives \u2014 ETH most likely first fill at z\u2248-1.9; AAVE/BTC/ETH frequently trend-blocked; this is mechanical fill-path test, not strategy approval",
+  "native_armed_ts_ms": 1777342735700,
+  "native_armed_ts": "2026-04-28T02:18:55Z",
+  "native_armed_pid": 202,
+  "native_universe_allowlist": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "AAVE",
+    "ZEC"
+  ],
+  "native_relaunch_armed_script": "scripts/relaunch_hl_engine_native_dust.sh",
+  "native_purpose": "Test fill-path end-to-end on native HL only (tight spreads); verify fee/closed_pnl/hash on a v2-patched hl_engine fill",
+  "native_run_env": {
+    "SMOKE_TEST_SYMBOLS": "BTC,ETH,SOL,AAVE,ZEC",
+    "NOTIONAL_PER_TRADE_OVERRIDE": 25,
+    "MAX_NET_NOTIONAL": 150,
+    "MAX_NEW_ENTRIES_PER_SESSION": 5,
+    "HL_SESSION_LOSS_GUARD_USD": 50,
+    "EXECUTION_MODE": "LIVE",
+    "EXECUTION_STYLE": "maker",
+    "PAUSE_NEW_ENTRIES": 1,
+    "Bug_A_fix": "active (NOTIONAL_PER_TRADE_OVERRIDE honored)",
+    "Bug_B_fix": "active (net-cap fail-closed on invalid mid)"
+  },
+  "native_hard_halt_conditions": [
+    "any order intent OR fill > $25 notional",
+    "missing fee/closed_pnl/hash on a fill",
+    "unexpected order burst",
+    "HL_SESSION_LOSS_GUARD_USD breach",
+    "fill behaves anomalously (size mismatch, wrong symbol, etc.)"
+  ],
+  "native_goals": [
+    "actual native-HL fills at <=$25",
+    "fee / closed_pnl / hash verified from hl_engine fills (Task #7-equivalent on v2-patched engine)",
+    "no sizing regression",
+    "session cap halts at 5 entries",
+    "graceful halt still works"
+  ],
+  "_legacy_v2_status": "v2 broad-universe soak HALTED 2026-04-28T02:11:34Z; PARTIAL_PASS x2; replaced by native-only run",
+  "_legacy_status": "LIVE_ENTRIES_ENABLED was active 2026-04-27T23:19:06Z to 2026-04-28T00:43:04Z",
+  "v2_concluded_ts_ms": 1777340294157,
+  "v2_concluded_ts": "2026-04-28T02:11:34Z",
+  "v2_halt_pid": 78734,
+  "v2_halt_reason": "v2_budget_exhausted_no_fills",
+  "stage_1": "PARTIAL_PASS",
+  "stage_2": "PARTIAL_PASS",
+  "bug_a_status": "VERIFIED_ORDER_INTENT_LEVEL",
+  "bug_b_status": "PATCHED_NOT_EXERCISED",
+  "fill_schema_status": "PREVIOUSLY_VERIFIED_FROM_PAIRS_AND_BTCD",
+  "v2_two_attempt_summary": {
+    "attempt_1": {
+      "pid": 73243,
+      "live_window": "2026-04-28T01:09:54Z to 2026-04-28T01:20:52Z",
+      "entry_signals": 25,
+      "hl_order_intent": 2,
+      "fills": 0,
+      "max_intent_notional_usd": 24.97,
+      "intents": [
+        {
+          "sym": "vntl:SEMIS/USD",
+          "side": "buy",
+          "qty": 0.049,
+          "px": 508.37,
+          "notional": 24.8
+        },
+        {
+          "sym": "hyna:XPL/USD",
+          "side": "sell",
+          "qty": 253,
+          "px": 0.0985,
+          "notional": 24.97
+        }
+      ]
+    },
+    "attempt_2": {
+      "pid": 78734,
+      "live_window": "2026-04-28T01:23:50Z to 2026-04-28T02:11:34Z",
+      "entry_signals": 60,
+      "hl_order_intent": 2,
+      "fills": 0,
+      "max_intent_notional_usd": 24.95,
+      "intents": [
+        {
+          "sym": "vntl:SEMIS/USD",
+          "side": "buy",
+          "qty": 0.049,
+          "px": 508.37,
+          "notional": 24.8
+        },
+        {
+          "sym": "hyna:XPL/USD",
+          "side": "sell",
+          "qty": 252,
+          "px": 0.0988,
+          "notional": 24.95
+        }
+      ]
+    },
+    "identical_outcome": "Same first-5 budget consumers, same 2 IOC submissions, same non-cross outcome. Confirms structural execution-mechanics issue, not sample-size."
+  },
+  "notes": "Soak start_ts_ms = 0 in PROPOSED status; will be set to wall-clock ms at the moment PAUSE_NEW_ENTRIES is flipped to 0. Operator must update status to ACTIVE at that point.",
+  "next_session_recommendation": {
+    "approach": "(d) native-only dust universe \u2014 narrower scope, tighter spreads, higher fill probability",
+    "env": {
+      "SMOKE_TEST_SYMBOLS": "BTC,ETH,SOL,AAVE,ZEC",
+      "NOTIONAL_PER_TRADE_OVERRIDE": 25,
+      "MAX_NEW_ENTRIES_PER_SESSION": 5,
+      "MAX_NET_NOTIONAL": 150,
+      "HL_SESSION_LOSS_GUARD_USD": 50,
+      "PAUSE_NEW_ENTRIES": 0
+    },
+    "goal": "actual fills at <=$25 with fee/closed_pnl/hash verified from hl_engine fills",
+    "do_not": "start without explicit operator authorization"
+  },
+  "_legacy_v2_attempt2_status": "LIVE_ENTRIES_ENABLED_v2_attempt2 was active 2026-04-28T01:23:50Z to 2026-04-28T02:11:34Z",
+  "stage_1_v2_attempt1": {
+    "verdict": "PARTIAL_PASS",
+    "live_window_ts": "2026-04-28T01:09:54Z to 2026-04-28T01:20:52Z",
+    "live_window_pid": 73243,
+    "passed": [
+      "sizing \u2264 $25 across builder/HIP-3 intents (vntl:SEMIS $24.80, hyna:XPL $24.97)",
+      "taker escalation no longer bypasses sizing (Bug A end-to-end fix verified)",
+      "session cap halted further entries at counter=5",
+      "no order burst (only 2 IOC submissions)",
+      "no positions left open",
+      "no open orders left"
+    ],
+    "not_verified": [
+      "fee/closed_pnl/hash on a v2 hl_engine fill (no fills produced \u2014 both IOC orders did not cross book)",
+      "Bug B fix exercised (no risk_gate_net_cap_blocked_invalid_mid event in window)"
+    ],
+    "did_NOT_happen_correctly": [],
+    "intents_submitted": 2,
+    "fills_received": 0,
+    "max_intent_notional_usd": 24.97,
+    "exit_reason": "session_cap_5_5_exhausted_no_fills"
+  },
+  "stage_1_v2_attempt2_ts_ms": 1777339277000,
+  "stage_1_v2_attempt2_pid": 78734,
+  "stage_1_v2_attempt2_purpose": "Same env, restart to reset MAX_NEW_ENTRIES counter and try again for actual fills + Bug B trigger",
+  "_legacy_v2_attempt1_status": "LIVE_ENTRIES_ENABLED_v2 was active 2026-04-28T01:09:54Z to 2026-04-28T01:20:52Z",
+  "v2_entries_enabled_ts_ms": 1777339644172,
+  "v2_entries_enabled_ts": "2026-04-28T01:09:54Z",
+  "v2_engine_pid": 73243,
+  "v2_stop_conditions": [
+    "any order intent OR fill > $25 notional \u2192 halt immediately",
+    "any risk_gate_net_cap_blocked_invalid_mid event spam \u2192 halt (gate is fail-closed; logged but should not flood)",
+    "missing fee/closed_pnl/hash on any fill",
+    "unexplained order burst",
+    "HL_SESSION_LOSS_GUARD_USD=$50 breach",
+    "MAX_NEW_ENTRIES_PER_SESSION=5 reached (engine self-halts new entries)"
+  ],
+  "v2_purpose": "Verify Bug A + Bug B fixes under live conditions across the configured universe.",
+  "armed_v2_ts_ms": 1777339385913,
+  "armed_v2_ts": "2026-04-28T01:03:05Z",
+  "armed_v2_pid": 70973,
+  "fixes_applied_before_v2": [
+    "Bug A: hl_engine.py:380 now reads NOTIONAL_PER_TRADE_OVERRIDE first, falls back to PER_PAIR_NOTIONAL. Verified live: hl_notional_config source=NOTIONAL_PER_TRADE_OVERRIDE notional_per_trade=25.0",
+    "Bug B: _risk_gate_ok net-cap block now fail-CLOSED when mid is invalid (NaN/0). Was fail-open."
+  ],
+  "btcd_cleanup": {
+    "closed_at": "2026-04-28T01:00:51Z",
+    "close_script": "close_btcd.py",
+    "close_cloid": "0xdead0001de767314be060e2ba18470b9",
+    "close_intent": "manual_close_full",
+    "close_reason": "micro_soak_cleanup_after_sizing_netcap_bug",
+    "close_fill_qty": 3.3,
+    "close_fill_px": 60.56,
+    "close_fee_paid": "TBD (in fill stream)",
+    "realized_pnl_approx": -0.122,
+    "gate_e_signal": "tagged_cloid_visible_in_sidecar_and_fill_stream"
+  },
+  "_legacy_status_v1": "HALTED at 2026-04-28T00:43:04Z due to Bug A+B violations",
+  "halt_ts_ms": 1777337984667,
+  "halt_ts": "2026-04-28T00:43:04Z",
+  "halt_pid": 33224,
+  "halt_method": "graceful_SIGTERM",
+  "halt_exit_seconds": 13,
+  "violations": [
+    "NOTIONAL_PER_TRADE_OVERRIDE=$25 ignored on para:BTCD sizing \u2014 sizing_shadow + entry_signal both logged qty=3.3 notional=$199.72",
+    "hip3_taker_escalation bypassed MAX_NET_NOTIONAL=$150 \u2014 first attempt at 23:23:31 was correctly blocked by risk_gate_net_cap; second attempt at 23:40:31 with z_4h=+6.808 escalated to taker and submitted",
+    "actual notional $199.84 vs intended $25 (8x over)"
+  ],
+  "soak_runtime_summary": {
+    "armed_at": "2026-04-27T23:11:07Z",
+    "live_at": "2026-04-27T23:19:06Z",
+    "first_fill_at": "2026-04-27T23:40:38Z",
+    "halted_at": "2026-04-28T00:43:04Z",
+    "live_duration_min": 84,
+    "entry_signals_total": 68,
+    "entry_signals_blocked_by_max_new_entries": 41,
+    "actual_fills": 1,
+    "fills_with_complete_schema": 1,
+    "manual_cloids_observed": 0,
+    "task_7_logger_schema_status": "PASS \u2014 fee/closed_pnl/hash all populated on the BTCD fill"
+  },
+  "investigation_required": [
+    "A. Why builder/HIP-3 sizing ignored NOTIONAL_PER_TRADE_OVERRIDE \u2014 trace size computation path for symbols with HIP3 prefix (xyz:, vntl:, hyna:, flx:, km:, cash:, para:)",
+    "B. Why hip3_taker_escalation did not re-check MAX_NET_NOTIONAL before submit \u2014 trace escalation path in hl_engine.py"
+  ],
+  "armed_ts_ms": 1777331467000,
+  "armed_ts": "2026-04-27T23:11:07Z",
+  "armed_pid": 30699,
+  "armed_engine_relaunch_script": "scripts/relaunch_hl_engine_micro_soak.sh",
+  "entries_enabled_ts_ms": 1777331946000,
+  "entries_enabled_ts": "2026-04-27T23:19:06Z",
+  "engine_pid": 33224,
+  "engine_relaunch_script": "scripts/relaunch_hl_engine_micro_soak_LIVE.sh",
+  "graceful_shutdown_acceptance": {
+    "tested_at": "2026-04-27T23:11:49Z",
+    "test_pid": 29308,
+    "result": "PASS",
+    "shutdown_initiated_to_complete_ms": 350,
+    "process_exit_total_s": 13,
+    "second_test_at": "2026-04-27T23:18:39Z",
+    "second_test_pid": 30699,
+    "second_test_result": "PASS",
+    "shutdown_event_log_keys": [
+      "hl_shutdown_handlers_installed (signals=[SIGINT,SIGTERM,SIGHUP])",
+      "hl_engine_shutdown_initiated",
+      "hl_engine_shutdown",
+      "hl_engine_shutdown_complete"
+    ]
+  },
+  "start_ts_ms": 1777331946000,
+  "universe": "liquid_natives_plus_configured_hip3",
+  "operator": "aurascoper",
+  "framing": "Forward HL-truth data collection across the configured universe. NOT a strategy promotion. NOT an OBI_THETA promotion. NOT a candidate config under test.",
+  "risk_bands": {
+    "max_net_drawdown_usd": 50,
+    "max_symbol_loss_usd": 20,
+    "max_net_notional_usd": 150,
+    "max_symbol_notional_usd": 40
+  },
+  "env_caps": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 25,
+    "MAX_NET_NOTIONAL": 150,
+    "MAX_NEW_ENTRIES_PER_SESSION": 5,
+    "HL_SESSION_LOSS_GUARD_USD": 50,
+    "SMOKE_TEST_SYMBOLS": "",
+    "PAUSE_NEW_ENTRIES": 0
+  },
+  "watch_list": [
+    "first eligible fill \u2014 verify hl_fill_received emits fee, closed_pnl, hash",
+    "manual close fires \u2014 verify cloid carries 0xdead0001 prefix",
+    "drawdown band: cumulative realized loss <= $50 \u2014 engine auto-halts via HL_SESSION_LOSS_GUARD_USD",
+    "MAX_NEW_ENTRIES_PER_SESSION=5 \u2014 engine auto-halts after 5 entries; relaunch resets",
+    "concentration: any single symbol > 40% of net notional"
+  ],
+  "termination_conditions": {
+    "auto_halt": [
+      "MAX_NEW_ENTRIES_PER_SESSION reached",
+      "HL_SESSION_LOSS_GUARD_USD breached",
+      "MAX_NET_NOTIONAL exceeded on a candidate entry"
+    ],
+    "operator_halt": [
+      "single symbol concentration > 40%",
+      "unexpected schema mismatch in hl_fill_received",
+      "manual close fires without 0xdead0001 prefix",
+      "any other anomaly worth pause-and-review"
+    ]
+  },
+  "evaluation_window_days": 7,
+  "post_soak_actions": [
+    "re-run scripts/audit_live_reduction_patterns.py to refresh heuristic share",
+    "re-run scripts/validate_promotion_gate.py \u2014 Gate E mode should flip to exercised_within_threshold if any manual closes fired",
+    "Gate D Phase 3: build forward-soak attribution check against logged fills"
+  ],
+  "soak_readiness_issues": [
+    {
+      "issue": "engine_ignores_graceful_shutdown",
+      "observed": "2026-04-27T22:46Z PID 74424 (uptime 06:47:44) ignored SIGTERM, SIGINT, SIGHUP, and process-group SIGTERM (PGID 74421); STAT=SN throughout",
+      "implication": "external operator halt requires SIGKILL, which discards in-flight state. Internal halts (HL_SESSION_LOSS_GUARD_USD, MAX_NEW_ENTRIES_PER_SESSION) still work but do not give operator a clean stop button.",
+      "resolution_required_before_soak": "either fix the signal handler in hl_engine.py OR explicitly waive graceful-shutdown requirement and authorize SIGKILL recovery as the standing halt method"
+    }
+  ],
+  "stage_3_live_ts_ms": 1777422171668,
+  "stage_3_live_ts": "2026-04-29T00:22:51.668536+00:00",
+  "stage_3_live_pid": 57137,
+  "stage_3_relaunch_script": "scripts/relaunch_hl_engine_stage3_full_LIVE.sh",
+  "stage_3_caps": {
+    "NOTIONAL_PER_TRADE_OVERRIDE": 75,
+    "MAX_NET_NOTIONAL": 375,
+    "HL_SESSION_LOSS_GUARD_USD": 112.5,
+    "MAX_NEW_ENTRIES_PER_SESSION": 0,
+    "PAUSE_NEW_ENTRIES": 0,
+    "REDUCE_ONLY_K_ACTIVATE": 1.5,
+    "REDUCE_ONLY_K_DEACTIVATE": 1.25,
+    "_reduce_only_activation_threshold_usd": 562.5,
+    "_reduce_only_deactivation_threshold_usd": 468.75
+  },
+  "stage_3_promotion_predecessor": {
+    "stage_2_5_pid": 91041,
+    "stage_2_5_acceptance_ts": "2026-04-28T23:48:25Z",
+    "stage_2_5_verdict": "PASS",
+    "report": "docs/stage2_5_end_of_soak_report.md"
+  },
+  "stage_3_governance": {
+    "primary_caps": [
+      "MAX_NET_NOTIONAL",
+      "HL_SESSION_LOSS_GUARD_USD",
+      "REDUCE_ONLY_*"
+    ],
+    "session_entry_count_cap": "DISABLED (MAX_NEW=0)",
+    "stage_3_acceptance_evaluator": "scripts/gate_d_eval.py against config/expectation_bands.json"
+  },
+  "stage_3_hard_stops": [
+    "submitted_notional materially > $75",
+    "sizing_runtime_shadow_failed event appears",
+    "missing fee/closed_pnl/hash on hl_fill_received",
+    "hl_session_loss_guard fires",
+    "unexplained order burst",
+    "manual close without tagged cloid",
+    "reduce-only mode fails to deactivate after sustained |net| < $468.75"
+  ],
+  "stage_3_halt_command": "kill -TERM 57137",
+  "stage_3_relevant_commits": [
+    "6f34339 risk: add MAX_NET reduce-only hysteresis gate",
+    "490ca6a hl_engine: shutdown event, runtime-shadow telemetry, sizing/net-cap bugfixes",
+    "7ba9455 add Gate D evaluator + Stage 3 expectation-band deriver (Steps 1-2)",
+    "6d8692b docs: Stage 2.5 PASS report + Stage 3 promotion design (approved)"
+  ]
+}
