@@ -1,24 +1,36 @@
 #!/usr/bin/env python3
-"""scripts/test_quoter_tracking.py — TWAP + quoter tracking smoke test (Task 19).
+"""scripts/test_quoter_tracking.py — quoter tracking smoke test (Tasks 19, 20).
 
-Drives math_core.quoter_policy with the math_core.schedulers.twap target curve
-under three canonical synthetic scenarios:
+Drives math_core.quoter_policy with a scheduler family from
+math_core.schedulers (TWAP, exponential, sinh-ratio) under three canonical
+synthetic scenarios:
 
   1. neutral OFI, normal fills
   2. toxic OFI, weak passive fills
   3. favorable OFI, strong passive fills
 
-Acceptance bar (smoke; per docs/quoter_design_spec.md, Task 19 minimum):
-  1. tracking error remains bounded
+Acceptance bar (six-criterion smoke, applied per family; the quoter itself
+does not change between families):
+
+  1. behind-only tracking miss bounded
   2. no sign crossing
   3. terminal completion within tolerance
   4. toxic OFI completes faster than favorable OFI
   5. maker share positive in non-catchup regimes
   6. no forced terminal flush in normal scenarios
 
-Writes the per-scenario record to autoresearch_gated/quoter_tracking_matrix.json
-together with the parameter block, branch SHA, and per-step timeseries summary
-diagnostics so the run is fully reproducible.
+CLI:
+  --scheduler {twap,exponential,sinh_ratio}   single-family run
+  --all-families                              sweep all three; stop at first fail
+  --rho FLOAT                                 exponential urgency (default 2.0)
+  --kappa FLOAT                               sinh-ratio shape (default 2.0)
+  --seeds INT                                 seeds per scenario (default 10)
+  --out PATH                                  JSON artifact destination
+
+Single-family runs write autoresearch_gated/quoter_tracking_matrix.json
+(legacy Task 19 path). Multi-family sweeps write
+autoresearch_gated/quoter_family_matrix.json with one nested record per
+family plus a top-level acceptance/decision block.
 
 Pure simulation. No live imports, no network, no engine state.
 """
@@ -51,7 +63,7 @@ from math_core.quoter_policy import (
     TrackingMetrics,
     build_intent,
 )
-from math_core.schedulers import twap
+from math_core.schedulers import SCHEDULERS, get_target_inventory
 
 
 # ── Synthetic environment ─────────────────────────────────────────────────
@@ -95,6 +107,8 @@ def step_mid(mid: float, drift_bps_per_step: float, vol_bps_per_step: float, rng
 def run_scenario(
     label: str,
     *,
+    scheduler_name: str,
+    scheduler_kwargs: dict,
     initial_inventory: float,
     horizon_s: float,
     dt_s: float,
@@ -133,7 +147,13 @@ def run_scenario(
         for i in range(n_steps + 1):
             t = i * dt_s
             t_clamped = min(t, horizon_s)
-            q_star = twap(initial_inventory, horizon_s, t_clamped)
+            q_star = get_target_inventory(
+                scheduler_name,
+                initial_inventory,
+                horizon_s,
+                t_clamped,
+                **scheduler_kwargs,
+            )
 
             inp = QuoterInputs(
                 t=t_clamped,
@@ -331,21 +351,24 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", type=Path, default=ROOT / "autoresearch_gated/quoter_tracking_matrix.json")
-    ap.add_argument("--seeds", type=int, default=10)
-    args = ap.parse_args()
-
-    params = QuoterParams()
-    initial_inventory = 10_000.0
-    horizon_s = 3600.0
-    dt_s = 10.0
-    mid0 = 100.0
-    completion_tol_dollars = 50.0
-    seeds = list(range(args.seeds))
+def _run_family(
+    *,
+    scheduler_name: str,
+    scheduler_kwargs: dict,
+    params: QuoterParams,
+    initial_inventory: float,
+    horizon_s: float,
+    dt_s: float,
+    mid0: float,
+    completion_tol_dollars: float,
+    seeds: list[int],
+) -> dict:
+    """Run all three OFI scenarios for one scheduler family. Returns the
+    family record (scenarios + acceptance + scheduler metadata)."""
 
     common = dict(
+        scheduler_name=scheduler_name,
+        scheduler_kwargs=scheduler_kwargs,
         initial_inventory=initial_inventory,
         horizon_s=horizon_s,
         dt_s=dt_s,
@@ -388,37 +411,24 @@ def main() -> int:
         ),
     }
 
-    results = {
-        "kind": "quoter_tracking_matrix",
-        "task": "task_19_twap_smoke",
-        "git_sha": _git_sha(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "scheduler_family": "twap",
-        "params": {
-            "quoter_params": asdict(params),
-            "initial_inventory": initial_inventory,
-            "horizon_s": horizon_s,
-            "dt_s": dt_s,
-            "mid0": mid0,
-            "completion_tol_dollars": completion_tol_dollars,
-            "n_seeds": len(seeds),
-        },
+    record = {
+        "scheduler_family": scheduler_name,
+        "scheduler_kwargs": scheduler_kwargs,
         "scenarios": scenarios,
     }
-    results["acceptance"] = evaluate_acceptance(
-        results, initial_inventory, completion_tol_dollars
+    record["acceptance"] = evaluate_acceptance(
+        {"scenarios": scenarios}, initial_inventory, completion_tol_dollars
     )
+    return record
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(results, indent=2, default=str))
 
-    print(f"\nQuoter tracking matrix written: {args.out}")
-    print(f"Git SHA: {results['git_sha']}")
-    print(f"Seeds: {len(seeds)}\n")
+def _print_family(name: str, record: dict) -> None:
+    print("\n" + "=" * 80)
+    print(f"FAMILY: {name}   kwargs={record['scheduler_kwargs']}")
     print("=" * 80)
-    for name, scen in scenarios.items():
+    for sname, scen in record["scenarios"].items():
         agg = scen["aggregate"]
-        print(f"\n[{name}] {scen['label']}")
+        print(f"\n[{sname}] {scen['label']}")
         print(
             f"  terminal_q (mean/max): "
             f"${agg['terminal_q_mean']:>9.2f} / ${agg['terminal_q_max']:>9.2f}"
@@ -442,23 +452,152 @@ def main() -> int:
             f"taker={agg['taker_fill_count_mean']:.1f}  "
             f"completion_time(s)={agg['completion_time_s_mean']}"
         )
-        print(f"  sign_crossings_max={agg['sign_crossings_max']}  "
-              f"forced_flushes={agg['forced_terminal_flush_count']}")
-
-    print("\n" + "=" * 80)
-    print("ACCEPTANCE BAR")
-    print("=" * 80)
-    a = results["acceptance"]
-    for k in ("crit_1_tracking_bounded", "crit_2_no_sign_crossing",
-              "crit_3_terminal_completion", "crit_4_toxic_faster_than_favorable",
-              "crit_5_maker_share_in_non_catchup", "crit_6_no_forced_flush_normal"):
+        print(
+            f"  sign_crossings_max={agg['sign_crossings_max']}  "
+            f"forced_flushes={agg['forced_terminal_flush_count']}"
+        )
+    a = record["acceptance"]
+    print("\n  ACCEPTANCE:")
+    for k in (
+        "crit_1_tracking_bounded",
+        "crit_2_no_sign_crossing",
+        "crit_3_terminal_completion",
+        "crit_4_toxic_faster_than_favorable",
+        "crit_5_maker_share_in_non_catchup",
+        "crit_6_no_forced_flush_normal",
+    ):
         mark = "PASS" if a[k] else "FAIL"
-        print(f"  [{mark}] {k}")
-    print(f"\n  ALL_PASS = {a['all_pass']}")
-    print(f"  toxic completion mean: {a['details']['toxic_completion_mean_s']}s")
-    print(f"  favorable completion mean: {a['details']['favorable_completion_mean_s']}s")
+        print(f"    [{mark}] {k}")
+    print(f"    ALL_PASS = {a['all_pass']}")
 
-    return 0 if a["all_pass"] else 1
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--scheduler",
+        choices=sorted(SCHEDULERS),
+        default="twap",
+        help="single scheduler family (ignored when --all-families is set)",
+    )
+    ap.add_argument(
+        "--all-families",
+        action="store_true",
+        help="sweep twap → exponential → sinh_ratio; stop at first failed family",
+    )
+    ap.add_argument("--rho", type=float, default=2.0, help="exponential urgency")
+    ap.add_argument("--kappa", type=float, default=2.0, help="sinh-ratio shape")
+    ap.add_argument("--seeds", type=int, default=10)
+    ap.add_argument("--out", type=Path, default=None)
+    args = ap.parse_args()
+
+    params = QuoterParams()
+    initial_inventory = 10_000.0
+    horizon_s = 3600.0
+    dt_s = 10.0
+    mid0 = 100.0
+    completion_tol_dollars = 50.0
+    seeds = list(range(args.seeds))
+
+    family_kwargs = {
+        "twap": {},
+        "exponential": {"rho": args.rho},
+        "sinh_ratio": {"kappa": args.kappa},
+    }
+
+    common = dict(
+        params=params,
+        initial_inventory=initial_inventory,
+        horizon_s=horizon_s,
+        dt_s=dt_s,
+        mid0=mid0,
+        completion_tol_dollars=completion_tol_dollars,
+        seeds=seeds,
+    )
+
+    git_sha = _git_sha()
+    base_meta = {
+        "git_sha": git_sha,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "params": {
+            "quoter_params": asdict(params),
+            "initial_inventory": initial_inventory,
+            "horizon_s": horizon_s,
+            "dt_s": dt_s,
+            "mid0": mid0,
+            "completion_tol_dollars": completion_tol_dollars,
+            "n_seeds": len(seeds),
+        },
+    }
+
+    if args.all_families:
+        out_path = args.out or (ROOT / "autoresearch_gated/quoter_family_matrix.json")
+        order = ["twap", "exponential", "sinh_ratio"]
+        families: dict[str, dict] = {}
+        first_failure: Optional[str] = None
+
+        print(f"Git SHA: {git_sha}")
+        print(f"Seeds per scenario: {len(seeds)}")
+        print(f"Family order: {order}  (decision rule: stop at first FAIL)\n")
+
+        for fam in order:
+            print(f"--- running {fam} (kwargs={family_kwargs[fam]}) ---")
+            record = _run_family(
+                scheduler_name=fam,
+                scheduler_kwargs=family_kwargs[fam],
+                **common,
+            )
+            families[fam] = record
+            _print_family(fam, record)
+            if not record["acceptance"]["all_pass"]:
+                first_failure = fam
+                print(f"\n>>> {fam} FAILED — stopping sweep per Task 20 decision rule.")
+                break
+
+        decision = {
+            "order_attempted": list(families.keys()),
+            "first_failure": first_failure,
+            "all_families_passed": first_failure is None
+            and len(families) == len(order),
+        }
+
+        results = {
+            "kind": "quoter_family_matrix",
+            "task": "task_20_family_sweep",
+            **base_meta,
+            "family_kwargs": family_kwargs,
+            "families": families,
+            "decision": decision,
+        }
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(results, indent=2, default=str))
+        print(f"\nFamily matrix written: {out_path}")
+        print(
+            f"Decision: all_families_passed={decision['all_families_passed']}  "
+            f"first_failure={decision['first_failure']}"
+        )
+        return 0 if decision["all_families_passed"] else 1
+
+    # single-family path (Task 19 legacy default)
+    out_path = args.out or (ROOT / "autoresearch_gated/quoter_tracking_matrix.json")
+    record = _run_family(
+        scheduler_name=args.scheduler,
+        scheduler_kwargs=family_kwargs[args.scheduler],
+        **common,
+    )
+    results = {
+        "kind": "quoter_tracking_matrix",
+        "task": f"task_19_smoke_{args.scheduler}",
+        **base_meta,
+        **record,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(results, indent=2, default=str))
+
+    print(f"Quoter tracking matrix written: {out_path}")
+    print(f"Git SHA: {git_sha}")
+    print(f"Seeds: {len(seeds)}")
+    _print_family(args.scheduler, record)
+    return 0 if record["acceptance"]["all_pass"] else 1
 
 
 if __name__ == "__main__":
