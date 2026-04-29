@@ -79,7 +79,7 @@ from config.risk_params import (
 from execution.hl_manager import HyperliquidOrderManager
 from strategy.hedge_shadow import HedgeShadow, auto_fallback
 from strategy.sizing import kelly_fraction
-from util.platform_compat import install_shutdown_handlers
+from util.platform_compat import install_shutdown_event
 
 
 def _round_hl_price(px: float, sz_decimals: int) -> float:
@@ -1053,7 +1053,13 @@ class PairsEngine:
                 continue
 
     async def run(self) -> None:
-        install_shutdown_handlers(self._stop)
+        # Bug fix 2026-04-28: previous version passed self._stop (Event)
+        # as a callable to install_shutdown_handlers — Event is not
+        # callable, so SIGTERM silently failed and the engine had to be
+        # SIGKILLed. install_shutdown_event registers event.set correctly
+        # and also covers SIGHUP.
+        registered = install_shutdown_event(self._stop)
+        log.info("hl_pairs_shutdown_handlers_installed", signals=registered)
         await self._preseed_prices()
         log.info("pairs_loop_start", bars_to_warm=WARMUP_BARS)
         while not self._stop.is_set():

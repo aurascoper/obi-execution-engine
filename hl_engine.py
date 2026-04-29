@@ -40,7 +40,7 @@ import logging
 import math
 import os
 import secrets
-from util.platform_compat import install_shutdown_handlers
+from util.platform_compat import install_shutdown_event
 import time
 from pathlib import Path
 
@@ -204,6 +204,11 @@ def _round_hl_size(qty: float, sz_decimals: int) -> float:
         return qty
     factor = 10**sz_decimals
     return math.floor(qty * factor) / factor
+
+
+class ShutdownRequested(Exception):
+    """Raised inside the engine's TaskGroup watchdog to cancel siblings on
+    SIGTERM/SIGINT/SIGHUP. Caught at the run() boundary via except*."""
 
 
 class HLEngine:
@@ -385,7 +390,21 @@ class HLEngine:
             c: 1.5 * (10**-dec) for c, dec in self._sz_decimals.items()
         }
 
-        self._per_pair_notional = float(os.environ.get("PER_PAIR_NOTIONAL", "250"))
+        # Sizing override: NOTIONAL_PER_TRADE_OVERRIDE is the dust-soak /
+        # smoke-test override knob. When unset, fall back to PER_PAIR_NOTIONAL
+        # (default $250). Logged on boot so the active source is auditable.
+        _notional_override = os.environ.get("NOTIONAL_PER_TRADE_OVERRIDE")
+        if _notional_override is not None:
+            self._per_pair_notional = float(_notional_override)
+            _notional_source = "NOTIONAL_PER_TRADE_OVERRIDE"
+        else:
+            self._per_pair_notional = float(os.environ.get("PER_PAIR_NOTIONAL", "250"))
+            _notional_source = "PER_PAIR_NOTIONAL"
+        log.info(
+            "hl_notional_config",
+            notional_per_trade=self._per_pair_notional,
+            source=_notional_source,
+        )
 
         # Phase 2: single BasketAggregator shared across the SignalEngine.
         # Always instantiated so SIGNAL_MODE can be flipped between `raw` and
@@ -1202,70 +1221,81 @@ class HLEngine:
 
         # Net-cap: only block if entering WOULD INCREASE |net| beyond cap.
         # Exclude momentum book from the mean-rev cap (separate book).
+        # FAIL-CLOSED: if mid is invalid (NaN/0 — typical for thin synthetic
+        # perp quote streams), block the entry rather than allow it. A risk
+        # gate that can't validate its inputs must not silently let the
+        # trade through. (Bug surfaced by 2026-04-27 micro-soak: para:BTCD
+        # bypassed the cap when mid went stale and routed via taker
+        # escalation at 8x intended notional.)
         if not is_momentum:
             mid = self._current_mid(sym)
-            if math.isfinite(mid) and mid > 0:
-                net_before = self._compute_net_notional()
-                delta_notional = delta_qty * mid
-                net_after = net_before + delta_notional
+            if not (math.isfinite(mid) and mid > 0):
+                log.info(
+                    "risk_gate_net_cap_blocked_invalid_mid",
+                    symbol=sym,
+                    tag=tag,
+                    mid=mid,
+                    max_net_notional=MAX_NET_NOTIONAL,
+                )
+                return False
+            net_before = self._compute_net_notional()
+            delta_notional = delta_qty * mid
+            net_after = net_before + delta_notional
 
-                # Reduce-only mode (Stage 3 over-extension governor).
-                # Evaluate state transitions FIRST so activation/deactivation
-                # logs fire on every entry-candidate evaluation, not only on
-                # blocks. Then, if active, block growth-side entries
-                # (|net_after| > |net_before|). Reduction-side
-                # (|net_after| <= |net_before|) is allowed through — the
-                # mean-rev book is supposed to drive |net| back under cap.
-                # Inclusive thresholds (>=, <=) so transitions are deterministic
-                # exactly on the boundary.
-                abs_before = abs(net_before)
-                ratio_before = abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
-                if self._reduce_only_active:
-                    if ratio_before <= REDUCE_ONLY_K_DEACTIVATE:
-                        self._reduce_only_active = False
-                        log.info(
-                            "risk_gate_reduce_only_deactivated",
-                            net_before=round(net_before, 2),
-                            cap=MAX_NET_NOTIONAL,
-                            ratio=round(ratio_before, 4),
-                            k_activate=REDUCE_ONLY_K_ACTIVATE,
-                            k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
-                        )
-                else:
-                    if ratio_before >= REDUCE_ONLY_K_ACTIVATE:
-                        self._reduce_only_active = True
-                        log.warning(
-                            "risk_gate_reduce_only_activated",
-                            net_before=round(net_before, 2),
-                            cap=MAX_NET_NOTIONAL,
-                            ratio=round(ratio_before, 4),
-                            k_activate=REDUCE_ONLY_K_ACTIVATE,
-                            k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
-                        )
-                if self._reduce_only_active and abs(net_after) > abs_before:
+            # Reduce-only mode (Stage 3 over-extension governor).
+            # Evaluate state transitions FIRST so activation/deactivation logs
+            # fire on every entry-candidate evaluation, not only on blocks.
+            # Then, if active, block growth-side entries (|net_after| > |net_before|).
+            # Reduction-side (|net_after| <= |net_before|) is allowed through —
+            # the mean-rev book is supposed to drive |net| back under cap.
+            abs_before = abs(net_before)
+            ratio_before = abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
+            if self._reduce_only_active:
+                if ratio_before <= REDUCE_ONLY_K_DEACTIVATE:
+                    self._reduce_only_active = False
                     log.info(
-                        "risk_gate_reduce_only_blocked",
-                        symbol=sym,
-                        tag=tag,
+                        "risk_gate_reduce_only_deactivated",
                         net_before=round(net_before, 2),
-                        net_after=round(net_after, 2),
                         cap=MAX_NET_NOTIONAL,
                         ratio=round(ratio_before, 4),
+                        k_activate=REDUCE_ONLY_K_ACTIVATE,
+                        k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
                     )
-                    return False
-
-                if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
-                    net_before
-                ):
-                    log.info(
-                        "risk_gate_net_cap",
-                        symbol=sym,
-                        tag=tag,
+            else:
+                if ratio_before >= REDUCE_ONLY_K_ACTIVATE:
+                    self._reduce_only_active = True
+                    log.warning(
+                        "risk_gate_reduce_only_activated",
                         net_before=round(net_before, 2),
-                        net_after=round(net_after, 2),
                         cap=MAX_NET_NOTIONAL,
+                        ratio=round(ratio_before, 4),
+                        k_activate=REDUCE_ONLY_K_ACTIVATE,
+                        k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
                     )
-                    return False
+            if self._reduce_only_active and abs(net_after) > abs_before:
+                log.info(
+                    "risk_gate_reduce_only_blocked",
+                    symbol=sym,
+                    tag=tag,
+                    net_before=round(net_before, 2),
+                    net_after=round(net_after, 2),
+                    cap=MAX_NET_NOTIONAL,
+                    ratio=round(ratio_before, 4),
+                )
+                return False
+
+            if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
+                net_before
+            ):
+                log.info(
+                    "risk_gate_net_cap",
+                    symbol=sym,
+                    tag=tag,
+                    net_before=round(net_before, 2),
+                    net_after=round(net_after, 2),
+                    cap=MAX_NET_NOTIONAL,
+                )
+                return False
 
         # All gates passed — entry will be issued. Increment session counter
         # only on actual acceptance (not on candidate-attempt). Used by the
@@ -2067,6 +2097,69 @@ class HLEngine:
             active_tag = MOMENTUM_TAG if route_momentum else STRATEGY_TAG
             is_momentum = route_momentum
 
+            # Option C runtime-shadow: emit a structured snapshot of the
+            # runtime sizing context at the order-decision boundary, BEFORE
+            # the risk gates. Pure observation — no control flow change.
+            # Wrapped in try/except so a logging failure never blocks orders.
+            try:
+                _raw_side = sig.get("side")
+                _name = getattr(_raw_side, "name", None)
+                if _name is not None:
+                    _s = str(_name).lower()
+                else:
+                    _s = str(_raw_side).strip().lower() if _raw_side is not None else ""
+                if _s in ("buy", "long", "bid", "1", "+1", "1.0"):
+                    _side_sign = 1
+                    _side_str = "buy"
+                elif _s in ("sell", "short", "ask", "-1", "-1.0"):
+                    _side_sign = -1
+                    _side_str = "sell"
+                else:
+                    try:
+                        _f = float(_raw_side)
+                        if _f > 0:
+                            _side_sign, _side_str = 1, "buy"
+                        elif _f < 0:
+                            _side_sign, _side_str = -1, "sell"
+                        else:
+                            _side_sign, _side_str = 0, "unknown"
+                    except (TypeError, ValueError):
+                        _side_sign, _side_str = 0, "unknown"
+
+                _sym_rt = sig.get("symbol")
+                _coin_rt = self._symbol_to_coin.get(_sym_rt, "")
+                _mid_rt = self._current_mid(_sym_rt) if _sym_rt else float("nan")
+                _net_before = self._compute_net_notional()
+                _qty_rt = float(sig.get("qty", 0.0) or 0.0)
+                _notional_rt = sig.get("notional")
+                if _notional_rt is None and math.isfinite(_mid_rt):
+                    _notional_rt = abs(_qty_rt) * _mid_rt
+                _hip3_lev = int(os.environ.get("HIP3_LEVERAGE", str(self._default_leverage)))
+                log.info(
+                    "sizing_runtime_shadow",
+                    symbol=_sym_rt,
+                    coin=_coin_rt,
+                    tag=active_tag,
+                    is_momentum=bool(is_momentum),
+                    side=_side_str,
+                    side_sign=_side_sign,
+                    qty=_qty_rt,
+                    limit_px=sig.get("limit_px"),
+                    notional=(round(float(_notional_rt), 2) if _notional_rt is not None else None),
+                    per_pair_notional=round(self._per_pair_notional, 2),
+                    default_leverage=self._default_leverage,
+                    hip3_leverage=_hip3_lev,
+                    mid=(round(_mid_rt, 6) if math.isfinite(_mid_rt) else None),
+                    net_notional_before=round(_net_before, 2),
+                    pause_new_entries=os.environ.get("PAUSE_NEW_ENTRIES", "0"),
+                )
+            except Exception as _e:
+                log.warning(
+                    "sizing_runtime_shadow_failed",
+                    symbol=sig.get("symbol") if isinstance(sig, dict) else None,
+                    error=repr(_e),
+                )
+
             if not self._risk_gate_ok(sig, tag=active_tag, is_momentum=is_momentum):
                 continue
 
@@ -2155,17 +2248,37 @@ class HLEngine:
             native_bar_coins=self._native_bar_coins,
         )
 
-        async with asyncio.TaskGroup() as tg:
-            if self._bars is not None:
-                tg.create_task(self._resilient_alpaca_bars(), name="alpaca_bars")
-            tg.create_task(self._book.run(), name="hl_orderbook")
-            tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
-            tg.create_task(self._strategy_loop(), name="strategy")
-            if self._native_bar_coins:
-                tg.create_task(self._bar_synthesizer(), name="native_bars")
-            if EXECUTION_STYLE == "maker":
-                tg.create_task(self._maker_watchdog(), name="maker_watchdog")
-            tg.create_task(self._control.serve(), name="control_plane")
+        # Shutdown event is created on the running loop. Signal handlers
+        # (SIGTERM/SIGINT/SIGHUP) are installed here, after the event
+        # exists, so the watchdog task can react to them.
+        self._shutdown_event = asyncio.Event()
+        registered = install_shutdown_event(self._shutdown_event)
+        log.info("hl_shutdown_handlers_installed", signals=registered)
+
+        async def _shutdown_watchdog() -> None:
+            await self._shutdown_event.wait()
+            log.info("hl_engine_shutdown_initiated")
+            self.stop()
+            # Raise to make TaskGroup cancel all sibling tasks blocked on
+            # queue.get / asyncio.sleep / etc. except* at run() boundary
+            # converts this into a clean exit.
+            raise ShutdownRequested()
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                if self._bars is not None:
+                    tg.create_task(self._resilient_alpaca_bars(), name="alpaca_bars")
+                tg.create_task(self._book.run(), name="hl_orderbook")
+                tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
+                tg.create_task(self._strategy_loop(), name="strategy")
+                if self._native_bar_coins:
+                    tg.create_task(self._bar_synthesizer(), name="native_bars")
+                if EXECUTION_STYLE == "maker":
+                    tg.create_task(self._maker_watchdog(), name="maker_watchdog")
+                tg.create_task(self._control.serve(), name="control_plane")
+                tg.create_task(_shutdown_watchdog(), name="shutdown_watchdog")
+        except* ShutdownRequested:
+            log.info("hl_engine_shutdown_complete")
 
     def stop(self) -> None:
         log.info("hl_engine_shutdown")
@@ -2176,7 +2289,6 @@ class HLEngine:
 
 async def main() -> None:
     engine = HLEngine()
-    install_shutdown_handlers(engine.stop)
     await engine.run()
 
 
