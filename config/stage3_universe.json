@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "stage": 3,
+  "source": "scripts/relaunch_hl_engine_stage2_full_LIVE.sh (HL_UNIVERSE + HIP3_UNIVERSE) as of 2026-04-28, plus xyz:MSTR added 6717f8b",
+  "_doc": "Per-symbol mean-reversion engine universe. Bare-symbol form (no /USD suffix) — matches the keys in hl_fill_received events. Pairs whitelist symbols (hl_pairs.py) and ZEC pairs are NOT in scope of Gate D evaluation; they are evaluated on a separate path.",
+  "native": [
+    "BTC", "ETH", "SOL", "AAVE", "XRP", "DOGE", "PAXG", "ARB", "CRV", "LINK",
+    "ADA", "AVAX", "LTC", "BCH", "DOT", "UNI", "LDO", "POL", "RENDER", "FIL",
+    "HYPE", "BNB", "SUI", "TAO", "NEAR", "ENA"
+  ],
+  "hip3": [
+    "xyz:HIMS", "xyz:HOOD", "xyz:ORCL", "xyz:EWY", "xyz:XYZ100", "xyz:CRWV",
+    "xyz:TSLA", "xyz:CL", "xyz:SNDK", "xyz:SKHX", "xyz:MSFT", "xyz:MU",
+    "xyz:SP500", "xyz:AMD", "xyz:PLTR", "xyz:BRENTOIL", "xyz:GOLD",
+    "xyz:SILVER", "xyz:NATGAS", "xyz:COPPER", "xyz:PLATINUM", "xyz:TSM",
+    "xyz:GOOGL", "xyz:META", "xyz:AAPL", "xyz:LLY", "xyz:NFLX", "xyz:COST",
+    "xyz:BABA", "xyz:RKLB", "xyz:MRVL", "xyz:EUR", "xyz:JP225", "xyz:XLE",
+    "xyz:PALLADIUM", "xyz:URANIUM", "xyz:RIVN", "xyz:MSTR",
+    "vntl:ANTHROPIC", "vntl:OPENAI", "vntl:SPACEX", "vntl:MAG7",
+    "vntl:SEMIS", "vntl:NUCLEAR", "vntl:BIOTECH", "vntl:DEFENSE", "vntl:ROBOT",
+    "hyna:HYPE", "hyna:FARTCOIN", "hyna:XMR", "hyna:XPL", "hyna:PUMP",
+    "hyna:ENA", "hyna:IP", "hyna:BNB", "hyna:SUI",
+    "flx:USDE", "flx:GAS",
+    "km:BMNR", "km:USTECH", "km:USOIL", "km:SMALL2000", "km:TENCENT",
+    "km:XIAOMI", "km:RTX",
+    "cash:KWEB", "cash:WTI",
+    "para:BTCD", "para:OTHERS", "para:TOTAL2"
+  ]
+}

@@ -1,0 +1,982 @@
+{
+  "schema_version": 1,
+  "declared_at": "2026-04-29T00:06:23.047534+00:00",
+  "stage": 3,
+  "sizing_ratio": 1.5,
+  "stage_3_notional_usd": 75.0,
+  "stage_2_notional_usd": 50.0,
+  "min_round_trips_per_symbol": 3,
+  "max_outlier_symbols": 2,
+  "min_aggregate_pnl_usd": -37.5,
+  "soak_window": {
+    "start": "2026-04-28T19:35:07Z",
+    "end": "2026-04-28T23:48:25Z"
+  },
+  "universe_file": "config/stage3_universe.json",
+  "n_universe_declared": 96,
+  "live_source_threshold_n": 5,
+  "default_class_bands": {
+    "hip3": {
+      "pnl_per_trip_usd": [
+        -0.4,
+        0.2
+      ]
+    },
+    "native": {
+      "pnl_per_trip_usd": [
+        -0.5,
+        0.3
+      ]
+    }
+  },
+  "bands": {
+    "xyz:SILVER": {
+      "pnl_per_trip_usd": [
+        -0.099,
+        0.201
+      ],
+      "n_live_samples": 3,
+      "live_median": 0.034,
+      "band_source": "live_thin"
+    },
+    "LTC": {
+      "pnl_per_trip_usd": [
+        -0.2674,
+        0.3326
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0218,
+      "band_source": "live_single"
+    },
+    "XRP": {
+      "pnl_per_trip_usd": [
+        -0.1218,
+        0.4782
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.1188,
+      "band_source": "live_single"
+    },
+    "xyz:TSM": {
+      "pnl_per_trip_usd": [
+        -0.2638,
+        0.3362
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0241,
+      "band_source": "live_single"
+    },
+    "xyz:XYZ100": {
+      "pnl_per_trip_usd": [
+        -0.065,
+        0.2351
+      ],
+      "n_live_samples": 2,
+      "live_median": 0.0567,
+      "band_source": "live_thin"
+    },
+    "xyz:EWY": {
+      "pnl_per_trip_usd": [
+        -0.232,
+        0.368
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0454,
+      "band_source": "live_single"
+    },
+    "ENA": {
+      "pnl_per_trip_usd": [
+        -0.1734,
+        0.4266
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0844,
+      "band_source": "live_single"
+    },
+    "NEAR": {
+      "pnl_per_trip_usd": [
+        -0.1724,
+        0.4277
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0851,
+      "band_source": "live_single"
+    },
+    "xyz:CL": {
+      "pnl_per_trip_usd": [
+        -0.2233,
+        0.3767
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0511,
+      "band_source": "live_single"
+    },
+    "BTC": {
+      "pnl_per_trip_usd": [
+        -0.1684,
+        0.4316
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0877,
+      "band_source": "live_single"
+    },
+    "xyz:SP500": {
+      "pnl_per_trip_usd": [
+        -0.2213,
+        0.3788
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0525,
+      "band_source": "live_single"
+    },
+    "xyz:NATGAS": {
+      "pnl_per_trip_usd": [
+        -0.2275,
+        0.3725
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0484,
+      "band_source": "live_single"
+    },
+    "POL": {
+      "pnl_per_trip_usd": [
+        -0.2241,
+        0.3759
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0506,
+      "band_source": "live_single"
+    },
+    "xyz:MU": {
+      "pnl_per_trip_usd": [
+        -0.2222,
+        0.3778
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0518,
+      "band_source": "live_single"
+    },
+    "ADA": {
+      "pnl_per_trip_usd": [
+        -0.5485,
+        0.0515
+      ],
+      "n_live_samples": 1,
+      "live_median": -0.1656,
+      "band_source": "live_single"
+    },
+    "UNI": {
+      "pnl_per_trip_usd": [
+        -0.4932,
+        0.1068
+      ],
+      "n_live_samples": 1,
+      "live_median": -0.1288,
+      "band_source": "live_single"
+    },
+    "xyz:TSLA": {
+      "pnl_per_trip_usd": [
+        -0.395,
+        0.205
+      ],
+      "n_live_samples": 1,
+      "live_median": -0.0634,
+      "band_source": "live_single"
+    },
+    "xyz:PLTR": {
+      "pnl_per_trip_usd": [
+        -0.2947,
+        0.3053
+      ],
+      "n_live_samples": 1,
+      "live_median": 0.0035,
+      "band_source": "live_single"
+    },
+    "xyz:GOOGL": {
+      "pnl_per_trip_usd": [
+        -0.3751,
+        0.2249
+      ],
+      "n_live_samples": 1,
+      "live_median": -0.05,
+      "band_source": "live_single"
+    },
+    "para:BTCD": {
+      "pnl_per_trip_usd": [
+        -0.3912,
+        0.2088
+      ],
+      "n_live_samples": 1,
+      "live_median": -0.0608,
+      "band_source": "live_single"
+    },
+    "ETH": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "SOL": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "AAVE": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "DOGE": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "PAXG": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "ARB": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "CRV": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "LINK": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "AVAX": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "BCH": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "DOT": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "LDO": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "RENDER": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "FIL": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "HYPE": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "BNB": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "SUI": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "TAO": {
+      "pnl_per_trip_usd": [
+        -0.75,
+        0.45
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:HIMS": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:HOOD": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:ORCL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:CRWV": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:SNDK": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:SKHX": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:MSFT": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:AMD": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:BRENTOIL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:GOLD": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:COPPER": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:PLATINUM": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:META": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:AAPL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:LLY": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:NFLX": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:COST": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:BABA": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:RKLB": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:MRVL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:EUR": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:JP225": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:XLE": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:PALLADIUM": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:URANIUM": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:RIVN": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "xyz:MSTR": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:ANTHROPIC": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:OPENAI": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:SPACEX": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:MAG7": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:SEMIS": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:NUCLEAR": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:BIOTECH": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:DEFENSE": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "vntl:ROBOT": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:HYPE": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:FARTCOIN": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:XMR": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:XPL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:PUMP": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:ENA": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:IP": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:BNB": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "hyna:SUI": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "flx:USDE": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "flx:GAS": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:BMNR": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:USTECH": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:USOIL": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:SMALL2000": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:TENCENT": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:XIAOMI": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "km:RTX": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "cash:KWEB": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "cash:WTI": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "para:OTHERS": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    },
+    "para:TOTAL2": {
+      "pnl_per_trip_usd": [
+        -0.6,
+        0.3
+      ],
+      "n_live_samples": 0,
+      "live_median": null,
+      "band_source": "default_class"
+    }
+  },
+  "_provenance": {
+    "live_symbols_with_data": 20,
+    "live_symbols_with_full_sample": 0,
+    "live_symbols_with_thin_sample": 2,
+    "live_symbols_with_single_sample": 18,
+    "default_only_symbols": [
+      "ETH",
+      "SOL",
+      "AAVE",
+      "DOGE",
+      "PAXG",
+      "ARB",
+      "CRV",
+      "LINK",
+      "AVAX",
+      "BCH",
+      "DOT",
+      "LDO",
+      "RENDER",
+      "FIL",
+      "HYPE",
+      "BNB",
+      "SUI",
+      "TAO",
+      "xyz:HIMS",
+      "xyz:HOOD",
+      "xyz:ORCL",
+      "xyz:CRWV",
+      "xyz:SNDK",
+      "xyz:SKHX",
+      "xyz:MSFT",
+      "xyz:AMD",
+      "xyz:BRENTOIL",
+      "xyz:GOLD",
+      "xyz:COPPER",
+      "xyz:PLATINUM",
+      "xyz:META",
+      "xyz:AAPL",
+      "xyz:LLY",
+      "xyz:NFLX",
+      "xyz:COST",
+      "xyz:BABA",
+      "xyz:RKLB",
+      "xyz:MRVL",
+      "xyz:EUR",
+      "xyz:JP225",
+      "xyz:XLE",
+      "xyz:PALLADIUM",
+      "xyz:URANIUM",
+      "xyz:RIVN",
+      "xyz:MSTR",
+      "vntl:ANTHROPIC",
+      "vntl:OPENAI",
+      "vntl:SPACEX",
+      "vntl:MAG7",
+      "vntl:SEMIS",
+      "vntl:NUCLEAR",
+      "vntl:BIOTECH",
+      "vntl:DEFENSE",
+      "vntl:ROBOT",
+      "hyna:HYPE",
+      "hyna:FARTCOIN",
+      "hyna:XMR",
+      "hyna:XPL",
+      "hyna:PUMP",
+      "hyna:ENA",
+      "hyna:IP",
+      "hyna:BNB",
+      "hyna:SUI",
+      "flx:USDE",
+      "flx:GAS",
+      "km:BMNR",
+      "km:USTECH",
+      "km:USOIL",
+      "km:SMALL2000",
+      "km:TENCENT",
+      "km:XIAOMI",
+      "km:RTX",
+      "cash:KWEB",
+      "cash:WTI",
+      "para:OTHERS",
+      "para:TOTAL2"
+    ]
+  }
+}
