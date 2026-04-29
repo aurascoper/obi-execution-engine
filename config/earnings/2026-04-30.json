@@ -1,0 +1,43 @@
+{
+  "date": "2026-04-30",
+  "schema_version": 1,
+  "names": [
+    {
+      "company": "Sandisk Corporation",
+      "ticker": "SNDK",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-30T20:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Apple Inc.",
+      "ticker": "AAPL",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-30T20:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Eli Lilly and Company",
+      "ticker": "LLY",
+      "session": "before_open",
+      "earnings_ts_utc": "2026-04-30T12:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Rivian Automotive, Inc.",
+      "ticker": "RIVN",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-30T20:00:00+00:00",
+      "source": "yfinance"
+    }
+  ],
+  "_provenance": {
+    "source": "yfinance",
+    "fetched_at": "2026-04-29T01:57:18.589917+00:00",
+    "window_h": 36,
+    "n_universe": 38,
+    "n_skipped_non_earnings": 15,
+    "n_errors": 0,
+    "errors": {}
+  }
+}
