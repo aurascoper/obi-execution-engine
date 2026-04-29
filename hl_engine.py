@@ -134,6 +134,19 @@ HIP3_TAKER_ESCALATION_Z = 3.0
 # always pass. Memory-based: uses st.positions + latest mid/close, not a live
 # HL snapshot.
 MAX_NET_NOTIONAL = float(os.environ.get("MAX_NET_NOTIONAL", "200.0"))
+# Reduce-only mode: portfolio-level over-extension governor. Activates when
+# |net_notional| crosses K_ACTIVATE × MAX_NET_NOTIONAL upward; deactivates
+# when |net_notional| crosses K_DEACTIVATE × MAX_NET_NOTIONAL downward. The
+# K_DEACTIVATE < K_ACTIVATE dead-band prevents flip-flopping at the boundary.
+# When active: only reduction-side entries (those whose post-fill |net| is
+# strictly less than pre-fill |net|) are allowed; growth-side entries are
+# blocked. Reduce-only never auto-flattens, never modifies sizing, never
+# touches the momentum book — it is a one-way ratchet that the mean-rev
+# strategy itself drives back under cap by taking fading entries.
+# Operator-approved 2026-04-28 (docs/stage3_promotion_design.md). Defaults
+# 1.5 / 1.25 are the approved thresholds; env-overridable for soak tuning.
+REDUCE_ONLY_K_ACTIVATE = float(os.environ.get("REDUCE_ONLY_K_ACTIVATE", "1.5"))
+REDUCE_ONLY_K_DEACTIVATE = float(os.environ.get("REDUCE_ONLY_K_DEACTIVATE", "1.25"))
 # Regime pause: if BTC/USD OR xyz:SP500/USD 1h absolute return exceeds this,
 # block NEW entries for REGIME_PAUSE_SECONDS. Exits still fire. 60-bar
 # _RollingBuffer at 1m bars = exact 1h window.
@@ -514,6 +527,11 @@ class HLEngine:
 
         # P0 regime-pause state: monotonic deadline; entries blocked while > now().
         self._regime_pause_until: float = 0.0
+
+        # Reduce-only mode state: flips on/off with hysteresis based on
+        # observed |net_notional|. Default OFF at boot. Transitions are
+        # logged via risk_gate_reduce_only_{activated,deactivated} events.
+        self._reduce_only_active: bool = False
 
         # Dust-test caps state — all default-off; populated only if env vars
         # were set at startup. _engine_start_ms is the reference for the
@@ -1190,6 +1208,52 @@ class HLEngine:
                 net_before = self._compute_net_notional()
                 delta_notional = delta_qty * mid
                 net_after = net_before + delta_notional
+
+                # Reduce-only mode (Stage 3 over-extension governor).
+                # Evaluate state transitions FIRST so activation/deactivation
+                # logs fire on every entry-candidate evaluation, not only on
+                # blocks. Then, if active, block growth-side entries
+                # (|net_after| > |net_before|). Reduction-side
+                # (|net_after| <= |net_before|) is allowed through — the
+                # mean-rev book is supposed to drive |net| back under cap.
+                # Inclusive thresholds (>=, <=) so transitions are deterministic
+                # exactly on the boundary.
+                abs_before = abs(net_before)
+                ratio_before = abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
+                if self._reduce_only_active:
+                    if ratio_before <= REDUCE_ONLY_K_DEACTIVATE:
+                        self._reduce_only_active = False
+                        log.info(
+                            "risk_gate_reduce_only_deactivated",
+                            net_before=round(net_before, 2),
+                            cap=MAX_NET_NOTIONAL,
+                            ratio=round(ratio_before, 4),
+                            k_activate=REDUCE_ONLY_K_ACTIVATE,
+                            k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
+                        )
+                else:
+                    if ratio_before >= REDUCE_ONLY_K_ACTIVATE:
+                        self._reduce_only_active = True
+                        log.warning(
+                            "risk_gate_reduce_only_activated",
+                            net_before=round(net_before, 2),
+                            cap=MAX_NET_NOTIONAL,
+                            ratio=round(ratio_before, 4),
+                            k_activate=REDUCE_ONLY_K_ACTIVATE,
+                            k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
+                        )
+                if self._reduce_only_active and abs(net_after) > abs_before:
+                    log.info(
+                        "risk_gate_reduce_only_blocked",
+                        symbol=sym,
+                        tag=tag,
+                        net_before=round(net_before, 2),
+                        net_after=round(net_after, 2),
+                        cap=MAX_NET_NOTIONAL,
+                        ratio=round(ratio_before, 4),
+                    )
+                    return False
+
                 if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
                     net_before
                 ):
