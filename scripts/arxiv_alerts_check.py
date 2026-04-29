@@ -95,24 +95,29 @@ def fetch_arxiv(query: str, max_results: int, timeout: float) -> list[dict]:
             continue
         arxiv_id = id_url.rsplit("/abs/", 1)[-1].split("v")[0]
         published = entry.findtext("atom:published", default="", namespaces=ATOM_NS)
-        title = (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").strip()
-        summary = (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").strip()
+        title = (
+            entry.findtext("atom:title", default="", namespaces=ATOM_NS) or ""
+        ).strip()
+        summary = (
+            entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or ""
+        ).strip()
         authors = [
             a.findtext("atom:name", default="", namespaces=ATOM_NS)
             for a in entry.findall("atom:author", ATOM_NS)
         ]
         cats = [
-            c.attrib.get("term", "")
-            for c in entry.findall("atom:category", ATOM_NS)
+            c.attrib.get("term", "") for c in entry.findall("atom:category", ATOM_NS)
         ]
-        results.append({
-            "id": arxiv_id,
-            "title": " ".join(title.split()),
-            "authors": authors,
-            "categories": cats,
-            "published": published,
-            "abstract": " ".join(summary.split())[:600],
-        })
+        results.append(
+            {
+                "id": arxiv_id,
+                "title": " ".join(title.split()),
+                "authors": authors,
+                "categories": cats,
+                "published": published,
+                "abstract": " ".join(summary.split())[:600],
+            }
+        )
     return results
 
 
@@ -179,7 +184,10 @@ def main() -> int:
     with args.log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"event": "arxiv_alerts_summary", **summary}) + "\n")
         for hit in new_hits:
-            fh.write(json.dumps({"event": "arxiv_alerts_hit", "checked_at": now_iso, **hit}) + "\n")
+            fh.write(
+                json.dumps({"event": "arxiv_alerts_hit", "checked_at": now_iso, **hit})
+                + "\n"
+            )
     print(
         f"[arxiv_alerts] {summary['n_new']} new hits across {summary['n_watches']} watches -> {args.log}",
         file=sys.stderr,

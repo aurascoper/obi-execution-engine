@@ -42,12 +42,12 @@ from typing import Iterable
 
 # ── Defaults that match what optimal_rate.OFIParams needs but the logs don't
 # directly expose. The engine operator can tune these per environment.
-KAPPA_DEFAULT = 0.0       # OFI toxicity penalty (0 = disabled until tuned)
-LAM_DEFAULT = 0.0         # Running inventory risk (0 = rely on terminal p)
-P_DEFAULT = 1.0           # Terminal-inventory penalty
+KAPPA_DEFAULT = 0.0  # OFI toxicity penalty (0 = disabled until tuned)
+LAM_DEFAULT = 0.0  # Running inventory risk (0 = rely on terminal p)
+P_DEFAULT = 1.0  # Terminal-inventory penalty
 GAMMA_DEFAULT_FRAC = 0.5  # gamma scaled from observed slip: gamma ~ slip / qty
-ETA_FALLBACK = 1e-4       # per-qty OFI leakage when no slippage data found
-BETA_FALLBACK = 0.05      # 1/sec; ~20s OFI half-life
+ETA_FALLBACK = 1e-4  # per-qty OFI leakage when no slippage data found
+BETA_FALLBACK = 0.05  # 1/sec; ~20s OFI half-life
 SIGMA_FALLBACK = 0.10
 MIN_OBI_SAMPLES = 60
 MIN_SLIP_SAMPLES = 5
@@ -89,7 +89,9 @@ def collect_obi_series(records: Iterable[dict]) -> dict[str, list[float]]:
     return dict(series)
 
 
-def collect_slippage_samples(records: Iterable[dict]) -> dict[str, list[tuple[float, float]]]:
+def collect_slippage_samples(
+    records: Iterable[dict],
+) -> dict[str, list[tuple[float, float]]]:
     """Per-symbol list of (qty, slip_ratio) from slippage + entry_signal cross-ref.
 
     The engine emits two log lines per fill:

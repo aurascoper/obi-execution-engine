@@ -36,8 +36,7 @@ accurate to ~1e-9.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
