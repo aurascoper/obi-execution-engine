@@ -1,0 +1,100 @@
+# Execution-Calibration Sketch — `(β, σ, η)` from existing logs
+
+**Status:** DESIGN ONLY. No code, no live integration. Read-only data sketch for future authorization.
+
+**Goal.** Produce three per-symbol parameters that the Bechler-Ludkovski `α*(t,x,Y)` closed-form (1409.2618) needs:
+- `β` — OFI mean-reversion rate (1/seconds)
+- `σ` — OFI driving-noise vol
+- `η` — temporary linear price impact ($ per unit traded notional)
+
+These plug into the LQ Riccati ODE that replaces the current fixed `NOTIONAL_PER_TRADE / price` rate. **Tonight's deliverable is the design; the runner is a separate authorized PR.**
+
+---
+
+## Sources
+
+| Parameter | Where the data lives | Event | Field |
+|---|---|---|---|
+| `β`, `σ` | `logs/hl_engine.jsonl` | `signal_tick` | `obi` (the ρ value our engine logs every L2 update) |
+| `η` (slippage proxy) | `logs/hl_engine.jsonl` | `hl_fill_received` + matching `hl_order_submitted` | `px` (fill) − `limit_px` (order) per side |
+| Side reference | `logs/hl_engine.jsonl` | both events | `side` |
+
+Per-symbol partition: keys are the bare-form symbol (`BTC`, `xyz:GOOGL`), to match the band/universe convention.
+
+---
+
+## β, σ — OFI as scalar OU
+
+**Model:** `dY = −β(Y − Ȳ) dt + σ dW` per symbol, with `Y = obi ∈ [-1, 1]`.
+
+**Estimator** (per-symbol, on the soak window):
+1. Build a uniform-time-grid resample of `obi` series at Δt = 1s using last-observation-carried-forward.
+2. Compute the AR(1) regression: `Y_{t+Δt} = a + b · Yₜ + εₜ`.
+3. `β̂ = -ln(b) / Δt`,  `σ̂ = std(εₜ) · √(2β̂ / (1 - exp(-2β̂Δt)))`.
+4. Reject the fit if `|b| ≥ 1` (non-stationary) or `b ≤ 0` (over-damped). Fall back to class-default for those symbols.
+
+**Class defaults** (when fit fails or sample-thin, < N_OBI_SAMPLES = 600):
+- HIP-3 equity perps: `β = 0.05` (≈20s half-life), `σ = 0.20`
+- Native crypto: `β = 0.10` (≈7s half-life), `σ = 0.30`
+
+---
+
+## η — temporary impact
+
+**Model:** the `LIMIT_SLIPPAGE = 0.0010` constant in `config/risk_params.py` is an *upper bound* used to validate orders, not a calibrated impact. We can do better from realized fills.
+
+**Estimator** (per-symbol):
+1. For each `hl_fill_received` event, find the matching `hl_order_submitted` (by `cloid` if present, else nearest-prior on same symbol/side).
+2. Compute signed slippage: `slip_bps = ±(fill_px - sent_px) / sent_px × 10000` (sign so positive = adverse).
+3. Aggregate: `η̂ = median(slip_bps) / sent_qty_dollar_notional` per symbol.
+4. Filter outliers > 5σ (book-walk events that aren't representative).
+
+**Caveat:** crypto LOB temp impact is empirically square-root, not linear. The linear `η` is a first-order approximation acceptable for Bechler-Ludkovski. For Abi Jaber/Neuman/Tuschmann (2403.10273) or the nonlinear Fredholm (2503.04323), this needs replacing with a nonlinear `h(·)` fit — out of scope for the linear-LQ closed-form.
+
+---
+
+## Output artifact
+
+`config/execution_params.json`:
+
+```json
+{
+  "schema_version": 1,
+  "fitted_at": "<UTC ISO>",
+  "sample_window": {"start": "...", "end": "..."},
+  "obi_resample_dt_s": 1.0,
+  "min_obi_samples": 600,
+  "min_fill_pairs": 5,
+  "params": {
+    "BTC":        {"beta": 0.118, "sigma": 0.41, "eta_bps_per_dollar": 0.00012, "n_obi": 14000, "n_fills": 9, "fit_status": "live_full"},
+    "xyz:GOOGL":  {"beta": 0.085, "sigma": 0.32, "eta_bps_per_dollar": 0.00021, "n_obi": 8200,  "n_fills": 1, "fit_status": "live_thin_eta"},
+    ...
+    "xyz:HIMS":   {"beta": 0.05,  "sigma": 0.20, "eta_bps_per_dollar": null,    "n_obi": 0,     "n_fills": 0, "fit_status": "default_class"}
+  },
+  "_provenance": {
+    "n_universe": 96,
+    "n_with_full_obi_fit": 4,
+    "n_with_default_obi": 92,
+    "n_with_eta_fit": 8,
+    "n_with_default_eta": 88
+  }
+}
+```
+
+`fit_status` values: `live_full` / `live_thin_obi` / `live_thin_eta` / `default_class`.
+
+---
+
+## Non-goals tonight
+
+- **No** runner script. The above is the spec; the implementation needs explicit authorization since it's the precursor to an order-logic change.
+- **No** Riccati ODE solver. That's a separate doc + script, gated by these calibration outputs.
+- **No** swap of `_size_order()` in `strategy/signals.py`. CLAUDE.md change-discipline applies: "do not restructure the signal pipeline ... when asked to fix a specific bug." Bechler-Ludkovski is a strict generalization of fixed sizing; even framed as "additive," the integration touches both signal evaluation and execution paths.
+
+## Open questions for the operator
+
+1. Soak window for fitting: default to Stage 2.5 + Stage 3 union? Or Stage 3 only (cleaner but ~2h of data)?
+2. `min_obi_samples` threshold: 600 (10 min at 1Hz) or 3600 (1h)?
+3. `min_fill_pairs` for `η`: 5 (matches the design doc) or higher?
+4. Should `η` be linear-bps or square-root-fit? Linear is enough for Bechler-Ludkovski; 2503.04323 needs concave `h`.
+5. Per-symbol vs per-class outputs: per-symbol with class fallback (current sketch) is right for the closed-form; per-class only would simplify the table but lose the symbol-specific edge.
