@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aurascoper.bars-hydrate</string>
+
+    <!-- Run the rolling hydrate wrapper. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>/Users/aurascoper/Developer/live_trading/scripts/hydrate_bars_daemon.sh</string>
+    </array>
+
+    <!-- Every 72h. StartInterval is seconds; 3 days = 259200s. Front-runs
+         HL's empirical 1m retention of ~3.6d with ~12h safety margin.
+         launchd resumes after sleep — if the Mac is asleep at firing time
+         the run executes when the mac wakes (StartInterval semantics). -->
+    <key>StartInterval</key>
+    <integer>259200</integer>
+
+    <!-- Don't fire immediately on load; the operator runs the seed pull
+         manually first via deploy_bars_hydrate_daemon.sh --smoke. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/aurascoper/Developer/live_trading/logs/bar_hydrate.daemon.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aurascoper/Developer/live_trading/logs/bar_hydrate.daemon.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aurascoper/Developer/live_trading</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/aurascoper</string>
+    </dict>
+
+    <!-- Cap a single hung run at 35 minutes (5 min over the wrapper's own 30m timeout). -->
+    <key>ExitTimeOut</key>
+    <integer>2100</integer>
+
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
