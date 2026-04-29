@@ -578,6 +578,7 @@ class SignalEngine:
                 "notional": notional,
                 "_exit_pnl_pct": pnl_est,
                 "_exit_tag": tag,
+                "obi": round(st.obi, 4),
             }
 
         # 4. Entry path — long xor short (both conditions must hold)
@@ -662,6 +663,7 @@ class SignalEngine:
             "qty": qty,
             "limit_px": limit_px,
             "notional": notional,
+            "obi": round(st.obi, 4),
         }
 
     # ── Orderbook Update (secondary path) ─────────────────────────────────────
@@ -1334,6 +1336,7 @@ class SignalEngine:
                 "notional": notional,
                 "_exit_pnl_pct": pnl_est,
                 "_exit_tag": tag,
+                "obi": round(st.obi, 4),
             }
 
         # ── Entry path ────────────────────────────────────────────────────────
@@ -1398,6 +1401,7 @@ class SignalEngine:
             "qty": qty,
             "limit_px": limit_px,
             "notional": notional,
+            "obi": round(st.obi, 4),
         }
 
     def rollback_momentum_entry(self, symbol: str) -> None:

@@ -2174,6 +2174,51 @@ class HLEngine:
                     error=repr(_e),
                 )
 
+            # Gate 3 quoter shadow telemetry. Pure observation, no order
+            # path coupling. Wrapped in its own try/except so any failure
+            # here is fully isolated from the existing shadow event above
+            # and from order submission below.
+            try:
+                from strategy.quoter_shadow import shadow_quoter_payload
+                _net_held_signed = 0.0
+                if _sym_rt and math.isfinite(_mid_rt) and _mid_rt > 0:
+                    _st_shadow = self._signals._state.get(_sym_rt)
+                    if _st_shadow is not None:
+                        _net_held_qty = sum(_st_shadow.positions.values())
+                        _net_held_signed = _net_held_qty * _mid_rt
+                _shadow = shadow_quoter_payload(
+                    obi=sig.get("obi") if isinstance(sig, dict) else None,
+                    intended_side_sign=_side_sign,
+                    notional_about_to_trade=(
+                        float(_notional_rt) if _notional_rt is not None else 0.0
+                    ),
+                    notional_held_signed=_net_held_signed,
+                    mid=_mid_rt if math.isfinite(_mid_rt) else float("nan"),
+                )
+                log.info(
+                    "quoter_shadow",
+                    symbol=_sym_rt,
+                    coin=_coin_rt,
+                    tag=active_tag,
+                    is_momentum=bool(is_momentum),
+                    side=_side_str,
+                    side_sign=_side_sign,
+                    intended_notional=(
+                        round(float(_notional_rt), 2)
+                        if _notional_rt is not None
+                        else None
+                    ),
+                    held_notional_signed=round(_net_held_signed, 2),
+                    mid=(round(_mid_rt, 6) if math.isfinite(_mid_rt) else None),
+                    **_shadow,
+                )
+            except Exception as _e2:
+                log.warning(
+                    "quoter_shadow_failed",
+                    symbol=sig.get("symbol") if isinstance(sig, dict) else None,
+                    error=repr(_e2),
+                )
+
             if not self._risk_gate_ok(sig, tag=active_tag, is_momentum=is_momentum):
                 continue
 
