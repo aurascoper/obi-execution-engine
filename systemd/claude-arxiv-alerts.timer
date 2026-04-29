@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily arXiv alerts poll (timer)
+Documentation=file://%h/obi-execution-engine/systemd/README.md
+
+[Timer]
+# Daily at 09:30 local time. Persistent=true means missed runs (laptop asleep,
+# host off) fire on next boot.
+OnCalendar=*-*-* 09:30:00
+Persistent=true
+RandomizedDelaySec=600
+Unit=claude-arxiv-alerts.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=Daily arXiv alerts poll for obi-execution-engine watches
+Documentation=file://%h/obi-execution-engine/systemd/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/obi-execution-engine
+ExecStart=/usr/bin/python3 %h/obi-execution-engine/scripts/arxiv_alerts_check.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/obi-execution-engine/logs %h/.arxiv-mcp-server/papers
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target
