@@ -42,7 +42,7 @@ import json
 import math
 import random
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -683,6 +683,7 @@ def _run_family(
     seeds: list[int],
     fill_model: str = "simple",
     obi_calibration_path: Optional[Path] = None,
+    replay_mid_path: Optional[Path] = None,
 ) -> dict:
     """Run all three OFI scenarios for one scheduler family. Dispatches to
     the simple Bernoulli fill model (Tasks 19/20) or microstructure_v1
@@ -756,20 +757,34 @@ def _run_family(
             params=params,
             completion_tol_dollars=completion_tol_dollars,
         )
+        replay_payload: Optional[dict] = None
+        if replay_mid_path is not None:
+            replay_payload = json.loads(replay_mid_path.read_text())
+
         def _ms_params_for(target: float) -> MicrostructureParams:
             base = MicrostructureParams(
                 obi_target=target,
                 mid_drift_y_coupling_bps=1.0,
             )
             if obi_calibration_path is not None:
-                return load_obi_ar1_calibration(
+                base = load_obi_ar1_calibration(
                     base, obi_calibration_path, obi_target=target
+                )
+            if replay_payload is not None:
+                base = replace(
+                    base,
+                    mid_path_mode="replay",
+                    replay_mid_path=tuple(replay_payload["mid_path"]),
+                    replay_dt_s=float(replay_payload["dt_s"]),
                 )
             return base
 
-        label_suffix = (
-            " ar1-calibrated" if obi_calibration_path is not None else ""
-        )
+        if replay_mid_path is not None:
+            label_suffix = " replay"
+        elif obi_calibration_path is not None:
+            label_suffix = " ar1-calibrated"
+        else:
+            label_suffix = ""
         scenarios = {
             "neutral": run_scenario_microstructure(
                 f"neutral OFI (μstruct v1{label_suffix})",
@@ -793,6 +808,9 @@ def _run_family(
             "fill_model": "microstructure_v1",
             "obi_calibration_used": (
                 str(obi_calibration_path) if obi_calibration_path else None
+            ),
+            "replay_mid_used": (
+                str(replay_mid_path) if replay_mid_path else None
             ),
             "scenarios": scenarios,
         }
@@ -906,6 +924,12 @@ def main() -> int:
         default=None,
         help="explicit path to OBI calibration JSON (overrides --calibrated-obi default)",
     )
+    ap.add_argument(
+        "--replay-mid",
+        type=Path,
+        default=None,
+        help="path to replay-mid window JSON (Task 24); when set, mid_path_mode=replay",
+    )
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -930,6 +954,10 @@ def main() -> int:
         elif args.calibrated_obi:
             obi_cal_path = ROOT / "config/obi_ar1.json"
 
+    replay_path: Optional[Path] = (
+        args.replay_mid if args.fill_model == "microstructure_v1" else None
+    )
+
     common = dict(
         params=params,
         initial_inventory=initial_inventory,
@@ -940,6 +968,7 @@ def main() -> int:
         seeds=seeds,
         fill_model=args.fill_model,
         obi_calibration_path=obi_cal_path,
+        replay_mid_path=replay_path,
     )
 
     git_sha = _git_sha()
@@ -960,6 +989,8 @@ def main() -> int:
     if args.all_families:
         if args.out is not None:
             out_path = args.out
+        elif args.fill_model == "microstructure_v1" and replay_path is not None:
+            out_path = ROOT / "autoresearch_gated/quoter_family_replay_markout_matrix.json"
         elif args.fill_model == "microstructure_v1" and obi_cal_path is not None:
             out_path = ROOT / "autoresearch_gated/quoter_family_microstructure_ar1_matrix.json"
         elif args.fill_model == "microstructure_v1":
@@ -995,7 +1026,9 @@ def main() -> int:
             and len(families) == len(order),
         }
 
-        if args.fill_model == "microstructure_v1" and obi_cal_path is not None:
+        if args.fill_model == "microstructure_v1" and replay_path is not None:
+            task_tag = "task_24_family_replay_markout"
+        elif args.fill_model == "microstructure_v1" and obi_cal_path is not None:
             task_tag = "task_23_family_microstructure_ar1"
         elif args.fill_model == "microstructure_v1":
             task_tag = "task_22_family_microstructure_v1"
@@ -1006,6 +1039,7 @@ def main() -> int:
             "task": task_tag,
             "fill_model": args.fill_model,
             "obi_calibration_used": str(obi_cal_path) if obi_cal_path else None,
+            "replay_mid_used": str(replay_path) if replay_path else None,
             **base_meta,
             "family_kwargs": family_kwargs,
             "families": families,

@@ -89,6 +89,10 @@ class MicrostructureParams:
 
     markout_horizon_s: float = 5.0
 
+    mid_path_mode: str = "synthetic"
+    replay_mid_path: tuple = ()
+    replay_dt_s: float = 10.0
+
 
 @dataclass
 class MicrostructureState:
@@ -163,7 +167,22 @@ def load_obi_ar1_calibration(
 # ── Initialization and environment step ──────────────────────────────────
 
 
+def _replay_mid_at(params: MicrostructureParams, t_s: float) -> float:
+    """Look up mid in the replay path at time t_s. Clamps to the last
+    available point if t_s exceeds the window."""
+    if not params.replay_mid_path:
+        raise ValueError("replay_mid_path is empty; cannot fetch replay mid")
+    idx = int(round(t_s / params.replay_dt_s))
+    if idx < 0:
+        idx = 0
+    if idx >= len(params.replay_mid_path):
+        idx = len(params.replay_mid_path) - 1
+    return float(params.replay_mid_path[idx])
+
+
 def init_state(mid0: float, params: MicrostructureParams) -> MicrostructureState:
+    if params.mid_path_mode == "replay":
+        mid0 = _replay_mid_at(params, 0.0)
     return MicrostructureState(
         mid=mid0,
         spread_bps=math.exp(params.spread_log_mean),
@@ -178,7 +197,9 @@ def step_environment(
     dt_s: float,
     rng: random.Random,
 ) -> None:
-    """Advance OBI, spread, mid by dt_s. Mutates state in place."""
+    """Advance OBI, spread, mid by dt_s. Mutates state in place. In
+    `mid_path_mode='replay'`, mid is fetched from the replay path
+    rather than evolved by AR(1) drift + vol."""
     state.y_obi = (
         (1.0 - params.obi_phi) * params.obi_target
         + params.obi_phi * state.y_obi
@@ -195,14 +216,17 @@ def step_environment(
         params.spread_min_bps, min(params.spread_max_bps, math.exp(log_s))
     )
 
-    drift_bps = (
-        params.mid_drift_bps_per_step
-        + params.mid_drift_y_coupling_bps * state.y_obi
-    )
-    shock_bps = rng.gauss(0.0, params.mid_vol_bps_per_step)
-    state.mid = max(1e-9, state.mid * (1.0 + (drift_bps + shock_bps) / 10_000.0))
-
     state.t += dt_s
+
+    if params.mid_path_mode == "replay":
+        state.mid = _replay_mid_at(params, state.t)
+    else:
+        drift_bps = (
+            params.mid_drift_bps_per_step
+            + params.mid_drift_y_coupling_bps * state.y_obi
+        )
+        shock_bps = rng.gauss(0.0, params.mid_vol_bps_per_step)
+        state.mid = max(1e-9, state.mid * (1.0 + (drift_bps + shock_bps) / 10_000.0))
 
 
 # ── Quote management and fills ────────────────────────────────────────────
