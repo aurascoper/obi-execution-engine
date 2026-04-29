@@ -23,6 +23,10 @@ def install_shutdown_handlers(stop_fn: Callable[..., None]) -> None:
     On Windows: falls back to ``signal.signal`` which is what asyncio
     supports there. SIGTERM on Windows is synthesized as SIGBREAK semantics
     by the runtime; we still register it when the symbol exists.
+
+    NOTE: callers using asyncio.TaskGroup with long-running tasks blocked
+    on awaits (queue.get, sleep, etc.) should prefer install_shutdown_event
+    below — flag-based stop_fn does not unblock TaskGroup siblings.
     """
     if sys.platform == "win32":
         signal.signal(signal.SIGINT, lambda *_: stop_fn())
@@ -32,6 +36,39 @@ def install_shutdown_handlers(stop_fn: Callable[..., None]) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_fn)
+
+
+def install_shutdown_event(event: "asyncio.Event") -> list[str]:
+    """Register POSIX SIGINT/SIGTERM/SIGHUP handlers that set an
+    asyncio.Event. Returns the list of signal names successfully registered.
+
+    Designed for use with asyncio.TaskGroup-based event loops. Pair with a
+    watchdog task that awaits the event and raises a custom exception so
+    TaskGroup cancels sibling tasks blocked on queue.get / sleep:
+
+        async def _watchdog():
+            await event.wait()
+            raise ShutdownRequested()
+
+    SIGHUP is registered on POSIX; on Windows, only SIGINT and (if
+    available) SIGTERM are registered via signal.signal.
+    """
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, lambda *_: event.set())
+        registered = ["SIGINT"]
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, lambda *_: event.set())
+            registered.append("SIGTERM")
+        return registered
+    loop = asyncio.get_running_loop()
+    registered: list[str] = []
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        loop.add_signal_handler(sig, event.set)
+        registered.append(name)
+    return registered
 
 
 def control_socket_path(name: str) -> str:

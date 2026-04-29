@@ -35,11 +35,12 @@ Preconditions before first run:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import secrets
-from util.platform_compat import install_shutdown_handlers
+from util.platform_compat import install_shutdown_event
 import time
 from pathlib import Path
 
@@ -52,6 +53,27 @@ from data.feed import LiveFeed
 from data.hl_feed import HyperliquidFeed
 from execution.hl_manager import HyperliquidOrderManager
 from strategy.signals import SignalEngine, MOMENTUM_TAG
+from config.risk_params import (
+    MAKER_LATENCY_WINDOW,
+    MAKER_POLICY,
+    MAKER_POLICY_WEIGHTS,
+    MAKER_SHADOW,
+)
+from strategy.maker_shadow import (
+    MakerShadow,
+    build_state as build_maker_state,
+    outcome_payload as maker_outcome_payload,
+    shadow_event_payload as maker_shadow_payload,
+)
+from strategy.latent_regime_detector import LatentRegimeDetector
+from strategy.macro_sizing_tier import compute_multiplier as compute_macro_multiplier
+
+# ── Macro shadow (plan proud-conjuring-pebble.md) ────────────────────────────
+# Coins whose bars trigger macro_sizing_shadow emission and whose orderbook
+# ticks drive a latent-regime detector. Shadow-only: risk path always applies
+# multiplier=1.00; these events are for offline calibration.
+MACRO_SHADOW_COINS: tuple[str, ...] = ("BTC", "ETH", "SOL", "ADA")
+REGIME_THROTTLE_SEC: float = 1.0  # paper 2604.20949 specifies 1 Hz
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -112,12 +134,44 @@ HIP3_TAKER_ESCALATION_Z = 3.0
 # always pass. Memory-based: uses st.positions + latest mid/close, not a live
 # HL snapshot.
 MAX_NET_NOTIONAL = float(os.environ.get("MAX_NET_NOTIONAL", "200.0"))
+# Reduce-only mode: portfolio-level over-extension governor. Activates when
+# |net_notional| crosses K_ACTIVATE × MAX_NET_NOTIONAL upward; deactivates
+# when |net_notional| crosses K_DEACTIVATE × MAX_NET_NOTIONAL downward. The
+# K_DEACTIVATE < K_ACTIVATE dead-band prevents flip-flopping at the boundary.
+# When active: only reduction-side entries (those whose post-fill |net| is
+# strictly less than pre-fill |net|) are allowed; growth-side entries are
+# blocked. Reduce-only never auto-flattens, never modifies sizing, never
+# touches the momentum book — it is a one-way ratchet that the mean-rev
+# strategy itself drives back under cap by taking fading entries.
+# Operator-approved 2026-04-28 (docs/stage3_promotion_design.md). Defaults
+# 1.5 / 1.25 are the approved thresholds; env-overridable for soak tuning.
+REDUCE_ONLY_K_ACTIVATE = float(os.environ.get("REDUCE_ONLY_K_ACTIVATE", "1.5"))
+REDUCE_ONLY_K_DEACTIVATE = float(os.environ.get("REDUCE_ONLY_K_DEACTIVATE", "1.25"))
 # Regime pause: if BTC/USD OR xyz:SP500/USD 1h absolute return exceeds this,
 # block NEW entries for REGIME_PAUSE_SECONDS. Exits still fire. 60-bar
 # _RollingBuffer at 1m bars = exact 1h window.
-REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.015"))
-REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "3600"))
+REGIME_1H_ABS_RETURN = float(os.environ.get("REGIME_1H_ABS_RETURN", "0.010"))
+REGIME_PAUSE_SECONDS = int(os.environ.get("REGIME_PAUSE_SECONDS", "10800"))
 REGIME_PROXIES = ("BTC/USD", "xyz:SP500/USD")
+
+# ── Dust-test safety caps (P3, off by default) ───────────────────────────────
+# All four default OFF / 0; activate explicitly for a smoke-test session.
+# MAX_NEW_ENTRIES_PER_SESSION    : per-engine-instance ceiling on accepted entries.
+# SMOKE_TEST_SYMBOLS             : comma-separated allowlist (e.g. "ETH,AAVE").
+#                                  When set, blocks any entry whose normalized
+#                                  symbol isn't in the list.
+# HL_SESSION_LOSS_GUARD_USD      : positive number of dollars; halt new entries
+#                                  when (closedPnl - fees) since engine start
+#                                  drops to -threshold. Lazy poll (60s cache).
+MAX_NEW_ENTRIES_PER_SESSION = int(os.environ.get("MAX_NEW_ENTRIES_PER_SESSION", "0"))
+SMOKE_TEST_SYMBOLS_RAW = os.environ.get("SMOKE_TEST_SYMBOLS", "").strip()
+SMOKE_TEST_SYMBOLS: frozenset[str] = frozenset(
+    s.strip().replace("/USD", "").replace("/USDC", "")
+    for s in SMOKE_TEST_SYMBOLS_RAW.split(",")
+    if s.strip()
+)
+HL_SESSION_LOSS_GUARD_USD = float(os.environ.get("HL_SESSION_LOSS_GUARD_USD", "0"))
+HL_SESSION_LOSS_POLL_S = float(os.environ.get("HL_SESSION_LOSS_POLL_S", "60"))
 
 # ── HL venue price precision ──────────────────────────────────────────────────
 # HL rule: price decimals ≤ max(6 - szDecimals, 0) AND significant figures ≤ 5.
@@ -150,6 +204,11 @@ def _round_hl_size(qty: float, sz_decimals: int) -> float:
         return qty
     factor = 10**sz_decimals
     return math.floor(qty * factor) / factor
+
+
+class ShutdownRequested(Exception):
+    """Raised inside the engine's TaskGroup watchdog to cancel siblings on
+    SIGTERM/SIGINT/SIGHUP. Caught at the run() boundary via except*."""
 
 
 class HLEngine:
@@ -331,14 +390,79 @@ class HLEngine:
             c: 1.5 * (10**-dec) for c, dec in self._sz_decimals.items()
         }
 
-        self._per_pair_notional = 250.0
+        # Sizing override: NOTIONAL_PER_TRADE_OVERRIDE is the dust-soak /
+        # smoke-test override knob. When unset, fall back to PER_PAIR_NOTIONAL
+        # (default $250). Logged on boot so the active source is auditable.
+        _notional_override = os.environ.get("NOTIONAL_PER_TRADE_OVERRIDE")
+        if _notional_override is not None:
+            self._per_pair_notional = float(_notional_override)
+            _notional_source = "NOTIONAL_PER_TRADE_OVERRIDE"
+        else:
+            self._per_pair_notional = float(os.environ.get("PER_PAIR_NOTIONAL", "250"))
+            _notional_source = "PER_PAIR_NOTIONAL"
+        log.info(
+            "hl_notional_config",
+            notional_per_trade=self._per_pair_notional,
+            source=_notional_source,
+        )
+
+        # Phase 2: single BasketAggregator shared across the SignalEngine.
+        # Always instantiated so SIGNAL_MODE can be flipped between `raw` and
+        # `basket_residual` without a config rewire; the engine only *consults*
+        # residual_z() when SIGNAL_MODE=="basket_residual".
+        from config.risk_params import BASKET_WINDOW
+        from strategy.baskets import BasketAggregator
+
+        try:
+            self._basket_agg = BasketAggregator(window=BASKET_WINDOW)
+        except FileNotFoundError:
+            log.warning("basket_agg_config_missing", fallback="raw_z")
+            self._basket_agg = None
 
         self._signals = SignalEngine(
             symbols=self._hl_symbols,
             strategy_tag=STRATEGY_TAG,
             allow_short=True,
             notional_per_trade=self._per_pair_notional,
+            basket_agg=self._basket_agg,
         )
+
+        # Phase 5: POW-dTS meta-controller. Three arms — hl_z (mean-rev),
+        # momentum (evaluate_momentum path), pairs (runs in its own process;
+        # an arm pick is just a soft budget allowance, dispatch is a no-op).
+        # Default META_CONTROLLER=off preserves the legacy static branch.
+        from config.risk_params import (
+            META_CONTROLLER,
+            META_PRIOR_FILE,
+            META_DISCOUNT,
+            FEE_ROUND_TRIP_BPS,
+            META_SNAPSHOT_EVERY,
+        )
+        from strategy.meta_controller import POWdTSBandit
+
+        self._meta_mode = META_CONTROLLER
+        self._meta_fee_pct = FEE_ROUND_TRIP_BPS / 100.0
+        self._meta_snapshot_every = max(1, int(META_SNAPSHOT_EVERY))
+        self._meta_iter = 0
+        if META_CONTROLLER == "pow_dts":
+            # v1: two engine-side arms. `pairs` is a separate process and not
+            # arm-selected here; when pairs proves dispatchable from the main
+            # engine it becomes a third arm (plan §Phase 7e).
+            self._meta = POWdTSBandit.load_or_init(
+                path=META_PRIOR_FILE,
+                arms=[STRATEGY_TAG, MOMENTUM_TAG],
+                discount=META_DISCOUNT,
+            )
+            log.info(
+                "meta_controller_init",
+                mode="pow_dts",
+                prior_file=META_PRIOR_FILE,
+                discount=META_DISCOUNT,
+                fee_threshold_pct=self._meta_fee_pct,
+                snapshot=self._meta.snapshot(),
+            )
+        else:
+            self._meta = None
 
         # Inject _QTY_DECIMALS for HIP-3 coins from venue meta (dynamic, not hardcoded).
         from strategy.signals import _QTY_DECIMALS
@@ -409,8 +533,33 @@ class HLEngine:
 
         self._pending_resting: dict[str, dict] = {}
 
+        # Phase 7d maker-policy shadow: built only when MAKER_SHADOW is on or
+        # MAKER_POLICY="rl" (latter is future-work; today the flag just gates
+        # the instrumentation). Lazy weights-load, never crashes engine.
+        if MAKER_SHADOW or MAKER_POLICY == "rl":
+            self._maker_shadow: MakerShadow | None = MakerShadow(
+                weights_path=MAKER_POLICY_WEIGHTS,
+                latency_window=MAKER_LATENCY_WINDOW,
+            )
+        else:
+            self._maker_shadow = None
+
         # P0 regime-pause state: monotonic deadline; entries blocked while > now().
         self._regime_pause_until: float = 0.0
+
+        # Reduce-only mode state: flips on/off with hysteresis based on
+        # observed |net_notional|. Default OFF at boot. Transitions are
+        # logged via risk_gate_reduce_only_{activated,deactivated} events.
+        self._reduce_only_active: bool = False
+
+        # Dust-test caps state — all default-off; populated only if env vars
+        # were set at startup. _engine_start_ms is the reference for the
+        # session-loss guard's HL closedPnl window.
+        self._engine_start_ms: int = int(time.time() * 1000)
+        self._new_entries_this_session: int = 0
+        self._loss_guard_last_poll_mono: float = 0.0
+        self._loss_guard_cached_loss_usd: float | None = None
+        self._loss_guard_tripped: bool = False
 
         # ── Control plane (Phase 1: read-only) ──────────────────────────────
         self._control = ControlPlaneServer(
@@ -426,6 +575,165 @@ class HLEngine:
                 "mode": self._cfg.execution_mode.value,
             },
         )
+
+        # ── Macro shadow (plan proud-conjuring-pebble.md Steps 1–4) ──────────
+        # Load-only at startup. Risk path applies 1.00 always; these emissions
+        # are for offline calibration, not sizing.
+        self._macro_snapshot: dict = self._load_macro_snapshot()
+        self._regime_detectors: dict[str, LatentRegimeDetector] = {}
+        self._regime_last_update: dict[str, float] = {}
+        for _coin in MACRO_SHADOW_COINS:
+            _sym = self._coin_to_symbol.get(_coin)
+            if _sym and _sym in self._signals._state:
+                self._regime_detectors[_sym] = LatentRegimeDetector(_coin)
+        log.info(
+            "macro_shadow_init",
+            contracts=sorted((self._macro_snapshot.get("contracts") or {}).keys()),
+            history_counts={
+                k: len(v)
+                for k, v in (self._macro_snapshot.get("history") or {}).items()
+            },
+            detectors=sorted(self._regime_detectors.keys()),
+            ts_poll_utc=self._macro_snapshot.get("ts_poll_utc"),
+        )
+
+    @staticmethod
+    def _load_macro_snapshot() -> dict:
+        """Compose Kalshi snapshot + per-contract history for macro_sizing_tier.
+
+        Returns an empty dict if kalshi_latest.json is missing/unreadable;
+        compute_multiplier falls back to 1.00 with note='stale_snapshot'.
+        """
+        root = Path(__file__).resolve().parent
+        latest_path = root / "data" / "macro" / "kalshi_latest.json"
+        history_path = root / "data" / "macro" / "kalshi_history.jsonl"
+        try:
+            snap = json.loads(latest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+        per_contract: dict[str, list[float]] = {}
+        if history_path.exists():
+            try:
+                with history_path.open() as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        for ct, v in (rec.get("contracts") or {}).items():
+                            p = v.get("prob")
+                            if p is not None:
+                                per_contract.setdefault(ct, []).append(float(p))
+            except OSError:
+                pass
+        snap["history"] = per_contract
+        return snap
+
+    def _emit_regime_shadow(self, msg: dict) -> None:
+        """Feed per-tick top-of-book to the regime detector for MACRO_SHADOW_COINS.
+
+        1 Hz throttle per symbol (paper 2604.20949). Exceptions are caught and
+        logged — detector must never block the strategy loop.
+        """
+        sym = msg.get("symbol")
+        det = self._regime_detectors.get(sym) if sym else None
+        if det is None:
+            return
+        now = time.time()
+        if now - self._regime_last_update.get(sym, 0.0) < REGIME_THROTTLE_SEC:
+            return
+        self._regime_last_update[sym] = now
+        try:
+            bids = msg.get("bids") or []
+            asks = msg.get("asks") or []
+            if not bids or not asks:
+                return
+            bid_px = float(bids[0][0])
+            ask_px = float(asks[0][0])
+            bid_sz = float(bids[0][1])
+            ask_sz = float(asks[0][1])
+            if bid_px <= 0 or ask_px <= 0 or ask_px < bid_px:
+                return
+            mid = 0.5 * (bid_px + ask_px)
+            trig = det.update(now, mid, bid_sz, ask_sz, bid_px, ask_px)
+            if trig is not None:
+                log.info(
+                    "regime_shift_shadow",
+                    symbol=trig.symbol,
+                    channel=trig.channel,
+                    raw=trig.raw,
+                    z=trig.z,
+                    threshold=trig.threshold,
+                    reason=trig.reason,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("regime_shadow_emit_failed", symbol=sym, error=str(exc))
+
+    def _emit_macro_shadow(self, msg: dict) -> None:
+        """Per-bar shadow-log macro sizing multiplier for MACRO_SHADOW_COINS.
+
+        Engine never applies the multiplier; risk path stays at 1.00.
+        """
+        sym = msg.get("symbol")
+        coin = self._symbol_to_coin.get(sym, "") if sym else ""
+        if coin not in MACRO_SHADOW_COINS:
+            return
+        try:
+            mult, reason = compute_macro_multiplier(coin, self._macro_snapshot)
+            log.info(
+                "macro_sizing_shadow",
+                symbol=coin,
+                multiplier=mult,
+                tier=reason.get("tier"),
+                raw_w=reason.get("raw_w"),
+                percentile=reason.get("percentile"),
+                overlay=reason.get("overlay"),
+                contract=reason.get("contract"),
+                note=reason.get("note"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("macro_shadow_emit_failed", symbol=sym, error=str(exc))
+
+    def _emit_maker_outcome(
+        self,
+        *,
+        event: str,  # "maker_fill" | "maker_cancel" | "maker_taker"
+        cloid: str,
+        symbol: str,
+        reason: str | None = None,
+        slippage_bps: float | None = None,
+        fill_qty: float | None = None,
+        fill_px: float | None = None,
+    ) -> None:
+        """Emit a maker-outcome log event keyed by cloid for scripts/maker_gate.py.
+
+        Phase 7d V1: V1 leaves adverse_selection_bps unmeasured (V2 wires the
+        deferred mid capture +30s post-fill). No-op when MAKER_SHADOW is off so
+        the gate's promotion experiment can be toggled by env alone.
+        """
+        if not MAKER_SHADOW or not cloid:
+            return
+        try:
+            log.info(
+                event,
+                **maker_outcome_payload(
+                    event=event,
+                    cloid=cloid,
+                    symbol=symbol,
+                    reason=reason,
+                    slippage_bps=slippage_bps,
+                    fill_qty=fill_qty,
+                    fill_px=fill_px,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "maker_outcome_emit_failed",
+                event=event,
+                cloid=cloid,
+                symbol=symbol,
+                error=str(exc),
+            )
 
     # ── Boot: seed in-memory state from on-chain positions ───────────────────
     async def _reconcile_startup(self) -> None:
@@ -813,6 +1121,85 @@ class HLEngine:
         if not is_entry:
             return True
 
+        # Manage-only mode — env-driven kill of new entries. Exits/cancels/
+        # ratchets/stop_loss continue to fire (they returned True above).
+        # Set PAUSE_NEW_ENTRIES=1 to halt fresh exposure during recalibration
+        # / forensic windows / loss-regime holds. Both mean-rev and momentum
+        # entries are blocked since this gate runs for the full entry path.
+        if os.environ.get("PAUSE_NEW_ENTRIES", "0") == "1":
+            log.info(
+                "risk_gate_pause_new_entries",
+                symbol=sym,
+                tag=tag,
+                side=sig["side"].name
+                if hasattr(sig["side"], "name")
+                else str(sig["side"]),
+            )
+            return False
+
+        # P3 dust-test caps — all default-off. Activated only when the
+        # corresponding env var is set explicitly at engine startup.
+        # Order: symbol allowlist → max-entries-per-session → session-loss
+        # guard (the most expensive — does an HL API poll).
+        if SMOKE_TEST_SYMBOLS:
+            sym_norm = (sym or "").replace("/USD", "").replace("/USDC", "")
+            if sym_norm not in SMOKE_TEST_SYMBOLS:
+                log.info(
+                    "risk_gate_smoke_symbol_block",
+                    symbol=sym,
+                    tag=tag,
+                    allowlist=sorted(SMOKE_TEST_SYMBOLS),
+                )
+                return False
+
+        if (
+            MAX_NEW_ENTRIES_PER_SESSION > 0
+            and self._new_entries_this_session >= MAX_NEW_ENTRIES_PER_SESSION
+        ):
+            log.info(
+                "risk_gate_max_new_entries_session",
+                symbol=sym,
+                tag=tag,
+                count=self._new_entries_this_session,
+                cap=MAX_NEW_ENTRIES_PER_SESSION,
+            )
+            return False
+
+        if HL_SESSION_LOSS_GUARD_USD > 0:
+            if self._loss_guard_tripped:
+                log.info(
+                    "risk_gate_session_loss_tripped",
+                    symbol=sym,
+                    tag=tag,
+                    cached_loss_usd=self._loss_guard_cached_loss_usd,
+                    threshold=-HL_SESSION_LOSS_GUARD_USD,
+                )
+                return False
+            now_mono_ = time.monotonic()
+            stale = (
+                now_mono_ - self._loss_guard_last_poll_mono
+            ) >= HL_SESSION_LOSS_POLL_S
+            if stale or self._loss_guard_cached_loss_usd is None:
+                self._loss_guard_last_poll_mono = now_mono_
+                try:
+                    realized = self._poll_session_realized_pnl()
+                    self._loss_guard_cached_loss_usd = realized
+                    if realized <= -HL_SESSION_LOSS_GUARD_USD:
+                        self._loss_guard_tripped = True
+                        log.warning(
+                            "risk_gate_session_loss_trip",
+                            realized_usd=round(realized, 4),
+                            threshold=-HL_SESSION_LOSS_GUARD_USD,
+                        )
+                        return False
+                except Exception as e:
+                    # Don't block on transient API failure — log + continue.
+                    log.warning(
+                        "risk_gate_session_loss_poll_failed",
+                        exc_type=type(e).__name__,
+                        exc_msg=str(e)[:120],
+                    )
+
         now_mono = time.monotonic()
 
         # Regime pause: re-check lazily so a new trip extends the deadline.
@@ -838,26 +1225,116 @@ class HLEngine:
 
         # Net-cap: only block if entering WOULD INCREASE |net| beyond cap.
         # Exclude momentum book from the mean-rev cap (separate book).
+        # FAIL-CLOSED: if mid is invalid (NaN/0 — typical for thin synthetic
+        # perp quote streams), block the entry rather than allow it. A risk
+        # gate that can't validate its inputs must not silently let the
+        # trade through. (Bug surfaced by 2026-04-27 micro-soak: para:BTCD
+        # bypassed the cap when mid went stale and routed via taker
+        # escalation at 8x intended notional.)
         if not is_momentum:
             mid = self._current_mid(sym)
-            if math.isfinite(mid) and mid > 0:
-                net_before = self._compute_net_notional()
-                delta_notional = delta_qty * mid
-                net_after = net_before + delta_notional
-                if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
-                    net_before
-                ):
-                    log.info(
-                        "risk_gate_net_cap",
-                        symbol=sym,
-                        tag=tag,
-                        net_before=round(net_before, 2),
-                        net_after=round(net_after, 2),
-                        cap=MAX_NET_NOTIONAL,
-                    )
-                    return False
+            if not (math.isfinite(mid) and mid > 0):
+                log.info(
+                    "risk_gate_net_cap_blocked_invalid_mid",
+                    symbol=sym,
+                    tag=tag,
+                    mid=mid,
+                    max_net_notional=MAX_NET_NOTIONAL,
+                )
+                return False
+            net_before = self._compute_net_notional()
+            delta_notional = delta_qty * mid
+            net_after = net_before + delta_notional
 
+            # Reduce-only mode (Stage 3 over-extension governor).
+            # Evaluate state transitions FIRST so activation/deactivation logs
+            # fire on every entry-candidate evaluation, not only on blocks.
+            # Then, if active, block growth-side entries (|net_after| > |net_before|).
+            # Reduction-side (|net_after| <= |net_before|) is allowed through —
+            # the mean-rev book is supposed to drive |net| back under cap.
+            abs_before = abs(net_before)
+            ratio_before = (
+                abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
+            )
+            if self._reduce_only_active:
+                if ratio_before <= REDUCE_ONLY_K_DEACTIVATE:
+                    self._reduce_only_active = False
+                    log.info(
+                        "risk_gate_reduce_only_deactivated",
+                        net_before=round(net_before, 2),
+                        cap=MAX_NET_NOTIONAL,
+                        ratio=round(ratio_before, 4),
+                        k_activate=REDUCE_ONLY_K_ACTIVATE,
+                        k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
+                    )
+            else:
+                if ratio_before >= REDUCE_ONLY_K_ACTIVATE:
+                    self._reduce_only_active = True
+                    log.warning(
+                        "risk_gate_reduce_only_activated",
+                        net_before=round(net_before, 2),
+                        cap=MAX_NET_NOTIONAL,
+                        ratio=round(ratio_before, 4),
+                        k_activate=REDUCE_ONLY_K_ACTIVATE,
+                        k_deactivate=REDUCE_ONLY_K_DEACTIVATE,
+                    )
+            if self._reduce_only_active and abs(net_after) > abs_before:
+                log.info(
+                    "risk_gate_reduce_only_blocked",
+                    symbol=sym,
+                    tag=tag,
+                    net_before=round(net_before, 2),
+                    net_after=round(net_after, 2),
+                    cap=MAX_NET_NOTIONAL,
+                    ratio=round(ratio_before, 4),
+                )
+                return False
+
+            if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(net_before):
+                log.info(
+                    "risk_gate_net_cap",
+                    symbol=sym,
+                    tag=tag,
+                    net_before=round(net_before, 2),
+                    net_after=round(net_after, 2),
+                    cap=MAX_NET_NOTIONAL,
+                )
+                return False
+
+        # All gates passed — entry will be issued. Increment session counter
+        # only on actual acceptance (not on candidate-attempt). Used by the
+        # MAX_NEW_ENTRIES_PER_SESSION cap above.
+        self._new_entries_this_session += 1
         return True
+
+    def _poll_session_realized_pnl(self) -> float:
+        """Pull HL closedPnl - fees since engine start.
+        Sync call (we're already in a non-async context). Returns USD net.
+        Raises on API failure — caller handles gracefully.
+        """
+        from hyperliquid.info import Info as _Info
+        from hyperliquid.utils import constants as _constants
+
+        addr = os.environ.get("HL_WALLET_ADDRESS", "").strip()
+        if not addr:
+            return 0.0
+        info = _Info(_constants.MAINNET_API_URL, skip_ws=True)
+        now_ms = int(time.time() * 1000)
+        fills = (
+            info.user_fills_by_time(
+                addr, self._engine_start_ms, now_ms, aggregate_by_time=False
+            )
+            or []
+        )
+        closed = 0.0
+        fees = 0.0
+        for f in fills:
+            try:
+                closed += float(f.get("closedPnl", 0) or 0)
+                fees += float(f.get("fee", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return closed - fees
 
     # ── Maker (Alo) path ─────────────────────────────────────────────────────
     async def _submit_maker(self, sig: dict) -> dict | None:
@@ -922,7 +1399,50 @@ class HLEngine:
             "reduce_only": False,
             "cloid": cloid,
         }
+
+        # Phase 7d shadow: log policy-suggested action alongside heuristic POST.
+        # Runs only when MAKER_SHADOW=1 (else self._maker_shadow is None). The
+        # heuristic action is always submitted below — this block is log-only.
+        if self._maker_shadow is not None:
+            try:
+                bid, ask = st.best_bid, st.best_ask
+                if math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask > 0:
+                    mid = 0.5 * (bid + ask)
+                    spread_bps = (ask - bid) / mid * 10_000.0 if mid > 0 else 0.0
+                else:
+                    spread_bps = 0.0
+                p50, p95 = self._maker_shadow.latency_features()
+                maker_state = build_maker_state(
+                    obi=float(st.obi),
+                    log_gofi=float(st.log_gofi),
+                    mlofi=float(st.mlofi),
+                    spread_bps=spread_bps,
+                    depth_top3_bps=0.0,  # not exposed on _SymbolState yet
+                    my_rest_age_ms=0.0,  # fresh intent
+                    my_rest_dist_bps=0.0,  # posted at best
+                    latency_p50_ms=p50,
+                    latency_p95_ms=p95,
+                    queue_position_pct=0.0,
+                    inventory_notional=0.0,
+                )
+                suggestion = self._maker_shadow.suggest(maker_state, deterministic=True)
+                log.info(
+                    **maker_shadow_payload(
+                        symbol=sym,
+                        cloid=cloid.lower(),
+                        heuristic_action="POST_ALO",
+                        suggestion=suggestion,
+                        state=maker_state,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("maker_shadow_emit_failed", symbol=sym, error=str(exc))
+
+        t0_ns = time.perf_counter_ns()
         result = await self._hl.submit_order(hl_order)
+        wall_ms = (time.perf_counter_ns() - t0_ns) / 1_000_000.0
+        if self._maker_shadow is not None:
+            self._maker_shadow.record_rpc_latency(wall_ms)
         log.info("hl_maker_result", client_order_id=cid, cloid=cloid, result=result)
 
         # Detect immediate rejection — HL returns status=ok with an `error`
@@ -939,6 +1459,12 @@ class HLEngine:
                         client_order_id=cid,
                         cloid=cloid,
                         error=s["error"],
+                    )
+                    self._emit_maker_outcome(
+                        event="maker_cancel",
+                        cloid=cloid,
+                        symbol=sym,
+                        reason="inner_rejection",
                     )
                     return None
         except Exception:
@@ -975,6 +1501,32 @@ class HLEngine:
             return False
         statuses = resp.get("response", {}).get("data", {}).get("statuses", [])
         return any(isinstance(s, str) and s == "success" for s in statuses)
+
+    @staticmethod
+    def _cancel_terminal(resp: dict | None) -> bool:
+        """
+        True iff the order is definitively no longer on the book — either we
+        just canceled it, or HL reports it was never placed / already
+        canceled / already filled. Used only by the lifetime-giveup path:
+        by the time we reach this branch, any genuine fill would already
+        have cleared pending via userFills, so a persistent "never placed"
+        response indicates a ghost cloid safe to retire.
+        """
+        if HLEngine._cancel_ok(resp):
+            return True
+        if not resp or resp.get("status") != "ok":
+            return False
+        statuses = resp.get("response", {}).get("data", {}).get("statuses", [])
+        for s in statuses:
+            if isinstance(s, dict):
+                err = s.get("error", "")
+                if (
+                    "never placed" in err
+                    or "already canceled" in err
+                    or "already filled" in err
+                ):
+                    return True
+        return False
 
     def _rollback_pending(self, sym: str, is_entry: bool) -> None:
         if is_entry:
@@ -1019,17 +1571,23 @@ class HLEngine:
             )
             resp = None
 
-        if self._cancel_ok(resp):
-            # Order was resting and is now gone. Safe to clear pending and
-            # roll back memory.
+        if self._cancel_terminal(resp):
+            # Order is no longer on the book (canceled by us, or HL reports
+            # it was never placed / already canceled / already filled). By
+            # the time giveup fires, any real fill would already have
+            # cleared pending via userFills, so treat as retired.
+            self._emit_maker_outcome(
+                event="maker_cancel",
+                cloid=cloid,
+                symbol=sym,
+                reason=f"giveup:{reason}",
+            )
             self._pending_resting.pop(sym, None)
             self._rollback_pending(sym, pending["is_entry"])
             return
 
-        # Cancel reported failure — most commonly because the order just
-        # filled. Leave pending alone so the userFills WS event clears it
-        # and fires on_fill. If the order is truly gone but we don't know,
-        # the lifetime check on the next watchdog tick will pop it.
+        # Non-terminal response — unusual. Leave pending for userFills to
+        # resolve; next watchdog tick will retry.
         log.warning(
             "hl_maker_giveup_cancel_unconfirmed", symbol=sym, cloid=cloid, resp=resp
         )
@@ -1068,6 +1626,14 @@ class HLEngine:
             return
 
         new_cloid = f"0x{secrets.randbits(128):032x}"
+        # Old cloid is now off the book — emit its outcome before the new one
+        # gets registered. Joins to its original maker_shadow intent.
+        self._emit_maker_outcome(
+            event="maker_cancel",
+            cloid=old_cl,
+            symbol=sym,
+            reason="reprice",
+        )
         log.info(
             "hl_maker_reprice",
             symbol=sym,
@@ -1451,6 +2017,20 @@ class HLEngine:
         # the last chunk size (→ under-sized exit → dust residual), and
         # multi-chunk exits resurrect a phantom position after the close.
         if terminal:
+            # Maker outcome: terminal fill on the original maker_shadow intent.
+            # `crossed` distinguishes a true maker fill (False) from a fill
+            # that was actually a taker IOC sneaking through this code path
+            # (rare; would happen if a taker order's cloid collides into
+            # _pending_resting via reprice race). Treat crossed=True as taker
+            # so the gate doesn't double-credit it as a maker fill.
+            self._emit_maker_outcome(
+                event="maker_taker" if msg.get("crossed") else "maker_fill",
+                cloid=cloid_lc,
+                symbol=sym,
+                slippage_bps=slip_bps,
+                fill_qty=cumulative,
+                fill_px=fill_px,
+            )
             self._signals.on_fill(
                 client_order_id=pending["cid"],
                 symbol=sym,
@@ -1473,6 +2053,7 @@ class HLEngine:
                 # engine (HL pump rewrites coin→symbol before enqueueing).
                 if msg.get("symbol") in self._signals._state:
                     self._signals.update_orderbook(msg)
+                    self._emit_regime_shadow(msg)
                 continue
 
             if msg["type"] == "hl_fill":
@@ -1481,6 +2062,9 @@ class HLEngine:
 
             if msg["type"] != "bar":
                 continue
+
+            # Macro shadow (log-only, independent of signal / meta / resting gates).
+            self._emit_macro_shadow(msg)
 
             # Maker gate: if a resting Alo order for this symbol is still
             # awaiting a fill, don't run evaluate() — the strategy already
@@ -1491,9 +2075,24 @@ class HLEngine:
 
             bar_sym = msg.get("symbol", "")
             bar_coin = self._symbol_to_coin.get(bar_sym, "")
-            is_momentum = bar_coin in self._momentum_coins
+            is_momentum_sym = bar_coin in self._momentum_coins
 
-            if is_momentum:
+            # Phase 5 arm gate: when the bandit is live, sample an arm and
+            # veto mismatched dispatches. The bandit can still pick an arm
+            # whose bar we haven't received this tick — in that case we defer.
+            # Eligibility: hl_z/momentum fire only on their own-bucket symbols;
+            # "pairs" is satisfied by letting the pairs process consume its
+            # own budget externally, so a "pairs" pick is a no-op this tick.
+            if self._meta is not None:
+                arm = self._meta.select()
+                route_momentum = arm == MOMENTUM_TAG
+                if route_momentum != is_momentum_sym:
+                    # Wrong bar-type for the sampled arm — skip this tick.
+                    continue
+            else:
+                route_momentum = is_momentum_sym
+
+            if route_momentum:
                 # Push buffers via evaluate(), ignore mean-reversion signal
                 self._signals.evaluate(msg)
                 sig = self._signals.evaluate_momentum(msg)
@@ -1503,7 +2102,77 @@ class HLEngine:
             if sig is None:
                 continue
 
-            active_tag = MOMENTUM_TAG if is_momentum else STRATEGY_TAG
+            active_tag = MOMENTUM_TAG if route_momentum else STRATEGY_TAG
+            is_momentum = route_momentum
+
+            # Option C runtime-shadow: emit a structured snapshot of the
+            # runtime sizing context at the order-decision boundary, BEFORE
+            # the risk gates. Pure observation — no control flow change.
+            # Wrapped in try/except so a logging failure never blocks orders.
+            try:
+                _raw_side = sig.get("side")
+                _name = getattr(_raw_side, "name", None)
+                if _name is not None:
+                    _s = str(_name).lower()
+                else:
+                    _s = str(_raw_side).strip().lower() if _raw_side is not None else ""
+                if _s in ("buy", "long", "bid", "1", "+1", "1.0"):
+                    _side_sign = 1
+                    _side_str = "buy"
+                elif _s in ("sell", "short", "ask", "-1", "-1.0"):
+                    _side_sign = -1
+                    _side_str = "sell"
+                else:
+                    try:
+                        _f = float(_raw_side)
+                        if _f > 0:
+                            _side_sign, _side_str = 1, "buy"
+                        elif _f < 0:
+                            _side_sign, _side_str = -1, "sell"
+                        else:
+                            _side_sign, _side_str = 0, "unknown"
+                    except (TypeError, ValueError):
+                        _side_sign, _side_str = 0, "unknown"
+
+                _sym_rt = sig.get("symbol")
+                _coin_rt = self._symbol_to_coin.get(_sym_rt, "")
+                _mid_rt = self._current_mid(_sym_rt) if _sym_rt else float("nan")
+                _net_before = self._compute_net_notional()
+                _qty_rt = float(sig.get("qty", 0.0) or 0.0)
+                _notional_rt = sig.get("notional")
+                if _notional_rt is None and math.isfinite(_mid_rt):
+                    _notional_rt = abs(_qty_rt) * _mid_rt
+                _hip3_lev = int(
+                    os.environ.get("HIP3_LEVERAGE", str(self._default_leverage))
+                )
+                log.info(
+                    "sizing_runtime_shadow",
+                    symbol=_sym_rt,
+                    coin=_coin_rt,
+                    tag=active_tag,
+                    is_momentum=bool(is_momentum),
+                    side=_side_str,
+                    side_sign=_side_sign,
+                    qty=_qty_rt,
+                    limit_px=sig.get("limit_px"),
+                    notional=(
+                        round(float(_notional_rt), 2)
+                        if _notional_rt is not None
+                        else None
+                    ),
+                    per_pair_notional=round(self._per_pair_notional, 2),
+                    default_leverage=self._default_leverage,
+                    hip3_leverage=_hip3_lev,
+                    mid=(round(_mid_rt, 6) if math.isfinite(_mid_rt) else None),
+                    net_notional_before=round(_net_before, 2),
+                    pause_new_entries=os.environ.get("PAUSE_NEW_ENTRIES", "0"),
+                )
+            except Exception as _e:
+                log.warning(
+                    "sizing_runtime_shadow_failed",
+                    symbol=sig.get("symbol") if isinstance(sig, dict) else None,
+                    error=repr(_e),
+                )
 
             if not self._risk_gate_ok(sig, tag=active_tag, is_momentum=is_momentum):
                 continue
@@ -1512,6 +2181,25 @@ class HLEngine:
                 continue
 
             result = await self._submit(sig)
+
+            # Phase 5: on a successful exit fill, feed pnl into the bandit.
+            if (
+                result is not None
+                and self._meta is not None
+                and sig.get("_exit_tag") is not None
+            ):
+                pnl_pct = sig.get("_exit_pnl_pct")
+                if pnl_pct is not None and not math.isnan(float(pnl_pct)):
+                    reward = float(pnl_pct) - self._meta_fee_pct
+                    self._meta.update(sig["_exit_tag"], reward)
+                    self._meta_iter += 1
+                    if self._meta_iter % self._meta_snapshot_every == 0:
+                        log.info(
+                            "meta_snapshot",
+                            iter=self._meta_iter,
+                            snapshot=self._meta.snapshot(),
+                        )
+
             if result is None:
                 # Order rejected by hl_manager (malformed / SDK error). Roll
                 # back the optimistic memory write so the next bar retries.
@@ -1574,17 +2262,37 @@ class HLEngine:
             native_bar_coins=self._native_bar_coins,
         )
 
-        async with asyncio.TaskGroup() as tg:
-            if self._bars is not None:
-                tg.create_task(self._resilient_alpaca_bars(), name="alpaca_bars")
-            tg.create_task(self._book.run(), name="hl_orderbook")
-            tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
-            tg.create_task(self._strategy_loop(), name="strategy")
-            if self._native_bar_coins:
-                tg.create_task(self._bar_synthesizer(), name="native_bars")
-            if EXECUTION_STYLE == "maker":
-                tg.create_task(self._maker_watchdog(), name="maker_watchdog")
-            tg.create_task(self._control.serve(), name="control_plane")
+        # Shutdown event is created on the running loop. Signal handlers
+        # (SIGTERM/SIGINT/SIGHUP) are installed here, after the event
+        # exists, so the watchdog task can react to them.
+        self._shutdown_event = asyncio.Event()
+        registered = install_shutdown_event(self._shutdown_event)
+        log.info("hl_shutdown_handlers_installed", signals=registered)
+
+        async def _shutdown_watchdog() -> None:
+            await self._shutdown_event.wait()
+            log.info("hl_engine_shutdown_initiated")
+            self.stop()
+            # Raise to make TaskGroup cancel all sibling tasks blocked on
+            # queue.get / asyncio.sleep / etc. except* at run() boundary
+            # converts this into a clean exit.
+            raise ShutdownRequested()
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                if self._bars is not None:
+                    tg.create_task(self._resilient_alpaca_bars(), name="alpaca_bars")
+                tg.create_task(self._book.run(), name="hl_orderbook")
+                tg.create_task(self._hl_obi_pump(), name="hl_obi_pump")
+                tg.create_task(self._strategy_loop(), name="strategy")
+                if self._native_bar_coins:
+                    tg.create_task(self._bar_synthesizer(), name="native_bars")
+                if EXECUTION_STYLE == "maker":
+                    tg.create_task(self._maker_watchdog(), name="maker_watchdog")
+                tg.create_task(self._control.serve(), name="control_plane")
+                tg.create_task(_shutdown_watchdog(), name="shutdown_watchdog")
+        except* ShutdownRequested:
+            log.info("hl_engine_shutdown_complete")
 
     def stop(self) -> None:
         log.info("hl_engine_shutdown")
@@ -1595,7 +2303,6 @@ class HLEngine:
 
 async def main() -> None:
     engine = HLEngine()
-    install_shutdown_handlers(engine.stop)
     await engine.run()
 
 

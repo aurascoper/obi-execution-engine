@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aurascoper.arxiv-check-alerts</string>
+
+    <!-- Run claude in headless mode against the local arxiv MCP server. -->
+    <!-- bash wraps the command so we get clean redirection + PATH inheritance. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>/Users/aurascoper/Developer/live_trading/scripts/run_arxiv_check_alerts.sh</string>
+    </array>
+
+    <!-- Daily at 06:00 America/Chicago (= 11:00 UTC during CDT). launchd uses local wall-clock; this fires once per day. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Catch up if the Mac was asleep at 06:00. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Logs go next to the arxiv-papers storage so check_alerts output stays co-located with watch state. -->
+    <key>StandardOutPath</key>
+    <string>/Users/aurascoper/.claude/arxiv-papers/check_alerts.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/aurascoper/.claude/arxiv-papers/check_alerts.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aurascoper</string>
+
+    <!-- Inherit standard PATH so claude (homebrew) and uvx (homebrew) resolve. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/aurascoper</string>
+    </dict>
+
+    <!-- Belt-and-suspenders: cap any single run at 10 minutes so a hung claude session doesn't wedge the daemon. -->
+    <key>ExitTimeOut</key>
+    <integer>600</integer>
+
+    <!-- Don't auto-restart on success exit. -->
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>

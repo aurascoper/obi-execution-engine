@@ -1,0 +1,28 @@
+{
+  "_doc": "Sensitivity variant: 1800s cooldown on bucketed symbols.",
+  "default": 0,
+  "groups": {
+    "hip3_equity_perps": {
+      "symbols": [
+        "xyz:MSTR", "xyz:AMZN", "xyz:NVDA", "xyz:INTC", "xyz:COIN",
+        "xyz:CRCL", "xyz:CRWV", "xyz:SKHX", "xyz:HIMS", "xyz:HOOD",
+        "xyz:ORCL", "xyz:EWY", "xyz:TSLA", "xyz:SNDK", "xyz:MSFT",
+        "xyz:MU", "xyz:SP500", "xyz:AMD", "xyz:PLTR", "xyz:BRENTOIL",
+        "xyz:GOLD", "xyz:SILVER", "xyz:NATGAS", "xyz:COPPER",
+        "xyz:PLATINUM", "xyz:TSM", "xyz:GOOGL", "xyz:META",
+        "xyz:CL", "xyz:LLY", "xyz:NFLX", "xyz:AAPL", "xyz:COST",
+        "xyz:BABA", "xyz:JP225", "xyz:RIVN", "xyz:JPY", "xyz:XYZ100"
+      ],
+      "cooldown_s": 1800
+    },
+    "churn_native_exceptions": {
+      "symbols": ["ZEC"],
+      "cooldown_s": 1800
+    },
+    "long_hold_natives": {
+      "symbols": ["AAVE", "ETH", "BTC", "SOL", "LDO", "CRV", "BNB", "SUI", "TAO", "DOGE", "LINK", "ADA", "AVAX", "LTC", "BCH", "DOT", "UNI", "POL", "RENDER", "FIL", "HYPE", "NEAR", "ENA", "PAXG", "ARB", "XRP"],
+      "cooldown_s": 0
+    }
+  },
+  "overrides": {}
+}

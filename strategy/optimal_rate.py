@@ -222,7 +222,50 @@ class OptimalRate:
 
         Returns alpha in units of (qty / sec). Positive == liquidating.
         Caller multiplies by bar dt to get qty per bar.
+
+        SAFETY NET (added 2026-04-29 after the Riccati Convergence Duel
+        exposed a parameter-scaling divergence — see docs/kappa_scaling_notes.md
+        and scripts/test_riccati_duel.py):
+
+        Two clamps applied AFTER the closed-form computation:
+
+          (1) Direction guard: if BL says trade in the OPPOSITE direction
+              of the open inventory (i.e., add more when liquidating, or
+              start a position when flat), return 0. We never accumulate.
+
+          (2) Magnitude cap: |α| · τ ≤ |x|. The trader can never be
+              instructed to move more inventory than currently held in the
+              remaining horizon. Bounds α to ±|x|/τ.
+
+        These clamps are operationally conservative — they may produce a
+        sub-optimal trajectory under correctly-scaled parameters but
+        prevent catastrophic divergence under mis-scaled ones. They never
+        loosen the BL policy; they only enforce a maximum.
         """
+        A, B, C, _F = self.coeffs_at(tau)
+        e = self._params.eta
+        g = self._params.gamma
+        raw = ((2.0 * A + e * C) * x + (C + 2.0 * e * B) * y) / (2.0 * g)
+
+        # Terminal / empty cases: pass-through; caller handles the boundary.
+        if tau <= 0.0 or abs(x) < 1e-12:
+            return raw
+
+        # (1) Direction guard
+        if raw * x < 0.0:
+            return 0.0
+
+        # (2) Magnitude cap
+        max_abs = abs(x) / tau
+        if abs(raw) > max_abs:
+            # Preserve sign of raw (which now matches sign of x).
+            return max_abs if raw > 0 else -max_abs
+        return raw
+
+    def alpha_uncapped(self, tau: float, x: float, y: float) -> float:
+        """Same as alpha() but without the safety clamps. Use for debugging
+        the underlying BL closed form (e.g., to reproduce divergence in
+        the Riccati Convergence Duel)."""
         A, B, C, _F = self.coeffs_at(tau)
         e = self._params.eta
         g = self._params.gamma
@@ -315,12 +358,26 @@ def _self_test() -> None:
     a_balanced = rate.alpha(900.0, x=100.0, y=0.0)
     assert a_balanced > 0, "Long inventory + balanced OFI should sell"
 
-    a_adverse = rate.alpha(900.0, x=100.0, y=-0.5)
-    a_friendly = rate.alpha(900.0, x=100.0, y=0.5)
+    # The Y-asymmetry test must use alpha_uncapped() — alpha() applies the
+    # safety cap that clips both extreme Y values to the same |x|/τ ceiling
+    # when BL tries to exceed it. The asymmetry is preserved below the cap;
+    # the cap intentionally collapses it above.
+    a_adverse = rate.alpha_uncapped(900.0, x=100.0, y=-0.5)
+    a_friendly = rate.alpha_uncapped(900.0, x=100.0, y=0.5)
     assert a_friendly > a_adverse, (
         "Selling into buy-pressure (y>0) should be faster than into sell-pressure (y<0); "
         f"got friendly={a_friendly}, adverse={a_adverse}"
     )
+
+    # Cap behavior: rate must not exceed |x|/τ regardless of Y.
+    a_extreme = rate.alpha(900.0, x=100.0, y=10.0)
+    assert a_extreme <= 100.0 / 900.0 + 1e-9, (
+        f"Cap breached: alpha={a_extreme}, max should be {100.0 / 900.0}"
+    )
+
+    # Direction guard: long inventory + alpha forced negative ⇒ clip to 0.
+    a_reverse = rate.alpha(900.0, x=100.0, y=-100.0)
+    assert a_reverse >= 0.0, f"Direction guard breached: alpha={a_reverse}"
 
     T_star, V_star = find_optimal_horizon(params, x=100.0, y=0.0)
     assert 30.0 <= T_star <= 3600.0

@@ -1,0 +1,36 @@
+{
+  "date": "2026-04-29",
+  "schema_version": 1,
+  "names": [
+    {
+      "company": "Microsoft Corporation",
+      "ticker": "MSFT",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-29T20:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Alphabet Inc.",
+      "ticker": "GOOGL",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-29T20:00:00+00:00",
+      "source": "yfinance"
+    },
+    {
+      "company": "Meta Platforms, Inc.",
+      "ticker": "META",
+      "session": "after_close",
+      "earnings_ts_utc": "2026-04-29T20:00:00+00:00",
+      "source": "yfinance"
+    }
+  ],
+  "_provenance": {
+    "source": "yfinance",
+    "fetched_at": "2026-04-28T23:24:44.711744+00:00",
+    "window_h": 36,
+    "n_universe": 37,
+    "n_skipped_non_earnings": 15,
+    "n_errors": 0,
+    "errors": {}
+  }
+}

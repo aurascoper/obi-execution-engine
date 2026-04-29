@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "mode": "shadow",
+  "allow_warn_tier": false,
+  "max_additions_per_run": 5,
+  "_doc": {
+    "enabled": "false=disabled (analyzer reports only). true=feature is armed.",
+    "mode": "shadow=log intent, do not mutate engine universe. live=engine reads + adds on next restart (engine integration NOT YET WIRED — separate authorized PR).",
+    "allow_warn_tier": "false=only allow-tier names are eligible for addition. true=warn-tier also eligible (use only when liquidity has been pre-verified).",
+    "max_additions_per_run": "engine-side cap (when live mode is wired).",
+    "_safety_notes": [
+      "Default-disabled.",
+      "shadow vs live both log; only live mutates engine state.",
+      "Engine-side hook for live mode requires a separate PR; setting mode=live without that PR is a no-op."
+    ]
+  }
+}

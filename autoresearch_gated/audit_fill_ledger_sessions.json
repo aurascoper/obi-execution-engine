@@ -1,0 +1,256 @@
+[
+  {
+    "window_days": 14,
+    "n_reductions_in_window": 1193,
+    "rho_per_fill_ledger_vs_hl_field": 0.04729888179047101,
+    "rho_per_symbol_vs_hl_api": 0.8644925226922082,
+    "rho_per_symbol_vs_hl_field": -0.018073165775632165,
+    "sum_ledger": -580.8749174457607,
+    "sum_hl_field": -9.89296,
+    "sum_hl_api": -1677.7277039999997,
+    "gross_mismatch_pct_vs_api": 65.37728285341822,
+    "gross_mismatch_pct_vs_field": 5771.598767666711,
+    "top10_residual_vs_api": [
+      {
+        "sym": "xyz:MSTR",
+        "ledger": 77.1530083744005,
+        "hl_field": 0.0,
+        "hl_api": 432.60476800000004,
+        "n_reductions": 20,
+        "residual_vs_api": 355.45175962559955,
+        "residual_vs_field": -77.1530083744005
+      },
+      {
+        "sym": "ZEC",
+        "ledger": -273.99719438586277,
+        "hl_field": 0.0,
+        "hl_api": -591.085352,
+        "n_reductions": 68,
+        "residual_vs_api": -317.0881576141372,
+        "residual_vs_field": 273.99719438586277
+      },
+      {
+        "sym": "AAVE",
+        "ledger": -71.08096307818525,
+        "hl_field": 0.0,
+        "hl_api": -363.83200000000005,
+        "n_reductions": 9,
+        "residual_vs_api": -292.75103692181483,
+        "residual_vs_field": 71.08096307818525
+      },
+      {
+        "sym": "SOL",
+        "ledger": -16.984443668320022,
+        "hl_field": 0.0,
+        "hl_api": -166.72437600000003,
+        "n_reductions": 25,
+        "residual_vs_api": -149.73993233168002,
+        "residual_vs_field": 16.984443668320022
+      },
+      {
+        "sym": "DOGE",
+        "ledger": -13.411640999999982,
+        "hl_field": 0.0,
+        "hl_api": -107.63786400000002,
+        "n_reductions": 4,
+        "residual_vs_api": -94.22622300000003,
+        "residual_vs_field": 13.411640999999982
+      },
+      {
+        "sym": "TAO",
+        "ledger": 1.7952885826650595,
+        "hl_field": 0.0,
+        "hl_api": -88.92863999999999,
+        "n_reductions": 10,
+        "residual_vs_api": -90.72392858266505,
+        "residual_vs_field": -1.7952885826650595
+      },
+      {
+        "sym": "xyz:ORCL",
+        "ledger": -9.818109999999898,
+        "hl_field": 0.0,
+        "hl_api": -98.70950400000005,
+        "n_reductions": 9,
+        "residual_vs_api": -88.89139400000016,
+        "residual_vs_field": 9.818109999999898
+      },
+      {
+        "sym": "xyz:CL",
+        "ledger": 16.640468999999975,
+        "hl_field": 0.0,
+        "hl_api": 104.33643999999997,
+        "n_reductions": 26,
+        "residual_vs_api": 87.69597099999999,
+        "residual_vs_field": -16.640468999999975
+      },
+      {
+        "sym": "ETH",
+        "ledger": -166.0570395413966,
+        "hl_field": 0.0,
+        "hl_api": -250.5831199999999,
+        "n_reductions": 110,
+        "residual_vs_api": -84.5260804586033,
+        "residual_vs_field": 166.0570395413966
+      },
+      {
+        "sym": "ADA",
+        "ledger": -11.30149999999992,
+        "hl_field": 0.0,
+        "hl_api": -95.35568000000002,
+        "n_reductions": 11,
+        "residual_vs_api": -84.0541800000001,
+        "residual_vs_field": 11.30149999999992
+      }
+    ],
+    "focus": {
+      "AAVE": {
+        "ledger": -71.08096307818525,
+        "hl_api": -363.83200000000005,
+        "residual": -292.75103692181483
+      },
+      "ZEC": {
+        "ledger": -273.99719438586277,
+        "hl_api": -591.085352,
+        "residual": -317.0881576141372
+      },
+      "ETH": {
+        "ledger": -166.0570395413966,
+        "hl_api": -250.5831199999999,
+        "residual": -84.5260804586033
+      },
+      "xyz:MSTR": {
+        "ledger": 77.1530083744005,
+        "hl_api": 432.60476800000004,
+        "residual": 355.45175962559955
+      }
+    },
+    "shared_n": 70
+  },
+  {
+    "window_days": 7,
+    "n_reductions_in_window": 997,
+    "rho_per_fill_ledger_vs_hl_field": 0.050618436151280796,
+    "rho_per_symbol_vs_hl_api": -0.41659489549517437,
+    "rho_per_symbol_vs_hl_field": 0.013664452786975598,
+    "sum_ledger": -462.59961079583377,
+    "sum_hl_field": -9.89296,
+    "sum_hl_api": -295.5678319999991,
+    "gross_mismatch_pct_vs_api": 56.51216428580603,
+    "gross_mismatch_pct_vs_field": 4576.048531438859,
+    "top10_residual_vs_api": [
+      {
+        "sym": "ZEC",
+        "ledger": -279.897516041443,
+        "hl_field": 0.0,
+        "hl_api": 1005.5340080000003,
+        "n_reductions": 59,
+        "residual_vs_api": 1285.4315240414433,
+        "residual_vs_field": 279.897516041443
+      },
+      {
+        "sym": "ETH",
+        "ledger": -95.74111905886248,
+        "hl_field": 0.0,
+        "hl_api": -754.0223199999997,
+        "n_reductions": 57,
+        "residual_vs_api": -658.2812009411372,
+        "residual_vs_field": 95.74111905886248
+      },
+      {
+        "sym": "xyz:MSTR",
+        "ledger": 77.1530083744005,
+        "hl_field": 0.0,
+        "hl_api": 314.3824960000002,
+        "n_reductions": 20,
+        "residual_vs_api": 237.2294876255997,
+        "residual_vs_field": -77.1530083744005
+      },
+      {
+        "sym": "AAVE",
+        "ledger": -67.23930530040744,
+        "hl_field": 0.0,
+        "hl_api": 115.25464000000004,
+        "n_reductions": 3,
+        "residual_vs_api": 182.49394530040746,
+        "residual_vs_field": 67.23930530040744
+      },
+      {
+        "sym": "xyz:AMD",
+        "ledger": 31.343784954943754,
+        "hl_field": 0.0,
+        "hl_api": -77.90160800000001,
+        "n_reductions": 11,
+        "residual_vs_api": -109.24539295494377,
+        "residual_vs_field": -31.343784954943754
+      },
+      {
+        "sym": "xyz:CL",
+        "ledger": 15.306165999999957,
+        "hl_field": 0.0,
+        "hl_api": 122.44367200000002,
+        "n_reductions": 21,
+        "residual_vs_api": 107.13750600000006,
+        "residual_vs_field": -15.306165999999957
+      },
+      {
+        "sym": "xyz:CRCL",
+        "ledger": 14.024952346912807,
+        "hl_field": 0.0,
+        "hl_api": 120.64895200000001,
+        "n_reductions": 20,
+        "residual_vs_api": 106.6239996530872,
+        "residual_vs_field": -14.024952346912807
+      },
+      {
+        "sym": "xyz:HIMS",
+        "ledger": -13.195100000000004,
+        "hl_field": 0.0,
+        "hl_api": -105.560448,
+        "n_reductions": 8,
+        "residual_vs_api": -92.36534799999998,
+        "residual_vs_field": 13.195100000000004
+      },
+      {
+        "sym": "xyz:BABA",
+        "ledger": -12.294399999999875,
+        "hl_field": 0.0,
+        "hl_api": -98.325736,
+        "n_reductions": 10,
+        "residual_vs_api": -86.03133600000012,
+        "residual_vs_field": 12.294399999999875
+      },
+      {
+        "sym": "ADA",
+        "ledger": -11.30149999999992,
+        "hl_field": 0.0,
+        "hl_api": -90.41200000000002,
+        "n_reductions": 11,
+        "residual_vs_api": -79.1105000000001,
+        "residual_vs_field": 11.30149999999992
+      }
+    ],
+    "focus": {
+      "AAVE": {
+        "ledger": -67.23930530040744,
+        "hl_api": 115.25464000000004,
+        "residual": 182.49394530040746
+      },
+      "ZEC": {
+        "ledger": -279.897516041443,
+        "hl_api": 1005.5340080000003,
+        "residual": 1285.4315240414433
+      },
+      "ETH": {
+        "ledger": -95.74111905886248,
+        "hl_api": -754.0223199999997,
+        "residual": -658.2812009411372
+      },
+      "xyz:MSTR": {
+        "ledger": 77.1530083744005,
+        "hl_api": 314.3824960000002,
+        "residual": 237.2294876255997
+      }
+    },
+    "shared_n": 71
+  }
+]
