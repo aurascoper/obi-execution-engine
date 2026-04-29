@@ -49,8 +49,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
-import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -133,14 +131,16 @@ def reconstruct_all_sessions() -> dict[str, list[dict]]:
                 fee = float(o.get("fee", 0) or 0)
             except (TypeError, ValueError):
                 fee = 0.0
-            fills_by_sym[sym].append({
-                "ts_ms": ts_ms,
-                "side": side,
-                "sz": sz,
-                "px": px,
-                "closed_pnl": cp,
-                "fee": fee,
-            })
+            fills_by_sym[sym].append(
+                {
+                    "ts_ms": ts_ms,
+                    "side": side,
+                    "sz": sz,
+                    "px": px,
+                    "closed_pnl": cp,
+                    "fee": fee,
+                }
+            )
 
     sessions_by_sym: dict[str, list[dict]] = defaultdict(list)
     for sym, fills in fills_by_sym.items():
@@ -277,12 +277,17 @@ def fetch_marks(symbols: list[str], window_start_ms: int, window_end_ms: int) ->
         info = info_cache[dex]
         for sym in syms:
             try:
-                raw = info.candles_snapshot(
-                    name=sym, interval="1h", startTime=fetch_from, endTime=fetch_to
-                ) or []
+                raw = (
+                    info.candles_snapshot(
+                        name=sym, interval="1h", startTime=fetch_from, endTime=fetch_to
+                    )
+                    or []
+                )
             except Exception as e:
-                print(f"# warn: candles {sym} (dex={dex or 'native'}) failed: {e}",
-                      file=sys.stderr)
+                print(
+                    f"# warn: candles {sym} (dex={dex or 'native'}) failed: {e}",
+                    file=sys.stderr,
+                )
                 continue
             bars = []
             for r in raw:
@@ -343,7 +348,9 @@ def peak_qty_in_range(session: dict, start_ms: int, end_ms: int) -> float:
     return max(candidates)
 
 
-def clip_session_to_window(session: dict, from_ms: int, to_ms: int, marks: dict) -> dict | None:
+def clip_session_to_window(
+    session: dict, from_ms: int, to_ms: int, marks: dict
+) -> dict | None:
     """Return clipped audit record or None if session doesn't overlap window.
 
     Overlap test: open_ts < to_ms AND (close_ts is None OR close_ts > from_ms).
@@ -367,7 +374,12 @@ def clip_session_to_window(session: dict, from_ms: int, to_ms: int, marks: dict)
         eff_exit_ts = close_ts
         eff_exit_px = session["close_px"]
 
-    if eff_entry_px is None or eff_exit_px is None or eff_entry_px <= 0 or eff_exit_px <= 0:
+    if (
+        eff_entry_px is None
+        or eff_exit_px is None
+        or eff_entry_px <= 0
+        or eff_exit_px <= 0
+    ):
         return None
 
     qty = peak_qty_in_range(session, eff_entry_ts, eff_exit_ts)
@@ -419,7 +431,10 @@ def main():
     if args.also_7d and args.window_days != 7:
         windows.append(7)
 
-    print("# reconstructing ALL sessions (no window filter at this layer) ...", file=sys.stderr)
+    print(
+        "# reconstructing ALL sessions (no window filter at this layer) ...",
+        file=sys.stderr,
+    )
     all_sessions_by_sym = reconstruct_all_sessions()
 
     for w in windows:
@@ -432,11 +447,16 @@ def main():
         active_syms = set()
         for sym, sess in all_sessions_by_sym.items():
             for s in sess:
-                if s["open_ts"] < to_ms and (s["close_ts"] is None or s["close_ts"] > from_ms):
+                if s["open_ts"] < to_ms and (
+                    s["close_ts"] is None or s["close_ts"] > from_ms
+                ):
                     active_syms.add(sym)
                     break
 
-        print(f"# fetching marks for {len(active_syms)} active symbols ...", file=sys.stderr)
+        print(
+            f"# fetching marks for {len(active_syms)} active symbols ...",
+            file=sys.stderr,
+        )
         marks = fetch_marks(sorted(active_syms), from_ms, to_ms)
 
         print("# clipping sessions to window ...", file=sys.stderr)
@@ -480,8 +500,15 @@ def main():
         residuals = []
         for s in shared:
             r = hl_pnl[s] - audit_by_sym[s]
-            residuals.append({"sym": s, "hl": hl_pnl[s], "audit": audit_by_sym[s],
-                               "residual": r, "abs_residual": abs(r)})
+            residuals.append(
+                {
+                    "sym": s,
+                    "hl": hl_pnl[s],
+                    "audit": audit_by_sym[s],
+                    "residual": r,
+                    "abs_residual": abs(r),
+                }
+            )
         residuals.sort(key=lambda r: -r["abs_residual"])
         top10_abs_sum = sum(r["abs_residual"] for r in residuals[:10])
 
@@ -492,8 +519,12 @@ def main():
             focus[sym] = r["residual"] if r else None
 
         # Session-count comparison
-        n_replay_opens_total = n_sessions_total  # in audit, replay sessions == live sessions
-        mean_session_dur_s = total_dur_s / n_sessions_total if n_sessions_total > 0 else 0.0
+        n_replay_opens_total = (
+            n_sessions_total  # in audit, replay sessions == live sessions
+        )
+        mean_session_dur_s = (
+            total_dur_s / n_sessions_total if n_sessions_total > 0 else 0.0
+        )
 
         summary = {
             "window_days": w,
@@ -513,21 +544,37 @@ def main():
         summaries.append(summary)
 
         # Console summary per window
-        print(f"  shared symbols: {len(shared)}  total clipped sessions: {n_sessions_total}")
+        print(
+            f"  shared symbols: {len(shared)}  total clipped sessions: {n_sessions_total}"
+        )
         print(f"    pre-window opens:  {n_pre_window}")
         print(f"    post-window opens: {n_post_window}")
-        print(f"  ρ (audit vs HL closedPnl): {rho:+.4f}" if rho is not None else "  ρ: N/A")
+        print(
+            f"  ρ (audit vs HL closedPnl): {rho:+.4f}"
+            if rho is not None
+            else "  ρ: N/A"
+        )
         print(f"  audit replay total: ${replay_total:+.2f}")
         print(f"  live total:         ${live_total:+.2f}")
-        print(f"  mean window-clipped session duration: {mean_session_dur_s/3600:.2f}h")
+        print(
+            f"  mean window-clipped session duration: {mean_session_dur_s / 3600:.2f}h"
+        )
         print(f"  top-10 abs residual sum: ${top10_abs_sum:.2f}")
-        print(f"  AAVE residual:    {('$' + format(focus.get('AAVE'), '+.2f')) if focus.get('AAVE') is not None else 'N/A'}")
-        print(f"  ZEC residual:     {('$' + format(focus.get('ZEC'), '+.2f')) if focus.get('ZEC') is not None else 'N/A'}")
-        print(f"  xyz:MSTR residual:{('$' + format(focus.get('xyz:MSTR'), '+.2f')) if focus.get('xyz:MSTR') is not None else 'N/A'}")
+        print(
+            f"  AAVE residual:    {('$' + format(focus.get('AAVE'), '+.2f')) if focus.get('AAVE') is not None else 'N/A'}"
+        )
+        print(
+            f"  ZEC residual:     {('$' + format(focus.get('ZEC'), '+.2f')) if focus.get('ZEC') is not None else 'N/A'}"
+        )
+        print(
+            f"  xyz:MSTR residual:{('$' + format(focus.get('xyz:MSTR'), '+.2f')) if focus.get('xyz:MSTR') is not None else 'N/A'}"
+        )
         print()
         print("  top-5 |residual| symbols:")
         for r in residuals[:5]:
-            print(f"    {r['sym']:14s}  hl=${r['hl']:>+9.2f}  audit=${r['audit']:>+9.2f}  resid=${r['residual']:>+9.2f}")
+            print(
+                f"    {r['sym']:14s}  hl=${r['hl']:>+9.2f}  audit=${r['audit']:>+9.2f}  resid=${r['residual']:>+9.2f}"
+            )
 
     # Decision verdict (anchored to 14d window primarily)
     print("\n=== DECISION ===")
@@ -541,15 +588,21 @@ def main():
         if rho7 is not None:
             print(f"  7d audit ρ: {rho7:+.4f}")
         if rho14 >= 0.70:
-            print(f"  → 14d ρ ≥ 0.70: SESSION ABSTRACTION IS THE MISSING LAYER")
-            print(f"    proceed to Mode 2 (policy-mode session replay)")
+            print("  → 14d ρ ≥ 0.70: SESSION ABSTRACTION IS THE MISSING LAYER")
+            print("    proceed to Mode 2 (policy-mode session replay)")
         elif rho14 < 0.55:
-            print(f"  → 14d ρ < 0.55: SESSIONIZATION ALONE INSUFFICIENT")
-            print(f"    residual not from session boundaries; investigate manual closes,")
-            print(f"    funding, multi-fill VWA carefully before any policy implementation")
+            print("  → 14d ρ < 0.55: SESSIONIZATION ALONE INSUFFICIENT")
+            print(
+                "    residual not from session boundaries; investigate manual closes,"
+            )
+            print(
+                "    funding, multi-fill VWA carefully before any policy implementation"
+            )
         else:
-            print(f"  → 14d ρ in [0.55, 0.70): MIXED signal; needs further decomposition")
-            print(f"    before committing to Mode 2")
+            print(
+                "  → 14d ρ in [0.55, 0.70): MIXED signal; needs further decomposition"
+            )
+            print("    before committing to Mode 2")
 
     out_path.write_text(json.dumps(summaries, indent=2, default=str))
     print(f"\n# wrote {out_path}")

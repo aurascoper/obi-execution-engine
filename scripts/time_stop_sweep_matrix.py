@@ -31,7 +31,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,11 +39,11 @@ from scripts.validate_replay_fit import parse_hl_closed_pnl, pearson  # noqa: E4
 
 CONFIGS = [
     ("baseline_3600", {}),
-    ("ts_7200",       {"TIME_STOP_S": "7200"}),
-    ("ts_14400",      {"TIME_STOP_S": "14400"}),
-    ("ts_28800",      {"TIME_STOP_S": "28800"}),
-    ("ts_86400",      {"TIME_STOP_S": "86400"}),
-    ("disabled",      {"DISABLE_TIME_STOP": "1"}),
+    ("ts_7200", {"TIME_STOP_S": "7200"}),
+    ("ts_14400", {"TIME_STOP_S": "14400"}),
+    ("ts_28800", {"TIME_STOP_S": "28800"}),
+    ("ts_86400", {"TIME_STOP_S": "86400"}),
+    ("disabled", {"DISABLE_TIME_STOP": "1"}),
 ]
 
 FOCUS_SYMS = ["AAVE", "ZEC", "xyz:MSTR"]
@@ -100,13 +99,15 @@ def measure(name: str, env_overrides: dict, window_days: int):
     # residual rows
     rows = []
     for s in shared:
-        rows.append({
-            "sym": s,
-            "hl": hl_pnl[s],
-            "sim": sim_pnl[s],
-            "residual": hl_pnl[s] - sim_pnl[s],
-            "abs_residual": abs(hl_pnl[s] - sim_pnl[s]),
-        })
+        rows.append(
+            {
+                "sym": s,
+                "hl": hl_pnl[s],
+                "sim": sim_pnl[s],
+                "residual": hl_pnl[s] - sim_pnl[s],
+                "abs_residual": abs(hl_pnl[s] - sim_pnl[s]),
+            }
+        )
     rows.sort(key=lambda r: -r["abs_residual"])
     top10_abs_sum = sum(r["abs_residual"] for r in rows[:10])
     focus = {}
@@ -139,7 +140,12 @@ def main():
             results.append(measure(name, env, w))
 
     # baseline references for delta calc
-    base = {w: next(r for r in results if r["name"] == "baseline_3600" and r["window_days"] == w) for w in (14, 7)}
+    base = {
+        w: next(
+            r for r in results if r["name"] == "baseline_3600" and r["window_days"] == w
+        )
+        for w in (14, 7)
+    }
 
     print()
     hdr = (
@@ -152,7 +158,11 @@ def main():
     print("  " + "-" * 130)
     for r in results:
         b = base[r["window_days"]]
-        d_rho = (r["rho"] - b["rho"]) if (r["rho"] is not None and b["rho"] is not None) else None
+        d_rho = (
+            (r["rho"] - b["rho"])
+            if (r["rho"] is not None and b["rho"] is not None)
+            else None
+        )
         d_s = f"{d_rho:+.4f}" if d_rho is not None else "  N/A"
         mean_hold_h = r["mean_hold_s"] / 3600
         focus = r["focus"]
@@ -175,22 +185,23 @@ def main():
         if name == "baseline_3600":
             continue
         r14 = next(r for r in results if r["name"] == name and r["window_days"] == 14)
-        r7  = next(r for r in results if r["name"] == name and r["window_days"] == 7)
+        r7 = next(r for r in results if r["name"] == name and r["window_days"] == 7)
         b14 = base[14]
-        b7  = base[7]
+        b7 = base[7]
         d14 = r14["rho"] - b14["rho"]
-        d7  = r7["rho"] - b7["rho"]
+        d7 = r7["rho"] - b7["rho"]
         top10_delta = r14["top10_abs_sum"] - b14["top10_abs_sum"]
         # trade count: should not collapse below 30% of baseline
         trade_floor = b14["n_trades"] * 0.30
         rules = [
             ("14d Δρ ≥ +0.04", d14 >= 0.04, f"{d14:+.4f}"),
             ("7d ρ doesn't drop >0.02", d7 >= -0.02, f"{d7:+.4f}"),
-            ("top-10 abs residual improves",
-             top10_delta < 0, f"{top10_delta:+.2f}"),
-            (f"trade count not collapsed (≥{trade_floor:.0f})",
-             r14["n_trades"] >= trade_floor,
-             f"{r14['n_trades']} vs floor {trade_floor:.0f}"),
+            ("top-10 abs residual improves", top10_delta < 0, f"{top10_delta:+.2f}"),
+            (
+                f"trade count not collapsed (≥{trade_floor:.0f})",
+                r14["n_trades"] >= trade_floor,
+                f"{r14['n_trades']} vs floor {trade_floor:.0f}",
+            ),
         ]
         verdict = "ACCEPT" if all(ok for _, ok, _ in rules) else "REJECT"
         print(f"\n  -- {name} --")

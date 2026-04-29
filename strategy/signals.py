@@ -141,7 +141,9 @@ DEFAULT_NOTIONAL_PER_TRADE = (
     else 2_000.0
 )
 NOTIONAL_PER_TRADE = float(
-    __import__("os").environ.get("NOTIONAL_PER_TRADE_OVERRIDE", DEFAULT_NOTIONAL_PER_TRADE)
+    __import__("os").environ.get(
+        "NOTIONAL_PER_TRADE_OVERRIDE", DEFAULT_NOTIONAL_PER_TRADE
+    )
 )
 
 # Alpaca minimum qty precision per symbol (fractional crypto)

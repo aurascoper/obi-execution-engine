@@ -90,11 +90,16 @@ def fetch_user_fills_all(info, address: str, start_ms: int, end_ms: int) -> list
         iter_count += 1
         try:
             batch = (
-                info.user_fills_by_time(address, cursor_start, end_ms, aggregate_by_time=False)
+                info.user_fills_by_time(
+                    address, cursor_start, end_ms, aggregate_by_time=False
+                )
                 or []
             )
         except Exception as e:
-            print(f"# warn: user_fills_by_time iter={iter_count} failed: {e}", file=sys.stderr)
+            print(
+                f"# warn: user_fills_by_time iter={iter_count} failed: {e}",
+                file=sys.stderr,
+            )
             break
         if not batch:
             break
@@ -175,9 +180,7 @@ def parse_hl_closed_pnl(from_ms: int, to_ms: int):
             continue  # opening fill, no realized component
         per_sym[sym] += pnl
         fees_per_sym[sym] += fee
-        day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
-            "%Y-%m-%d"
-        )
+        day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
         per_day[sym][day] += pnl
     return dict(per_sym), {s: dict(d) for s, d in per_day.items()}, dict(fees_per_sym)
 

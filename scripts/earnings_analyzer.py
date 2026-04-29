@@ -73,13 +73,48 @@ from pathlib import Path
 # launch script or settings module. Manual is fine tonight; this is observation.
 # ---------------------------------------------------------------------------
 
-HIP3_XYZ_TRADABLE: frozenset[str] = frozenset({
-    "HIMS", "HOOD", "ORCL", "EWY", "XYZ100", "CRWV", "TSLA", "CL", "SNDK",
-    "SKHX", "MSFT", "MU", "SP500", "AMD", "PLTR", "BRENTOIL", "GOLD",
-    "SILVER", "NATGAS", "COPPER", "PLATINUM", "TSM", "GOOGL", "META",
-    "AAPL", "LLY", "NFLX", "COST", "BABA", "RKLB", "MRVL", "EUR", "JP225",
-    "XLE", "PALLADIUM", "URANIUM", "RIVN", "MSTR",
-})
+HIP3_XYZ_TRADABLE: frozenset[str] = frozenset(
+    {
+        "HIMS",
+        "HOOD",
+        "ORCL",
+        "EWY",
+        "XYZ100",
+        "CRWV",
+        "TSLA",
+        "CL",
+        "SNDK",
+        "SKHX",
+        "MSFT",
+        "MU",
+        "SP500",
+        "AMD",
+        "PLTR",
+        "BRENTOIL",
+        "GOLD",
+        "SILVER",
+        "NATGAS",
+        "COPPER",
+        "PLATINUM",
+        "TSM",
+        "GOOGL",
+        "META",
+        "AAPL",
+        "LLY",
+        "NFLX",
+        "COST",
+        "BABA",
+        "RKLB",
+        "MRVL",
+        "EUR",
+        "JP225",
+        "XLE",
+        "PALLADIUM",
+        "URANIUM",
+        "RIVN",
+        "MSTR",
+    }
+)
 
 HIP3_OTHER_EQUITY: dict[str, str] = {
     "BMNR": "km",
@@ -93,11 +128,37 @@ HIP3_OTHER_EQUITY: dict[str, str] = {
     "WTI": "cash",
 }
 
-NATIVE_CRYPTO: frozenset[str] = frozenset({
-    "BTC", "ETH", "SOL", "AAVE", "XRP", "DOGE", "PAXG", "ARB", "CRV", "LINK",
-    "ADA", "AVAX", "LTC", "BCH", "DOT", "UNI", "LDO", "POL", "RENDER", "FIL",
-    "HYPE", "BNB", "SUI", "TAO", "NEAR", "ENA", "ZEC",
-})
+NATIVE_CRYPTO: frozenset[str] = frozenset(
+    {
+        "BTC",
+        "ETH",
+        "SOL",
+        "AAVE",
+        "XRP",
+        "DOGE",
+        "PAXG",
+        "ARB",
+        "CRV",
+        "LINK",
+        "ADA",
+        "AVAX",
+        "LTC",
+        "BCH",
+        "DOT",
+        "UNI",
+        "LDO",
+        "POL",
+        "RENDER",
+        "FIL",
+        "HYPE",
+        "BNB",
+        "SUI",
+        "TAO",
+        "NEAR",
+        "ENA",
+        "ZEC",
+    }
+)
 
 EXCLUDED_TICKERS: frozenset[str] = frozenset()
 
@@ -106,6 +167,7 @@ EXCLUDED_TICKERS: frozenset[str] = frozenset()
 # Mapping logic. Returns (venue_symbol_or_None, decision, reasons_list).
 # Conservative: any ambiguity → block. No silent guesses.
 # ---------------------------------------------------------------------------
+
 
 def _normalize(raw: object) -> str:
     if not isinstance(raw, str):
@@ -150,21 +212,23 @@ def analyze(payload: dict, addition_cfg: dict, date_str: str) -> list[dict]:
     now_iso = datetime.now(timezone.utc).isoformat()
     for entry in payload.get("names", []) or []:
         if not isinstance(entry, dict):
-            out.append({
-                "event": "earnings_eligibility",
-                "ts": now_iso,
-                "date": date_str,
-                "company": None,
-                "source_ticker": None,
-                "ticker": "",
-                "venue_symbol": None,
-                "session": "unknown",
-                "decision": "block",
-                "reasons": ["malformed_entry_not_object"],
-                "would_add": False,
-                "add_reason": "malformed_entry",
-                "addition_config": addition_cfg,
-            })
+            out.append(
+                {
+                    "event": "earnings_eligibility",
+                    "ts": now_iso,
+                    "date": date_str,
+                    "company": None,
+                    "source_ticker": None,
+                    "ticker": "",
+                    "venue_symbol": None,
+                    "session": "unknown",
+                    "decision": "block",
+                    "reasons": ["malformed_entry_not_object"],
+                    "would_add": False,
+                    "add_reason": "malformed_entry",
+                    "addition_config": addition_cfg,
+                }
+            )
             continue
         company = entry.get("company") or entry.get("name")
         source_ticker = entry.get("ticker") or entry.get("symbol")
@@ -172,25 +236,27 @@ def analyze(payload: dict, addition_cfg: dict, date_str: str) -> list[dict]:
         session = entry.get("session") or "unknown"
         venue_symbol, decision, reasons = map_to_venue(ticker)
         would_add, add_reason = _decide_addition(decision, addition_cfg)
-        out.append({
-            "event": "earnings_eligibility",
-            "ts": now_iso,
-            "date": date_str,
-            "company": company,
-            "source_ticker": source_ticker,
-            "ticker": ticker,
-            "venue_symbol": venue_symbol,
-            "session": session,
-            "decision": decision,
-            "reasons": reasons,
-            "would_add": would_add,
-            "add_reason": add_reason,
-            "addition_config": {
-                "enabled": bool(addition_cfg.get("enabled", False)),
-                "mode": addition_cfg.get("mode", "shadow"),
-                "allow_warn_tier": bool(addition_cfg.get("allow_warn_tier", False)),
-            },
-        })
+        out.append(
+            {
+                "event": "earnings_eligibility",
+                "ts": now_iso,
+                "date": date_str,
+                "company": company,
+                "source_ticker": source_ticker,
+                "ticker": ticker,
+                "venue_symbol": venue_symbol,
+                "session": session,
+                "decision": decision,
+                "reasons": reasons,
+                "would_add": would_add,
+                "add_reason": add_reason,
+                "addition_config": {
+                    "enabled": bool(addition_cfg.get("enabled", False)),
+                    "mode": addition_cfg.get("mode", "shadow"),
+                    "allow_warn_tier": bool(addition_cfg.get("allow_warn_tier", False)),
+                },
+            }
+        )
     return out
 
 

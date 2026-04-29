@@ -105,7 +105,9 @@ def _round_trip_pnls(jsonl_path: Path, start: str, end: str) -> dict[str, list[f
     return by_sym
 
 
-def _band_from_live(values: list[float], sizing_ratio: float) -> tuple[float, float, str]:
+def _band_from_live(
+    values: list[float], sizing_ratio: float
+) -> tuple[float, float, str]:
     n = len(values)
     if n >= N_BAND_SAMPLES:
         med = statistics.median(values)
@@ -167,28 +169,57 @@ def derive_bands(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Derive Stage 3 expectation bands")
-    ap.add_argument("--soak-start", default="2026-04-28T19:35:07Z",
-                    help="Soak window start (default: 2026-04-28 boot)")
-    ap.add_argument("--soak-end", default="2026-04-28T23:48:25Z",
-                    help="Soak window end (default: report-time snapshot)")
-    ap.add_argument("--stage-3-notional", type=float, default=DEFAULT_STAGE_3_NOTIONAL,
-                    help="Stage 3 per-trade notional ($, default 75)")
-    ap.add_argument("--stage-2-notional", type=float, default=DEFAULT_STAGE_2_NOTIONAL,
-                    help="Stage 2.5 per-trade notional ($, default 50)")
-    ap.add_argument("--jsonl", default="logs/hl_engine.jsonl",
-                    help="Engine log path")
-    ap.add_argument("--out", default="config/expectation_bands.json",
-                    help="Output band config path")
-    ap.add_argument("--max-outliers", type=int, default=2,
-                    help="Gate D max-outlier count (carried into config)")
-    ap.add_argument("--min-round-trips", type=int, default=3,
-                    help="Gate D min round-trips per symbol (carried into config)")
-    ap.add_argument("--min-aggregate-pnl-usd", type=float, default=-37.50,
-                    help="Aggregate floor for Gate D (default -$37.50, half loss-guard at Stage 2)")
-    ap.add_argument("--universe-file", default="config/stage3_universe.json",
-                    help="JSON file declaring the Stage 3 universe; symbols without "
-                         "live data fall through to default-class bands (default: "
-                         "config/stage3_universe.json)")
+    ap.add_argument(
+        "--soak-start",
+        default="2026-04-28T19:35:07Z",
+        help="Soak window start (default: 2026-04-28 boot)",
+    )
+    ap.add_argument(
+        "--soak-end",
+        default="2026-04-28T23:48:25Z",
+        help="Soak window end (default: report-time snapshot)",
+    )
+    ap.add_argument(
+        "--stage-3-notional",
+        type=float,
+        default=DEFAULT_STAGE_3_NOTIONAL,
+        help="Stage 3 per-trade notional ($, default 75)",
+    )
+    ap.add_argument(
+        "--stage-2-notional",
+        type=float,
+        default=DEFAULT_STAGE_2_NOTIONAL,
+        help="Stage 2.5 per-trade notional ($, default 50)",
+    )
+    ap.add_argument("--jsonl", default="logs/hl_engine.jsonl", help="Engine log path")
+    ap.add_argument(
+        "--out", default="config/expectation_bands.json", help="Output band config path"
+    )
+    ap.add_argument(
+        "--max-outliers",
+        type=int,
+        default=2,
+        help="Gate D max-outlier count (carried into config)",
+    )
+    ap.add_argument(
+        "--min-round-trips",
+        type=int,
+        default=3,
+        help="Gate D min round-trips per symbol (carried into config)",
+    )
+    ap.add_argument(
+        "--min-aggregate-pnl-usd",
+        type=float,
+        default=-37.50,
+        help="Aggregate floor for Gate D (default -$37.50, half loss-guard at Stage 2)",
+    )
+    ap.add_argument(
+        "--universe-file",
+        default="config/stage3_universe.json",
+        help="JSON file declaring the Stage 3 universe; symbols without "
+        "live data fall through to default-class bands (default: "
+        "config/stage3_universe.json)",
+    )
     args = ap.parse_args()
 
     jsonl_path = Path(args.jsonl)
@@ -239,16 +270,26 @@ def main() -> int:
         "n_universe_declared": len(universe),
         "live_source_threshold_n": N_BAND_SAMPLES,
         "default_class_bands": {
-            "hip3":   {"pnl_per_trip_usd": list(DEFAULT_BAND_HIP3)},
+            "hip3": {"pnl_per_trip_usd": list(DEFAULT_BAND_HIP3)},
             "native": {"pnl_per_trip_usd": list(DEFAULT_BAND_NATIVE)},
         },
         "bands": bands,
         "_provenance": {
             "live_symbols_with_data": len(live_pnls),
-            "live_symbols_with_full_sample": sum(1 for v in live_pnls.values() if len(v) >= N_BAND_SAMPLES),
-            "live_symbols_with_thin_sample": sum(1 for v in live_pnls.values() if N_THIN_SAMPLES <= len(v) < N_BAND_SAMPLES),
-            "live_symbols_with_single_sample": sum(1 for v in live_pnls.values() if len(v) == 1),
-            "default_only_symbols": [s for s, v in bands.items() if v["band_source"] == "default_class"],
+            "live_symbols_with_full_sample": sum(
+                1 for v in live_pnls.values() if len(v) >= N_BAND_SAMPLES
+            ),
+            "live_symbols_with_thin_sample": sum(
+                1
+                for v in live_pnls.values()
+                if N_THIN_SAMPLES <= len(v) < N_BAND_SAMPLES
+            ),
+            "live_symbols_with_single_sample": sum(
+                1 for v in live_pnls.values() if len(v) == 1
+            ),
+            "default_only_symbols": [
+                s for s, v in bands.items() if v["band_source"] == "default_class"
+            ],
         },
     }
 

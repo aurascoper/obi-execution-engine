@@ -35,7 +35,6 @@ import os
 import signal
 import sys
 import time
-from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -117,9 +116,12 @@ def pause_new_entries_active() -> bool:
     Not authoritative — used only to enrich the alert payload."""
     try:
         import subprocess
+
         out = subprocess.run(
             ["ps", "-eEw"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         ).stdout
         return "PAUSE_NEW_ENTRIES=1" in out
     except Exception:
@@ -154,6 +156,7 @@ def main():
 
     from hyperliquid.info import Info
     from hyperliquid.utils import constants
+
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
     alert_log.parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +217,8 @@ def main():
                     "in_position": ctx.get("in_position"),
                     "signal_age_s": (
                         round((time.time() * 1000 - ctx["ts_ms"]) / 1000, 1)
-                        if "ts_ms" in ctx else None
+                        if "ts_ms" in ctx
+                        else None
                     ),
                     "pause_new_entries_active": pause_new_entries_active(),
                 }

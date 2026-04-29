@@ -31,6 +31,7 @@ Usage:
         --short-window-days 7 \\
         --output autoresearch_gated/promotion_gate_status.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -95,7 +96,10 @@ def run_chain_integrity_check(refresh: bool):
         cmd = ["venv/bin/python3", "scripts/audit_fill_chain_integrity.py"]
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
         if proc.returncode not in (0, 1):
-            return {"status": "FAIL", "reason": f"chain audit subprocess failed: {proc.stderr[:300]}"}
+            return {
+                "status": "FAIL",
+                "reason": f"chain audit subprocess failed: {proc.stderr[:300]}",
+            }
     if not ARTIFACT_CHAIN.exists():
         return {"status": "FAIL", "reason": "fill_chain_integrity.json missing"}
     chain = json.loads(ARTIFACT_CHAIN.read_text())
@@ -138,8 +142,9 @@ def verify_tid_dedup():
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     t = ZEC_CLUSTER_TS_MS
     fills = fetch_user_fills_all(info, addr, t - 5000, t + 5000)
-    zec_at_cluster = [f for f in fills
-                      if f.get("coin") == "ZEC" and int(f.get("time", 0)) == t]
+    zec_at_cluster = [
+        f for f in fills if f.get("coin") == "ZEC" and int(f.get("time", 0)) == t
+    ]
     n = len(zec_at_cluster)
     return {
         "status": "PASS" if n >= ZEC_CLUSTER_EXPECTED_FILLS else "FAIL",
@@ -176,8 +181,11 @@ def verify_closed_pnl_reconciliation(window_days: int):
     from_ms = to_ms - window_days * 86_400_000
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     raw_fills = fetch_user_fills_all(info, addr, from_ms, to_ms)
-    raw_sum = sum(float(f.get("closedPnl", 0) or 0) for f in raw_fills
-                  if from_ms <= int(f.get("time", 0)) < to_ms)
+    raw_sum = sum(
+        float(f.get("closedPnl", 0) or 0)
+        for f in raw_fills
+        if from_ms <= int(f.get("time", 0)) < to_ms
+    )
     canonical_pnl, _per_day, _fees = parse_hl_closed_pnl(from_ms, to_ms)
     canonical_sum = sum(canonical_pnl.values())
     if abs(canonical_sum) < 1e-6:
@@ -197,10 +205,13 @@ def gate_a(refresh: bool, window_days: int):
     a1 = run_chain_integrity_check(refresh)
     a2 = verify_tid_dedup()
     a3 = verify_closed_pnl_reconciliation(window_days)
-    overall = "PASS" if (
-        a1["status"] == "PASS" and a2["status"] == "PASS"
-        and a3["status"] == "PASS"
-    ) else "FAIL"
+    overall = (
+        "PASS"
+        if (
+            a1["status"] == "PASS" and a2["status"] == "PASS" and a3["status"] == "PASS"
+        )
+        else "FAIL"
+    )
     return {
         "status": overall,
         "checks": {
@@ -216,9 +227,12 @@ def run_ledger_audit(refresh: bool):
     """Ensure audit_fill_ledger_sessions.json exists and is current."""
     if refresh or not ARTIFACT_LEDGER.exists():
         cmd = [
-            "venv/bin/python3", "scripts/audit_fill_ledger_sessions.py",
-            "--prewindow-lookback-days", "90",
-            "--seed-window-start-state", "reconstructed",
+            "venv/bin/python3",
+            "scripts/audit_fill_ledger_sessions.py",
+            "--prewindow-lookback-days",
+            "90",
+            "--seed-window-start-state",
+            "reconstructed",
         ]
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
         if proc.returncode not in (0, 1):
@@ -294,8 +308,9 @@ def gate_c():
     if not art.exists():
         art = ARTIFACT_RATCHET_SWEEP
     if not art.exists():
-        out["note"] = ("No β.1 / ratchet-sweep artifact present. "
-                       "Baseline values reported only.")
+        out["note"] = (
+            "No β.1 / ratchet-sweep artifact present. Baseline values reported only."
+        )
         return out
     try:
         data = json.loads(art.read_text())
@@ -310,6 +325,7 @@ def gate_c():
     best_rho_7 = None
     best_top10 = None
     best_focus = None
+
     def _bw(cfg, w):
         bw = cfg.get("by_window") or {}
         return bw.get(w, bw.get(str(w), bw.get(int(w), {})))
@@ -336,14 +352,16 @@ def gate_c():
                             "replay": r.get("replay"),
                             "hl": r.get("hl"),
                         }
-    out.update({
-        "best_exit_policy_config": best_name,
-        "best_exit_policy_rho_14d": best_rho_14,
-        "best_exit_policy_rho_7d": best_rho_7,
-        "top_10_abs_residual_usd": best_top10,
-        "focus_signs": _focus_signs(best_focus) if best_focus else {},
-        "source_artifact": str(art.relative_to(ROOT)),
-    })
+    out.update(
+        {
+            "best_exit_policy_config": best_name,
+            "best_exit_policy_rho_14d": best_rho_14,
+            "best_exit_policy_rho_7d": best_rho_7,
+            "top_10_abs_residual_usd": best_top10,
+            "focus_signs": _focus_signs(best_focus) if best_focus else {},
+            "source_artifact": str(art.relative_to(ROOT)),
+        }
+    )
     return out
 
 
@@ -378,6 +396,7 @@ def run_gate_d(
     explanatory note if the bands or jsonl artifacts are missing.
     """
     from pathlib import Path as _Path
+
     if not _Path(bands_path).exists():
         return {
             "status": "PENDING",
@@ -393,8 +412,10 @@ def run_gate_d(
     cmd = [
         "venv/bin/python3",
         "scripts/gate_d_eval.py",
-        "--bands", bands_path,
-        "--jsonl", jsonl_path,
+        "--bands",
+        bands_path,
+        "--jsonl",
+        jsonl_path,
         "--summary-only",
     ]
     if soak_start is not None:
@@ -402,6 +423,7 @@ def run_gate_d(
     if soak_end is not None:
         cmd.extend(["--soak-end", soak_end])
     import subprocess
+
     try:
         proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
@@ -426,10 +448,10 @@ def run_gate_d(
     out["status"] = status_map.get(decision, "PENDING")
     summary = d.get("summary", {})
     out["note"] = (
-        f"in_band={summary.get('n_in_band',0)} "
-        f"outliers={summary.get('n_outliers',0)} "
-        f"pending={summary.get('n_pending_thin_sample',0)} "
-        f"agg_pnl=${summary.get('aggregate_pnl',0)}"
+        f"in_band={summary.get('n_in_band', 0)} "
+        f"outliers={summary.get('n_outliers', 0)} "
+        f"pending={summary.get('n_pending_thin_sample', 0)} "
+        f"agg_pnl=${summary.get('aggregate_pnl', 0)}"
     )
     return out
 
@@ -485,8 +507,7 @@ def gate_e(window_days: int):
     to_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
     from_ms = to_ms - window_days * 86_400_000
     fills = fetch_user_fills_all(info, addr, from_ms, to_ms)
-    in_window = [f for f in fills
-                 if from_ms <= int(f.get("time", 0)) < to_ms]
+    in_window = [f for f in fills if from_ms <= int(f.get("time", 0)) < to_ms]
     n_total = len(in_window)
     n_tagged = sum(1 for f in in_window if is_manual_cloid(f.get("cloid")))
 
@@ -501,14 +522,20 @@ def gate_e(window_days: int):
             pass
 
     tagged_share_pct = (n_tagged / n_total * 100) if n_total else 0.0
-    heuristic_share_pct = (heuristic_share * 100) if heuristic_share is not None else None
+    heuristic_share_pct = (
+        (heuristic_share * 100) if heuristic_share is not None else None
+    )
 
     # Decision
     rules = []
     if not sidecar_present:
-        rules.append(("sidecar log present", False, str(SIDECAR_MANUAL.relative_to(ROOT))))
+        rules.append(
+            ("sidecar log present", False, str(SIDECAR_MANUAL.relative_to(ROOT)))
+        )
         status = "PENDING"
-        reason = "sidecar log not yet created (no manual orders issued via tagged helper)"
+        reason = (
+            "sidecar log not yet created (no manual orders issued via tagged helper)"
+        )
     elif sidecar_n_entries == 0:
         rules.append(("sidecar log has entries", False, "0 entries"))
         status = "PENDING"
@@ -516,7 +543,9 @@ def gate_e(window_days: int):
     elif n_total == 0:
         rules.append(("in-window fills present", False, "0 fills"))
         status = "PENDING"
-        reason = "no in-window fills (manage-only-idle); cannot evaluate intervention share"
+        reason = (
+            "no in-window fills (manage-only-idle); cannot evaluate intervention share"
+        )
     else:
         rules.append(("sidecar log present", True, f"{sidecar_n_entries} entries"))
         rules.append(("in-window fills present", True, f"{n_total} fills"))
@@ -527,12 +556,14 @@ def gate_e(window_days: int):
         else:
             combined_share = tagged_share_pct
         within_threshold = combined_share <= E_INTERVENTION_SHARE_MAX_PCT
-        rules.append((
-            f"intervention share ≤ {E_INTERVENTION_SHARE_MAX_PCT}%",
-            within_threshold,
-            f"{combined_share:.1f}% (tagged {tagged_share_pct:.1f}%, "
-            f"heuristic {heuristic_share_pct or 0:.1f}%)",
-        ))
+        rules.append(
+            (
+                f"intervention share ≤ {E_INTERVENTION_SHARE_MAX_PCT}%",
+                within_threshold,
+                f"{combined_share:.1f}% (tagged {tagged_share_pct:.1f}%, "
+                f"heuristic {heuristic_share_pct or 0:.1f}%)",
+            )
+        )
         status = "PASS" if within_threshold else "FAIL"
         reason = None
         # Mode disambiguation: a PASS with no tagged fills means the
@@ -568,12 +599,16 @@ def gate_e(window_days: int):
 def decide(a, b, c, d_status="PENDING", e_status="PENDING"):
     reasons = []
     if a["status"] == "FAIL":
-        reasons.append("Gate A FAIL — canonical truth source broken; "
-                       "no downstream verdict is interpretable.")
+        reasons.append(
+            "Gate A FAIL — canonical truth source broken; "
+            "no downstream verdict is interpretable."
+        )
         return "block", reasons
     if b["status"] == "FAIL":
-        reasons.append("Gate B FAIL — Mode 2A accounting replay broken; "
-                       "fix the ledger before promotion.")
+        reasons.append(
+            "Gate B FAIL — Mode 2A accounting replay broken; "
+            "fix the ledger before promotion."
+        )
         return "block", reasons
     if d_status == "FAIL":
         reasons.append("Gate D FAIL — forward soak failed.")
@@ -586,8 +621,10 @@ def decide(a, b, c, d_status="PENDING", e_status="PENDING"):
         if d_status == "PENDING":
             reasons.append("Gate D PENDING — forward soak required before promotion.")
         if e_status == "PENDING":
-            reasons.append("Gate E PENDING — intervention labeling not yet "
-                           "implemented at ingestion (Phase 2).")
+            reasons.append(
+                "Gate E PENDING — intervention labeling not yet "
+                "implemented at ingestion (Phase 2)."
+            )
         return "paper-soak", reasons
     if d_status == "PASS" and e_status == "PASS":
         reasons.append("All required gates green; eligible pending operator sign-off.")
@@ -601,22 +638,39 @@ def main():
     ap.add_argument("--window-days", type=int, default=14)
     ap.add_argument("--short-window-days", type=int, default=7)
     ap.add_argument("--output", default=str(DEFAULT_OUT))
-    ap.add_argument("--refresh", action="store_true",
-                    help="re-run chain integrity + ledger audit (slower; "
-                         "default reads existing artifacts)")
-    ap.add_argument("--use-existing-artifacts", action="store_true",
-                    default=True, help="read existing artifacts (default)")
+    ap.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-run chain integrity + ledger audit (slower; "
+        "default reads existing artifacts)",
+    )
+    ap.add_argument(
+        "--use-existing-artifacts",
+        action="store_true",
+        default=True,
+        help="read existing artifacts (default)",
+    )
     ap.add_argument("--candidate-name", default="(none — baseline only)")
-    ap.add_argument("--gate-d-bands", default="config/expectation_bands.json",
-                    help="Path to declared per-symbol bands for Gate D")
-    ap.add_argument("--gate-d-jsonl", default="logs/hl_engine.jsonl",
-                    help="Engine fill log for Gate D round-trip extraction")
-    ap.add_argument("--gate-d-window-start", default=None,
-                    help="Override soak window start for Gate D "
-                         "(default: from bands config)")
-    ap.add_argument("--gate-d-window-end", default=None,
-                    help="Override soak window end for Gate D "
-                         "(default: from bands config)")
+    ap.add_argument(
+        "--gate-d-bands",
+        default="config/expectation_bands.json",
+        help="Path to declared per-symbol bands for Gate D",
+    )
+    ap.add_argument(
+        "--gate-d-jsonl",
+        default="logs/hl_engine.jsonl",
+        help="Engine fill log for Gate D round-trip extraction",
+    )
+    ap.add_argument(
+        "--gate-d-window-start",
+        default=None,
+        help="Override soak window start for Gate D (default: from bands config)",
+    )
+    ap.add_argument(
+        "--gate-d-window-end",
+        default=None,
+        help="Override soak window end for Gate D (default: from bands config)",
+    )
     args = ap.parse_args()
 
     out_path = Path(args.output)
@@ -647,13 +701,16 @@ def main():
     e = gate_e(window_days=args.window_days)
     if "note" not in e:
         if e["status"] == "PENDING":
-            e["note"] = (e.get("reason") or
-                         "Sidecar / fill data not yet available for evaluation.")
+            e["note"] = (
+                e.get("reason")
+                or "Sidecar / fill data not yet available for evaluation."
+            )
         elif e["status"] == "PASS":
             e["note"] = "Tagged manual cloids + heuristic share within threshold."
         elif e["status"] == "FAIL":
-            e["note"] = (f"Intervention share exceeds "
-                         f"{e.get('threshold_pct', '?')}% threshold.")
+            e["note"] = (
+                f"Intervention share exceeds {e.get('threshold_pct', '?')}% threshold."
+            )
 
     recommendation, reasons = decide(a, b, c, d["status"], e["status"])
 
@@ -704,21 +761,33 @@ def main():
     print(f"\nGate B: {b['status']:<10s} Mode 2A accounting replay")
     if b["status"] != "FAIL" or "per_fill_rho" in b:
         print(f"  per-fill ρ                       {b.get('per_fill_rho', 0):+.4f}")
-        print(f"  per-symbol ρ 14d / 7d            {b.get('per_symbol_rho_14d', 0):+.4f} / {b.get('per_symbol_rho_7d', 0):+.4f}")
-        print(f"  gross mismatch 14d / 7d          {b.get('gross_mismatch_14d_pct', 0):.2f}% / {b.get('gross_mismatch_7d_pct', 0):.2f}%")
-        print(f"  abs mismatch 7d                  ${b.get('abs_mismatch_7d_usd', 0):.2f}")
+        print(
+            f"  per-symbol ρ 14d / 7d            {b.get('per_symbol_rho_14d', 0):+.4f} / {b.get('per_symbol_rho_7d', 0):+.4f}"
+        )
+        print(
+            f"  gross mismatch 14d / 7d          {b.get('gross_mismatch_14d_pct', 0):.2f}% / {b.get('gross_mismatch_7d_pct', 0):.2f}%"
+        )
+        print(
+            f"  abs mismatch 7d                  ${b.get('abs_mismatch_7d_usd', 0):.2f}"
+        )
     else:
         print(f"  reason: {b.get('reason', '?')}")
 
     print(f"\nGate C: {c['status']:<10s} predictive replay (diagnostic only)")
-    print(f"  baseline ρ 14d / 7d              {c['baseline_rho_14d']:+.4f} / {c['baseline_rho_7d']:+.4f}")
+    print(
+        f"  baseline ρ 14d / 7d              {c['baseline_rho_14d']:+.4f} / {c['baseline_rho_7d']:+.4f}"
+    )
     if "best_exit_policy_rho_14d" in c and c["best_exit_policy_rho_14d"] is not None:
         print(f"  best exit-policy config          {c.get('best_exit_policy_config')}")
-        print(f"  best exit-policy ρ 14d / 7d      "
-              f"{c['best_exit_policy_rho_14d']:+.4f} / "
-              f"{c.get('best_exit_policy_rho_7d') or 0:+.4f}")
+        print(
+            f"  best exit-policy ρ 14d / 7d      "
+            f"{c['best_exit_policy_rho_14d']:+.4f} / "
+            f"{c.get('best_exit_policy_rho_7d') or 0:+.4f}"
+        )
         if c.get("top_10_abs_residual_usd") is not None:
-            print(f"  top-10 |residual|                ${c['top_10_abs_residual_usd']:.2f}")
+            print(
+                f"  top-10 |residual|                ${c['top_10_abs_residual_usd']:.2f}"
+            )
         signs = c.get("focus_signs", {})
         if signs:
             sign_str = "  ".join(f"{k}:{v}" for k, v in signs.items())
@@ -732,18 +801,26 @@ def main():
     if e.get("mode"):
         e_status_label = f"{e['status']} ({e['mode']})"
     print(f"\nGate E: {e_status_label:<46s} intervention mask")
-    print(f"  sidecar log                      "
-          f"{e.get('sidecar_path', '?')}  "
-          f"(present={e.get('sidecar_present')}, entries={e.get('sidecar_n_entries', 0)})")
+    print(
+        f"  sidecar log                      "
+        f"{e.get('sidecar_path', '?')}  "
+        f"(present={e.get('sidecar_present')}, entries={e.get('sidecar_n_entries', 0)})"
+    )
     if e.get("in_window_fills") is not None:
         print(f"  in-window fills                  {e['in_window_fills']}")
-        print(f"  tagged manual cloids             {e.get('tagged_manual_fills', 0)} "
-              f"({e.get('tagged_share_pct', 0):.1f}%)")
+        print(
+            f"  tagged manual cloids             {e.get('tagged_manual_fills', 0)} "
+            f"({e.get('tagged_share_pct', 0):.1f}%)"
+        )
         if e.get("heuristic_share_pct") is not None:
-            print(f"  heuristic likely_manual share    "
-                  f"{e['heuristic_share_pct']:.1f}%  (β.0 audit baseline)")
-        print(f"  threshold                        "
-              f"{e.get('threshold_pct', E_INTERVENTION_SHARE_MAX_PCT)}%")
+            print(
+                f"  heuristic likely_manual share    "
+                f"{e['heuristic_share_pct']:.1f}%  (β.0 audit baseline)"
+            )
+        print(
+            f"  threshold                        "
+            f"{e.get('threshold_pct', E_INTERVENTION_SHARE_MAX_PCT)}%"
+        )
     print(f"  note: {e.get('note', '')}")
 
     print()

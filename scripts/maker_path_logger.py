@@ -72,7 +72,8 @@ def _resting_oid(result: dict) -> int | None:
     try:
         statuses = (
             result.get("response", {}).get("data", {}).get("statuses", [])
-            if isinstance(result, dict) else []
+            if isinstance(result, dict)
+            else []
         )
         for st in statuses:
             for key in ("resting", "filled"):
@@ -102,10 +103,12 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
 
     Returns (records, stats).
     """
-    by_cloid: dict[str, dict] = defaultdict(lambda: {
-        "fills": [],
-        "events_seen": [],
-    })
+    by_cloid: dict[str, dict] = defaultdict(
+        lambda: {
+            "fills": [],
+            "events_seen": [],
+        }
+    )
     # For taker IOC orders without cloid, key by oid (resolved at fill time)
     pending_taker_submits: list[dict] = []
     fills_no_cloid: list[dict] = []
@@ -117,11 +120,17 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
     with log_path.open() as fh:
         for line in fh:
             # Cheap pre-filter — most events don't include any of these names
-            if not any(e in line for e in (
-                '"hl_maker_intent"', '"hl_maker_result"',
-                '"hl_order_submitted"', '"hl_order_cancelled_by_cloid"',
-                '"hl_fill_received"', '"hl_maker_giveup',
-            )):
+            if not any(
+                e in line
+                for e in (
+                    '"hl_maker_intent"',
+                    '"hl_maker_result"',
+                    '"hl_order_submitted"',
+                    '"hl_order_cancelled_by_cloid"',
+                    '"hl_fill_received"',
+                    '"hl_maker_giveup',
+                )
+            ):
                 continue
             try:
                 o = json.loads(line)
@@ -143,18 +152,22 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
                 if not cloid:
                     continue
                 rec = by_cloid[cloid]
-                rec.update({
-                    "cloid": cloid,
-                    "client_order_id": o.get("client_order_id"),
-                    "symbol": sym,
-                    "side": o.get("side"),
-                    "intent": "maker",
-                    "intended_qty": o.get("qty"),
-                    "intended_px": o.get("limit_px"),
-                    "notional": o.get("notional"),
-                    "submit_ts_ms": ts_ms,
-                    "tag": o.get("client_order_id", "").split("_")[0] if o.get("client_order_id") else None,
-                })
+                rec.update(
+                    {
+                        "cloid": cloid,
+                        "client_order_id": o.get("client_order_id"),
+                        "symbol": sym,
+                        "side": o.get("side"),
+                        "intent": "maker",
+                        "intended_qty": o.get("qty"),
+                        "intended_px": o.get("limit_px"),
+                        "notional": o.get("notional"),
+                        "submit_ts_ms": ts_ms,
+                        "tag": o.get("client_order_id", "").split("_")[0]
+                        if o.get("client_order_id")
+                        else None,
+                    }
+                )
                 rec["events_seen"].append(("hl_maker_intent", ts_ms))
             elif ev == "hl_maker_result":
                 if not cloid:
@@ -169,7 +182,9 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
                     rec.setdefault("symbol", sym)
                     rec.setdefault("side", o.get("side"))
                     rec.setdefault("submit_ts_ms", ts_ms)
-                    rec["intent"] = "maker" if str(o.get("tif", "")).lower() == "alo" else "taker"
+                    rec["intent"] = (
+                        "maker" if str(o.get("tif", "")).lower() == "alo" else "taker"
+                    )
                     rec["tif"] = o.get("tif")
                     rec["tag"] = o.get("tag")
                     rec.setdefault("intended_qty", o.get("qty"))
@@ -178,16 +193,18 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
                     rec["events_seen"].append(("hl_order_submitted", ts_ms))
                 else:
                     # taker IOC — match later via (sym, side, time) heuristic
-                    pending_taker_submits.append({
-                        "ts_ms": ts_ms,
-                        "symbol": sym,
-                        "side": o.get("side"),
-                        "qty": o.get("qty"),
-                        "limit_px": o.get("limit_px"),
-                        "tif": o.get("tif"),
-                        "tag": o.get("tag"),
-                        "reduce_only": o.get("reduce_only"),
-                    })
+                    pending_taker_submits.append(
+                        {
+                            "ts_ms": ts_ms,
+                            "symbol": sym,
+                            "side": o.get("side"),
+                            "qty": o.get("qty"),
+                            "limit_px": o.get("limit_px"),
+                            "tif": o.get("tif"),
+                            "tag": o.get("tag"),
+                            "reduce_only": o.get("reduce_only"),
+                        }
+                    )
             elif ev == "hl_fill_received":
                 fill = {
                     "ts_ms": ts_ms,
@@ -206,7 +223,9 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
                     rec["fills"].append(fill)
                     rec["events_seen"].append(("hl_fill_received", ts_ms))
                 else:
-                    fills_no_cloid.append({**fill, "symbol": sym, "side": o.get("side")})
+                    fills_no_cloid.append(
+                        {**fill, "symbol": sym, "side": o.get("side")}
+                    )
             elif ev == "hl_order_cancelled_by_cloid":
                 if not cloid:
                     continue
@@ -289,7 +308,11 @@ def aggregate(log_path: Path, since_ms: int = 0) -> tuple[list[dict], dict]:
             except (TypeError, ValueError):
                 pass
         intended = float(r.get("intended_qty") or 0)
-        canceled_qty = max(0.0, intended - filled_qty) if r.get("cancel_ts_ms") or r.get("giveup_ts_ms") else 0.0
+        canceled_qty = (
+            max(0.0, intended - filled_qty)
+            if r.get("cancel_ts_ms") or r.get("giveup_ts_ms")
+            else 0.0
+        )
 
         # Terminal state classification
         if r.get("cancel_ts_ms") or r.get("giveup_ts_ms"):
@@ -379,8 +402,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log", default=str(LOG))
     ap.add_argument("--out", default=str(DEFAULT_OUT))
-    ap.add_argument("--since", default=None,
-                    help="ISO8601 cutoff (e.g. 2026-04-26T23:00:00Z); default = process all")
+    ap.add_argument(
+        "--since",
+        default=None,
+        help="ISO8601 cutoff (e.g. 2026-04-26T23:00:00Z); default = process all",
+    )
     args = ap.parse_args()
 
     log_path = Path(args.log)
@@ -389,7 +415,10 @@ def main():
 
     since_ms = _parse_ts(args.since) if args.since else 0
 
-    print(f"# reading {log_path} (size {log_path.stat().st_size:,} bytes)", file=sys.stderr)
+    print(
+        f"# reading {log_path} (size {log_path.stat().st_size:,} bytes)",
+        file=sys.stderr,
+    )
     print(f"# since {args.since or '(beginning)'}", file=sys.stderr)
 
     records, stats = aggregate(log_path, since_ms=since_ms)
@@ -404,7 +433,7 @@ def main():
     print("=== aggregate stats ===")
     print(f"  events processed     : {stats['n_events_processed']:,}")
     print(f"  records emitted      : {stats['n_records']:,}")
-    print(f"  by terminal state    :")
+    print("  by terminal state    :")
     for k, v in stats["by_terminal_state"].items():
         pct = (v / stats["n_records"] * 100) if stats["n_records"] else 0
         print(f"    {k:16s}  {v:6d}  {pct:5.1f}%")
@@ -416,7 +445,7 @@ def main():
         total_fee = sum(r.get("total_fee", 0) or 0 for r in records)
         total_closed_pnl = sum(r.get("total_closed_pnl", 0) or 0 for r in records)
         lifetimes = [r["lifetime_ms"] for r in records if r.get("lifetime_ms")]
-        med_lifetime_ms = sorted(lifetimes)[len(lifetimes)//2] if lifetimes else None
+        med_lifetime_ms = sorted(lifetimes)[len(lifetimes) // 2] if lifetimes else None
         print()
         print("=== top-line metrics ===")
         print(f"  maker orders         : {n_maker}")

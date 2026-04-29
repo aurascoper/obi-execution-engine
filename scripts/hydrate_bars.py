@@ -139,7 +139,9 @@ def hydrate_one(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Hydrate bars.sqlite for the Stage 3 universe")
+    ap = argparse.ArgumentParser(
+        description="Hydrate bars.sqlite for the Stage 3 universe"
+    )
     ap.add_argument("--mode", choices=("seed", "rolling"), default="seed")
     ap.add_argument(
         "--universe-file",
@@ -178,7 +180,9 @@ def main() -> int:
 
     universe_path = Path(args.universe_file)
     if not universe_path.exists():
-        print(f"hydrate_bars: missing universe file at {universe_path}", file=sys.stderr)
+        print(
+            f"hydrate_bars: missing universe file at {universe_path}", file=sys.stderr
+        )
         return 2
     native, hip3 = parse_universe(universe_path)
     universe = native + hip3
@@ -222,7 +226,10 @@ def main() -> int:
     except TypeError:
         # Older SDK: drop perp_dexs and rely on HIP-3 prefixed-coin POST fallback.
         info = Info(constants.MAINNET_API_URL, skip_ws=True)
-        print("[warn] SDK rejected perp_dexs; HIP-3 falls back to HTTP POST path", file=sys.stderr)
+        print(
+            "[warn] SDK rejected perp_dexs; HIP-3 falls back to HTTP POST path",
+            file=sys.stderr,
+        )
 
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     cache = BarCache(args.db)
@@ -267,12 +274,16 @@ def main() -> int:
                     f"{rec['duration_s']:>5.2f}s"
                 )
                 if rec["status"] in ("fail", "gap_fail"):
-                    failures.append((symbol, interval, rec.get("error") or rec["status"]))
+                    failures.append(
+                        (symbol, interval, rec.get("error") or rec["status"])
+                    )
                     print(line, file=sys.stderr)
                 elif args.mode == "seed" or rec["status"] != "ok":
                     print(line, file=sys.stderr)
                 # rate throttle with jitter
-                time.sleep(max(0.0, base_sleep + random.uniform(-0.3, 0.3) * base_sleep))
+                time.sleep(
+                    max(0.0, base_sleep + random.uniform(-0.3, 0.3) * base_sleep)
+                )
     finally:
         cache.close()
 
@@ -294,8 +305,8 @@ def main() -> int:
     print("", file=sys.stderr)
     print(
         f"[done] mode={args.mode}  bars_inserted={bars_total}  "
-        f"ok={counts.get('ok',0)}  warn={counts.get('gap_warn',0)}  "
-        f"fail={counts.get('gap_fail',0) + counts.get('fail',0)}  "
+        f"ok={counts.get('ok', 0)}  warn={counts.get('gap_warn', 0)}  "
+        f"fail={counts.get('gap_fail', 0) + counts.get('fail', 0)}  "
         f"duration={summary_end['duration_s']}s",
         file=sys.stderr,
     )

@@ -40,10 +40,10 @@ DEFAULT_INTERVAL = "1h"
 DEFAULT_DAYS = 90
 
 # Hyperparameters (NIG conjugate prior)
-PRIOR_MU0 = 0.0       # mean log return prior
-PRIOR_KAPPA0 = 1.0    # pseudo-count for mean
-PRIOR_ALPHA0 = 1.0    # IG shape (alpha=1 -> diffuse-ish)
-PRIOR_BETA0 = 1e-4    # IG scale; small to allow scale inference
+PRIOR_MU0 = 0.0  # mean log return prior
+PRIOR_KAPPA0 = 1.0  # pseudo-count for mean
+PRIOR_ALPHA0 = 1.0  # IG shape (alpha=1 -> diffuse-ish)
+PRIOR_BETA0 = 1e-4  # IG scale; small to allow scale inference
 
 # Constant hazard: P(changepoint at any step) = 1/LAMBDA
 DEFAULT_LAMBDA = 250  # prior expected run length in bars
@@ -59,9 +59,12 @@ def fetch_candles(symbol: str, interval: str, days: int):
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     now_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
     from_ms = now_ms - days * 86_400_000
-    raw = info.candles_snapshot(
-        name=symbol, interval=interval, startTime=from_ms, endTime=now_ms
-    ) or []
+    raw = (
+        info.candles_snapshot(
+            name=symbol, interval=interval, startTime=from_ms, endTime=now_ms
+        )
+        or []
+    )
     out = []
     for r in raw:
         try:
@@ -228,11 +231,19 @@ def classify(latest_rl: float, latest_cp: float, latest_var: float) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
-    ap.add_argument("--interval", default=DEFAULT_INTERVAL,
-                    help="HL candle interval (1m, 15m, 1h, ...)")
+    ap.add_argument(
+        "--interval",
+        default=DEFAULT_INTERVAL,
+        help="HL candle interval (1m, 15m, 1h, ...)",
+    )
     ap.add_argument("--days", type=int, default=DEFAULT_DAYS)
-    ap.add_argument("--lambda", dest="lam", type=int, default=DEFAULT_LAMBDA,
-                    help="hazard prior — mean run length in bars")
+    ap.add_argument(
+        "--lambda",
+        dest="lam",
+        type=int,
+        default=DEFAULT_LAMBDA,
+        help="hazard prior — mean run length in bars",
+    )
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     args = ap.parse_args()
 
@@ -240,9 +251,13 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / f"regime_runlength_latest_{args.interval}_{args.days}d.csv"
-    jsonl_path = out_dir / f"regime_runlength_history_{args.interval}_{args.days}d.jsonl"
+    jsonl_path = (
+        out_dir / f"regime_runlength_history_{args.interval}_{args.days}d.jsonl"
+    )
 
-    print(f"# BOCPD — interval {args.interval}, window {args.days}d, hazard λ={args.lam}")
+    print(
+        f"# BOCPD — interval {args.interval}, window {args.days}d, hazard λ={args.lam}"
+    )
     print()
     print(
         f"  {'sym':<6s}  {'n':>5s}  {'latest_rl':>9s}  {'argmax_rl':>9s}  "
@@ -283,36 +298,44 @@ def main():
             f"  {sym:<6s}  {n:>5d}  {rl_mean:>9.1f}  {argmax_rl:>9d}  "
             f"{cp_prob:>8.4f}  {mean_ret:>+10.6f}  {vol:>10.6f}  {label:<14s}"
         )
-        rows.append({
-            "symbol": sym,
-            "interval": args.interval,
-            "days": args.days,
-            "lambda": args.lam,
-            "n_returns": n,
-            "latest_run_length_mean": rl_mean,
-            "argmax_run_length": argmax_rl,
-            "changepoint_prob": cp_prob,
-            "mean_return_recent": mean_ret,
-            "vol_recent": vol,
-            "regime_label": label,
-            "z_recent": (mean_ret / vol) if vol > 0 else None,
-        })
-        # Per-step history (compact: ts, rl_mean, cp_prob)
-        for i, t in enumerate(times):
-            history_fh.write(json.dumps({
+        rows.append(
+            {
                 "symbol": sym,
                 "interval": args.interval,
-                "ts": t,
-                "rl_mean": float(res["rl_mean"][i]),
-                "cp_prob": float(res["cp_prob"][i]),
-                "mu_post": float(res["mu_post"][i]),
-                "var_post": float(res["var_post"][i]),
-            }) + "\n")
+                "days": args.days,
+                "lambda": args.lam,
+                "n_returns": n,
+                "latest_run_length_mean": rl_mean,
+                "argmax_run_length": argmax_rl,
+                "changepoint_prob": cp_prob,
+                "mean_return_recent": mean_ret,
+                "vol_recent": vol,
+                "regime_label": label,
+                "z_recent": (mean_ret / vol) if vol > 0 else None,
+            }
+        )
+        # Per-step history (compact: ts, rl_mean, cp_prob)
+        for i, t in enumerate(times):
+            history_fh.write(
+                json.dumps(
+                    {
+                        "symbol": sym,
+                        "interval": args.interval,
+                        "ts": t,
+                        "rl_mean": float(res["rl_mean"][i]),
+                        "cp_prob": float(res["cp_prob"][i]),
+                        "mu_post": float(res["mu_post"][i]),
+                        "var_post": float(res["var_post"][i]),
+                    }
+                )
+                + "\n"
+            )
     history_fh.close()
 
     # CSV write
     if rows:
         import csv
+
         with csv_path.open("w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
             w.writeheader()
@@ -338,7 +361,9 @@ def main():
             print("  → analysis/regime_threshold_backtest.py NOT required first.")
         elif n_break + n_unstable >= len(rows) // 2:
             print("  FREQUENT regime changes detected — static z-thresholds suspect.")
-            print("  → analysis/regime_threshold_backtest.py IS the next non-risk step.")
+            print(
+                "  → analysis/regime_threshold_backtest.py IS the next non-risk step."
+            )
         else:
             print("  MIXED regime stability across symbols.")
             print("  → consider per-symbol threshold logic before global rules.")

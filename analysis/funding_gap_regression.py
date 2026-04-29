@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ROOT / "autoresearch_gated" / "funding_gap_regression.json"
 DEFAULT_SYMBOLS = ("BTC", "ETH", "SOL", "DOGE", "AAVE")
-ROLLING_N = 8                # window for expected_funding baseline
+ROLLING_N = 8  # window for expected_funding baseline
 HOUR_MS = 3_600_000
 
 
@@ -60,9 +60,12 @@ def fetch_candles(symbol: str, days: int):
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     now_ms = int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)
     from_ms = now_ms - days * 86_400_000
-    raw = info.candles_snapshot(
-        name=symbol, interval="1h", startTime=from_ms, endTime=now_ms
-    ) or []
+    raw = (
+        info.candles_snapshot(
+            name=symbol, interval="1h", startTime=from_ms, endTime=now_ms
+        )
+        or []
+    )
     out = []
     for r in raw:
         try:
@@ -100,8 +103,8 @@ def build_pairs(funding, candles):
         prior = [funding[j][1] for j in range(i - ROLLING_N, i)]
         expected = sum(prior) / len(prior)
         residual = f - expected
-        c_now = cmap.get(t_hour - HOUR_MS)   # close of candle ending at t_hour
-        c_next = cmap.get(t_hour)            # close of candle ending at t_hour+1h
+        c_now = cmap.get(t_hour - HOUR_MS)  # close of candle ending at t_hour
+        c_next = cmap.get(t_hour)  # close of candle ending at t_hour+1h
         if c_now is None or c_next is None or c_now <= 0 or c_next <= 0:
             continue
         log_ret = math.log(c_next / c_now)
@@ -154,8 +157,10 @@ def main():
 
     print(f"# Gap A regression — window {args.days}d, expected = rolling_mean_8")
     print()
-    print(f"  {'sym':<6s}  {'n':>4s}  {'beta':>10s}  {'t_stat':>8s}  "
-          f"{'R²':>8s}  {'direction':>9s}  {'passes_r2_thresh':>16s}")
+    print(
+        f"  {'sym':<6s}  {'n':>4s}  {'beta':>10s}  {'t_stat':>8s}  "
+        f"{'R²':>8s}  {'direction':>9s}  {'passes_r2_thresh':>16s}"
+    )
     print("  " + "-" * 80)
     per_sym = {}
     pooled_xs, pooled_ys = [], []
@@ -190,8 +195,11 @@ def main():
     if pooled_r is not None:
         passes = pooled_r["r2"] >= args.r2_threshold
         direction = (
-            "positive" if pooled_r["beta"] > 0
-            else "negative" if pooled_r["beta"] < 0 else "zero"
+            "positive"
+            if pooled_r["beta"] > 0
+            else "negative"
+            if pooled_r["beta"] < 0
+            else "zero"
         )
         print("  " + "-" * 80)
         print(
@@ -213,14 +221,12 @@ def main():
             f"  PASS — pooled R² = {pooled_r['r2']:.5f} ≥ {args.r2_threshold}, "
             f"beta {sign} (t = {pooled_r['t_stat']:+.2f})"
         )
-        print(f"  → signals/funding_basis.py JUSTIFIED as next step")
+        print("  → signals/funding_basis.py JUSTIFIED as next step")
         print(f"  → direction: residual {sign} predicts next-hour return {sign}")
     else:
-        print(
-            f"  FAIL — pooled R² = {pooled_r['r2']:.5f} < {args.r2_threshold}"
-        )
-        print(f"  → signals/funding_basis.py NOT justified")
-        print(f"  → keep funding as an accounting/cost-model term only")
+        print(f"  FAIL — pooled R² = {pooled_r['r2']:.5f} < {args.r2_threshold}")
+        print("  → signals/funding_basis.py NOT justified")
+        print("  → keep funding as an accounting/cost-model term only")
 
     out = {
         "window_days": args.days,

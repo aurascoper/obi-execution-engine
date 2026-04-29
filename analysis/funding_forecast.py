@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -118,7 +117,9 @@ def evaluate(funding: list[tuple[int, float]], holdout_frac: float = 0.30) -> di
         errs_ewma.append(abs(predict_ewma(hist, alpha=0.3) - actual))
         errs_ar1.append(abs(predict_ar1(hist) - actual))
 
-    def mae(lst): return sum(lst) / len(lst) if lst else float("inf")
+    def mae(lst):
+        return sum(lst) / len(lst) if lst else float("inf")
+
     maes = {
         "no_change": mae(errs_nc),
         "rolling_mean_8": mae(errs_rm),
@@ -138,7 +139,9 @@ def evaluate(funding: list[tuple[int, float]], holdout_frac: float = 0.30) -> di
         "best_model": best,
         "improvement_vs_no_change_pct": round(
             (1 - maes[best] / maes["no_change"]) * 100, 2
-        ) if maes["no_change"] > 0 else None,
+        )
+        if maes["no_change"] > 0
+        else None,
     }
 
 
@@ -156,9 +159,11 @@ def main():
 
     print(f"# funding_forecast — window {args.days}d, holdout {args.holdout_frac:.0%}")
     print()
-    print(f"  {'sym':<6s}  {'n_obs':>5s}  {'mean':>9s}  {'|mean|':>9s}  "
-          f"{'mae_no_chg':>10s}  {'mae_roll8':>10s}  {'mae_ewma':>10s}  "
-          f"{'mae_ar1':>10s}  {'best':<14s}  {'gain%':>6s}")
+    print(
+        f"  {'sym':<6s}  {'n_obs':>5s}  {'mean':>9s}  {'|mean|':>9s}  "
+        f"{'mae_no_chg':>10s}  {'mae_roll8':>10s}  {'mae_ewma':>10s}  "
+        f"{'mae_ar1':>10s}  {'best':<14s}  {'gain%':>6s}"
+    )
     print("  " + "-" * 110)
     results = {}
     for sym in syms:

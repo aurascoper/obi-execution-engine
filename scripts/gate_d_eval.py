@@ -50,9 +50,9 @@ def _is_manual(cloid: str | None) -> bool:
     return bool(cloid) and str(cloid).startswith(MANUAL_CLOID_PREFIX)
 
 
-def _collect_round_trips(jsonl_path: Path, start: str, end: str) -> tuple[
-    dict[str, list[float]], dict[str, dict[str, Any]]
-]:
+def _collect_round_trips(
+    jsonl_path: Path, start: str, end: str
+) -> tuple[dict[str, list[float]], dict[str, dict[str, Any]]]:
     """Returns (per-symbol trip-PnL list, per-symbol counters).
 
     Trip-PnL = closed_pnl on each exit-leg fill (closed_pnl != 0).
@@ -72,9 +72,16 @@ def _collect_round_trips(jsonl_path: Path, start: str, end: str) -> tuple[
             if r.get("event") != "hl_fill_received":
                 continue
             sym = r.get("symbol") or r.get("coin") or "?"
-            counters.setdefault(sym, {"fills": 0, "manual_excluded": 0,
-                                       "entry_legs": 0, "exit_legs": 0,
-                                       "fees": 0.0})
+            counters.setdefault(
+                sym,
+                {
+                    "fills": 0,
+                    "manual_excluded": 0,
+                    "entry_legs": 0,
+                    "exit_legs": 0,
+                    "fees": 0.0,
+                },
+            )
             counters[sym]["fills"] += 1
             if _is_manual(r.get("cloid")):
                 counters[sym]["manual_excluded"] += 1
@@ -114,7 +121,7 @@ def _classify_symbol(
     median = statistics.median(trips)
     band = band_cfg.get("pnl_per_trip_usd") or [None, None]
     low, high = band
-    in_band = (low is not None and high is not None and low <= median <= high)
+    in_band = low is not None and high is not None and low <= median <= high
     return {
         "symbol": sym,
         "status": "in_band" if in_band else "outlier",
@@ -215,14 +222,24 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Gate D forward-soak evaluator")
     ap.add_argument("--bands", default="config/expectation_bands.json")
     ap.add_argument("--jsonl", default="logs/hl_engine.jsonl")
-    ap.add_argument("--soak-start", default=None,
-                    help="Override soak start (default: from bands config)")
-    ap.add_argument("--soak-end", default=None,
-                    help="Override soak end (default: from bands config)")
-    ap.add_argument("--out", default=None,
-                    help="Append decision JSON to this file (also stdout)")
-    ap.add_argument("--summary-only", action="store_true",
-                    help="Print only summary fields, not per-symbol classifications")
+    ap.add_argument(
+        "--soak-start",
+        default=None,
+        help="Override soak start (default: from bands config)",
+    )
+    ap.add_argument(
+        "--soak-end",
+        default=None,
+        help="Override soak end (default: from bands config)",
+    )
+    ap.add_argument(
+        "--out", default=None, help="Append decision JSON to this file (also stdout)"
+    )
+    ap.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Print only summary fields, not per-symbol classifications",
+    )
     args = ap.parse_args()
 
     bands_path = Path(args.bands)

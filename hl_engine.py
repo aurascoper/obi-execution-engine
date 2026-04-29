@@ -1131,7 +1131,9 @@ class HLEngine:
                 "risk_gate_pause_new_entries",
                 symbol=sym,
                 tag=tag,
-                side=sig["side"].name if hasattr(sig["side"], "name") else str(sig["side"]),
+                side=sig["side"].name
+                if hasattr(sig["side"], "name")
+                else str(sig["side"]),
             )
             return False
 
@@ -1174,7 +1176,9 @@ class HLEngine:
                 )
                 return False
             now_mono_ = time.monotonic()
-            stale = (now_mono_ - self._loss_guard_last_poll_mono) >= HL_SESSION_LOSS_POLL_S
+            stale = (
+                now_mono_ - self._loss_guard_last_poll_mono
+            ) >= HL_SESSION_LOSS_POLL_S
             if stale or self._loss_guard_cached_loss_usd is None:
                 self._loss_guard_last_poll_mono = now_mono_
                 try:
@@ -1249,7 +1253,9 @@ class HLEngine:
             # Reduction-side (|net_after| <= |net_before|) is allowed through —
             # the mean-rev book is supposed to drive |net| back under cap.
             abs_before = abs(net_before)
-            ratio_before = abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
+            ratio_before = (
+                abs_before / MAX_NET_NOTIONAL if MAX_NET_NOTIONAL > 0 else 0.0
+            )
             if self._reduce_only_active:
                 if ratio_before <= REDUCE_ONLY_K_DEACTIVATE:
                     self._reduce_only_active = False
@@ -1284,9 +1290,7 @@ class HLEngine:
                 )
                 return False
 
-            if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(
-                net_before
-            ):
+            if abs(net_after) > MAX_NET_NOTIONAL and abs(net_after) > abs(net_before):
                 log.info(
                     "risk_gate_net_cap",
                     symbol=sym,
@@ -1316,8 +1320,12 @@ class HLEngine:
             return 0.0
         info = _Info(_constants.MAINNET_API_URL, skip_ws=True)
         now_ms = int(time.time() * 1000)
-        fills = info.user_fills_by_time(addr, self._engine_start_ms, now_ms,
-                                         aggregate_by_time=False) or []
+        fills = (
+            info.user_fills_by_time(
+                addr, self._engine_start_ms, now_ms, aggregate_by_time=False
+            )
+            or []
+        )
         closed = 0.0
         fees = 0.0
         for f in fills:
@@ -2134,7 +2142,9 @@ class HLEngine:
                 _notional_rt = sig.get("notional")
                 if _notional_rt is None and math.isfinite(_mid_rt):
                     _notional_rt = abs(_qty_rt) * _mid_rt
-                _hip3_lev = int(os.environ.get("HIP3_LEVERAGE", str(self._default_leverage)))
+                _hip3_lev = int(
+                    os.environ.get("HIP3_LEVERAGE", str(self._default_leverage))
+                )
                 log.info(
                     "sizing_runtime_shadow",
                     symbol=_sym_rt,
@@ -2145,7 +2155,11 @@ class HLEngine:
                     side_sign=_side_sign,
                     qty=_qty_rt,
                     limit_px=sig.get("limit_px"),
-                    notional=(round(float(_notional_rt), 2) if _notional_rt is not None else None),
+                    notional=(
+                        round(float(_notional_rt), 2)
+                        if _notional_rt is not None
+                        else None
+                    ),
                     per_pair_notional=round(self._per_pair_notional, 2),
                     default_leverage=self._default_leverage,
                     hip3_leverage=_hip3_lev,

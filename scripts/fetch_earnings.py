@@ -43,19 +43,67 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Mirror of earnings_analyzer.HIP3_XYZ_TRADABLE. Keep in sync by hand for
 # now; a future refactor can share the constant via a small module.
 HIP3_XYZ_TRADABLE: tuple[str, ...] = (
-    "HIMS", "HOOD", "ORCL", "EWY", "XYZ100", "CRWV", "TSLA", "CL", "SNDK",
-    "SKHX", "MSFT", "MU", "SP500", "AMD", "PLTR", "BRENTOIL", "GOLD",
-    "SILVER", "NATGAS", "COPPER", "PLATINUM", "TSM", "GOOGL", "META",
-    "AAPL", "LLY", "NFLX", "COST", "BABA", "RKLB", "MRVL", "EUR", "JP225",
-    "XLE", "PALLADIUM", "URANIUM", "RIVN", "MSTR",
+    "HIMS",
+    "HOOD",
+    "ORCL",
+    "EWY",
+    "XYZ100",
+    "CRWV",
+    "TSLA",
+    "CL",
+    "SNDK",
+    "SKHX",
+    "MSFT",
+    "MU",
+    "SP500",
+    "AMD",
+    "PLTR",
+    "BRENTOIL",
+    "GOLD",
+    "SILVER",
+    "NATGAS",
+    "COPPER",
+    "PLATINUM",
+    "TSM",
+    "GOOGL",
+    "META",
+    "AAPL",
+    "LLY",
+    "NFLX",
+    "COST",
+    "BABA",
+    "RKLB",
+    "MRVL",
+    "EUR",
+    "JP225",
+    "XLE",
+    "PALLADIUM",
+    "URANIUM",
+    "RIVN",
+    "MSTR",
 )
 
 # Pure-equity subset — the rest are commodity / index / FX baskets that
 # don't have earnings events. Skip them to avoid wasted yfinance calls.
-NON_EARNINGS_NAMES: frozenset[str] = frozenset({
-    "EWY", "XYZ100", "CL", "SP500", "BRENTOIL", "GOLD", "SILVER", "NATGAS",
-    "COPPER", "PLATINUM", "EUR", "JP225", "XLE", "PALLADIUM", "URANIUM",
-})
+NON_EARNINGS_NAMES: frozenset[str] = frozenset(
+    {
+        "EWY",
+        "XYZ100",
+        "CL",
+        "SP500",
+        "BRENTOIL",
+        "GOLD",
+        "SILVER",
+        "NATGAS",
+        "COPPER",
+        "PLATINUM",
+        "EUR",
+        "JP225",
+        "XLE",
+        "PALLADIUM",
+        "URANIUM",
+    }
+)
 
 
 def _classify_session(when: dt.datetime, target_date: dt.date) -> str:
@@ -110,12 +158,18 @@ def _fetch_one(yf_module, ticker: str, target_date: dt.date, window_h: int):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Yahoo Finance earnings fetcher")
     ap.add_argument("--date", required=True, help="Target date YYYY-MM-DD")
-    ap.add_argument("--window-h", type=int, default=24,
-                    help="Hours after start-of-target-date to consider (default 24; use 36 to catch after-close prints stamped next-day UTC)")
-    ap.add_argument("--out", default=None,
-                    help="Output path (default: config/earnings/<date>.json)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="Print result, do not write the file")
+    ap.add_argument(
+        "--window-h",
+        type=int,
+        default=24,
+        help="Hours after start-of-target-date to consider (default 24; use 36 to catch after-close prints stamped next-day UTC)",
+    )
+    ap.add_argument(
+        "--out", default=None, help="Output path (default: config/earnings/<date>.json)"
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="Print result, do not write the file"
+    )
     args = ap.parse_args()
 
     try:
@@ -167,7 +221,10 @@ def main() -> int:
     out_path = Path(args.out or f"config/earnings/{args.date}.json")
     if args.dry_run:
         print(json.dumps(payload, indent=2))
-        print(f"\n[DRY RUN] {len(matched)} hits, {len(errors)} errors. Would write {out_path}", file=sys.stderr)
+        print(
+            f"\n[DRY RUN] {len(matched)} hits, {len(errors)} errors. Would write {out_path}",
+            file=sys.stderr,
+        )
         return 0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

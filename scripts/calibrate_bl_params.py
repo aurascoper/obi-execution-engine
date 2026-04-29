@@ -46,9 +46,9 @@ DEFAULT_LOG = Path("logs/hl_engine.jsonl")
 DEFAULT_WINDOW_DAYS = 7.0
 
 # OU fit parameters
-DT_S = 60               # uniform resampling grid for AR(1)
-N_MIN_OU = 60           # minimum observations on the grid (1h equivalent)
-N_MIN_ETA = 3           # minimum fill pairs for η fit
+DT_S = 60  # uniform resampling grid for AR(1)
+N_MIN_OU = 60  # minimum observations on the grid (1h equivalent)
+N_MIN_ETA = 3  # minimum fill pairs for η fit
 
 # Cloid prefix for manual orders (excluded per Gate E intervention mask).
 MANUAL_PFX = "0xdead0001"
@@ -67,6 +67,7 @@ SHADOW_LOOKBACK_S = 60.0
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
 
 def is_hip3(sym: str) -> bool:
     return ":" in (sym or "")
@@ -104,6 +105,7 @@ def percentile(xs: list[float], p: float) -> float | None:
 
 
 # ── data collection ────────────────────────────────────────────────────────
+
 
 def collect(jsonl_path: Path, start_ts: str) -> dict:
     """Single-pass scan of hl_engine.jsonl. Returns five collections.
@@ -174,17 +176,19 @@ def collect(jsonl_path: Path, start_ts: str) -> dict:
                     cp_f = float(cp) if cp is not None else 0.0
                     if qty <= 0 or px <= 0:
                         continue
-                    fills.append({
-                        "sym": sym,
-                        "ts": parse_ts(ts_str).timestamp(),
-                        "side": r.get("side"),
-                        "qty": qty,
-                        "px": px,
-                        "fee": fee,
-                        "closed_pnl": cp_f,
-                        "cloid": cloid or "",
-                        "crossed": bool(r.get("crossed", False)),
-                    })
+                    fills.append(
+                        {
+                            "sym": sym,
+                            "ts": parse_ts(ts_str).timestamp(),
+                            "side": r.get("side"),
+                            "qty": qty,
+                            "px": px,
+                            "fee": fee,
+                            "closed_pnl": cp_f,
+                            "cloid": cloid or "",
+                            "crossed": bool(r.get("crossed", False)),
+                        }
+                    )
                 except (TypeError, ValueError):
                     continue
 
@@ -206,9 +210,13 @@ def collect(jsonl_path: Path, start_ts: str) -> dict:
                 except (TypeError, ValueError):
                     continue
 
-    return {"obi": dict(obi), "sends": dict(sends),
-            "sends_by_cloid": sends_by_cloid, "fills": fills,
-            "shadows": dict(shadows)}
+    return {
+        "obi": dict(obi),
+        "sends": dict(sends),
+        "sends_by_cloid": sends_by_cloid,
+        "fills": fills,
+        "shadows": dict(shadows),
+    }
 
 
 def attach_mid_to_sends(
@@ -253,6 +261,7 @@ def attach_mid_to_sends(
 
 # ── OU fit on OBI ──────────────────────────────────────────────────────────
 
+
 def fit_ou(series: list[tuple[float, float]], dt_s: int = DT_S) -> dict:
     """Fit dY = -β(Y - Ȳ) dt + σ dW via AR(1) on a uniform Δt grid.
 
@@ -260,8 +269,14 @@ def fit_ou(series: list[tuple[float, float]], dt_s: int = DT_S) -> dict:
     Status values: ok | thin_sample | non_stationary | negative_b | no_variance.
     """
     if len(series) < N_MIN_OU:
-        return {"status": "thin_sample", "n_samples": len(series),
-                "beta": None, "sigma": None, "half_life_s": None, "ar1_b": None}
+        return {
+            "status": "thin_sample",
+            "n_samples": len(series),
+            "beta": None,
+            "sigma": None,
+            "half_life_s": None,
+            "ar1_b": None,
+        }
 
     series = sorted(series, key=lambda x: x[0])
     t0 = series[0][0]
@@ -281,8 +296,14 @@ def fit_ou(series: list[tuple[float, float]], dt_s: int = DT_S) -> dict:
     filled: list[float] = [v for v in grid if v is not None]
 
     if len(filled) < N_MIN_OU:
-        return {"status": "thin_sample", "n_samples": len(filled),
-                "beta": None, "sigma": None, "half_life_s": None, "ar1_b": None}
+        return {
+            "status": "thin_sample",
+            "n_samples": len(filled),
+            "beta": None,
+            "sigma": None,
+            "half_life_s": None,
+            "ar1_b": None,
+        }
 
     Y = filled[:-1]
     Yp = filled[1:]
@@ -292,17 +313,35 @@ def fit_ou(series: list[tuple[float, float]], dt_s: int = DT_S) -> dict:
     num = sum((y - mean_Y) * (yp - mean_Yp) for y, yp in zip(Y, Yp))
     den = sum((y - mean_Y) ** 2 for y in Y)
     if den <= 0:
-        return {"status": "no_variance", "n_samples": n,
-                "beta": None, "sigma": None, "half_life_s": None, "ar1_b": None}
+        return {
+            "status": "no_variance",
+            "n_samples": n,
+            "beta": None,
+            "sigma": None,
+            "half_life_s": None,
+            "ar1_b": None,
+        }
     b = num / den
     a = mean_Yp - b * mean_Y
 
     if b >= 1.0:
-        return {"status": "non_stationary", "n_samples": n, "ar1_b": b,
-                "beta": None, "sigma": None, "half_life_s": None}
+        return {
+            "status": "non_stationary",
+            "n_samples": n,
+            "ar1_b": b,
+            "beta": None,
+            "sigma": None,
+            "half_life_s": None,
+        }
     if b <= 0.0:
-        return {"status": "negative_b", "n_samples": n, "ar1_b": b,
-                "beta": None, "sigma": None, "half_life_s": None}
+        return {
+            "status": "negative_b",
+            "n_samples": n,
+            "ar1_b": b,
+            "beta": None,
+            "sigma": None,
+            "half_life_s": None,
+        }
 
     beta = -math.log(b) / dt_s
     half_life_s = math.log(2.0) / beta if beta > 0 else None
@@ -311,11 +350,18 @@ def fit_ou(series: list[tuple[float, float]], dt_s: int = DT_S) -> dict:
     sigma_eps = math.sqrt(sum(e * e for e in eps) / max(n - 2, 1))
     sigma = sigma_eps * math.sqrt(2 * beta / (1 - math.exp(-2 * beta * dt_s)))
 
-    return {"status": "ok", "n_samples": n, "beta": beta, "sigma": sigma,
-            "half_life_s": half_life_s, "ar1_b": b}
+    return {
+        "status": "ok",
+        "n_samples": n,
+        "beta": beta,
+        "sigma": sigma,
+        "half_life_s": half_life_s,
+        "ar1_b": b,
+    }
 
 
 # ── η fit on slippage ──────────────────────────────────────────────────────
+
 
 def fit_eta(
     fills: list[dict],
@@ -348,8 +394,10 @@ def fit_eta(
             sent = sends_by_cloid.get((sym, fill["cloid"]))
         if sent is None:
             candidates = [
-                s for s in sends.get(sym, [])
-                if s["side"] == fill["side"] and 0 <= fill["ts"] - s["ts"] <= NEAREST_PRIOR_S
+                s
+                for s in sends.get(sym, [])
+                if s["side"] == fill["side"]
+                and 0 <= fill["ts"] - s["ts"] <= NEAREST_PRIOR_S
             ]
             if candidates:
                 sent = max(candidates, key=lambda s: s["ts"])
@@ -382,7 +430,9 @@ def fit_eta(
         per_sym[sym].append((slip_bps, notional))
 
     out: dict[str, dict] = {}
-    all_syms = set(per_sym.keys()) | set(per_sym_no_mid.keys()) | set(per_sym_no_send.keys())
+    all_syms = (
+        set(per_sym.keys()) | set(per_sym_no_mid.keys()) | set(per_sym_no_send.keys())
+    )
     for sym in all_syms:
         samples = per_sym.get(sym, [])
         if len(samples) < N_MIN_ETA:
@@ -419,6 +469,7 @@ def fit_eta(
 
 # ── time-in-market via FIFO entry/exit pairing ─────────────────────────────
 
+
 def time_in_market(fills: list[dict]) -> dict[str, list[float]]:
     """Pair entry (closed_pnl=0) with exit (closed_pnl≠0) FIFO per symbol.
 
@@ -443,28 +494,42 @@ def time_in_market(fills: list[dict]) -> dict[str, list[float]]:
 
 # ── output ─────────────────────────────────────────────────────────────────
 
+
 def fmt_sec(s: float | None) -> str:
     if s is None:
         return "—"
     if s < 60:
         return f"{s:.0f}s"
     if s < 3600:
-        return f"{s/60:.1f}m"
-    return f"{s/3600:.2f}h"
+        return f"{s / 60:.1f}m"
+    return f"{s / 3600:.2f}h"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Bechler-Ludkovski (β, σ, η) calibration")
-    ap.add_argument("--log", default=str(DEFAULT_LOG),
-                    help="Engine fill log (default: logs/hl_engine.jsonl)")
-    ap.add_argument("--window-days", type=float, default=DEFAULT_WINDOW_DAYS,
-                    help="Look-back window in days (default 7)")
-    ap.add_argument("--start-ts", default=None,
-                    help="Override window start (ISO UTC); takes precedence over --window-days")
-    ap.add_argument("--top", type=int, default=30,
-                    help="Per-symbol table row count (top N by signal_tick count)")
-    ap.add_argument("--verbose", action="store_true",
-                    help="Surface diagnostic stderr")
+    ap.add_argument(
+        "--log",
+        default=str(DEFAULT_LOG),
+        help="Engine fill log (default: logs/hl_engine.jsonl)",
+    )
+    ap.add_argument(
+        "--window-days",
+        type=float,
+        default=DEFAULT_WINDOW_DAYS,
+        help="Look-back window in days (default 7)",
+    )
+    ap.add_argument(
+        "--start-ts",
+        default=None,
+        help="Override window start (ISO UTC); takes precedence over --window-days",
+    )
+    ap.add_argument(
+        "--top",
+        type=int,
+        default=30,
+        help="Per-symbol table row count (top N by signal_tick count)",
+    )
+    ap.add_argument("--verbose", action="store_true", help="Surface diagnostic stderr")
     ap.add_argument(
         "--taker-only",
         action="store_true",
@@ -552,9 +617,13 @@ def main() -> int:
     print(f"**Source:** `{log_path}` (read-only)")
     print(f"**Excluded:** manual-cloid fills (prefix `{MANUAL_PFX}`)")
     if args.reference == "mid":
-        print(f"**η reference:** `sizing_runtime_shadow.mid` joined nearest-prior to send (window {SHADOW_LOOKBACK_S}s)")
+        print(
+            f"**η reference:** `sizing_runtime_shadow.mid` joined nearest-prior to send (window {SHADOW_LOOKBACK_S}s)"
+        )
     else:
-        print("**η reference:** `hl_order_submitted.limit_px` (legacy — biased by IOC pre-walk)")
+        print(
+            "**η reference:** `hl_order_submitted.limit_px` (legacy — biased by IOC pre-walk)"
+        )
     if args.taker_only:
         print("**η filter:** taker fills only (`crossed=true`). β/σ unaffected.")
     print()
@@ -563,11 +632,15 @@ def main() -> int:
     print(f"| `signal_tick` obi observations | {n_obi_total:,} |")
     print(f"| `sizing_runtime_shadow` events | {n_shadows_total:,} |")
     print(f"| `hl_order_submitted` | {n_sends_total:,} |")
-    print(f"|   ↳ with matching shadow.mid | {n_sends_with_mid:,} ({100*n_sends_with_mid/max(n_sends_total,1):.0f}%) |")
+    print(
+        f"|   ↳ with matching shadow.mid | {n_sends_with_mid:,} ({100 * n_sends_with_mid / max(n_sends_total, 1):.0f}%) |"
+    )
     print(f"| `hl_fill_received` (manual excluded) | {n_fills_all:,} |")
     print(f"|   ↳ taker (`crossed=true`) | {n_fills_taker:,} |")
     print(f"|   ↳ maker (`crossed=false`) | {n_fills_maker:,} |")
-    print(f"| Fills used for η fit | {n_fills_eta:,} ({'taker-only' if args.taker_only else 'all'}) |")
+    print(
+        f"| Fills used for η fit | {n_fills_eta:,} ({'taker-only' if args.taker_only else 'all'}) |"
+    )
     print(f"| OU resampling Δt | {DT_S}s |")
     print(f"| Min OU samples | {N_MIN_OU} |")
     print(f"| Min η pairs | {N_MIN_ETA} |")
@@ -581,7 +654,9 @@ def main() -> int:
 
     print(f"## Per-symbol fits (top {head_top} by `signal_tick` count)")
     print()
-    print("| symbol | class | n_obi | β (1/s) | half-life | σ | η (bps/$) | med slip (bps) | n_fills | med hold |")
+    print(
+        "| symbol | class | n_obi | β (1/s) | half-life | σ | η (bps/$) | med slip (bps) | n_fills | med hold |"
+    )
     print("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     for sym in syms_sorted[:head_top]:
         cls = "hip3" if is_hip3(sym) else "native"
@@ -589,41 +664,63 @@ def main() -> int:
         et = eta_fits.get(sym, {})
         hd = holds.get(sym, [])
         beta = ou.get("beta")
-        beta_str = f"{beta:.5f}" if beta is not None else f"_{ou.get('status','?')}_"
+        beta_str = f"{beta:.5f}" if beta is not None else f"_{ou.get('status', '?')}_"
         hl = ou.get("half_life_s")
         hl_str = fmt_sec(hl)
         sg = ou.get("sigma")
         sg_str = f"{sg:.3f}" if sg is not None else "—"
         eta_v = et.get("eta_bps_per_dollar")
-        eta_str = f"{eta_v:.6f}" if eta_v is not None else f"_{et.get('status','no_data')}_"
+        eta_str = (
+            f"{eta_v:.6f}" if eta_v is not None else f"_{et.get('status', 'no_data')}_"
+        )
         med_slip = et.get("median_slip_bps")
         med_slip_str = f"{med_slip:+.2f}" if med_slip is not None else "—"
         n_fills_sym = et.get("n_pairs", 0)
         med_hold = statistics.median(hd) if hd else None
         med_hold_str = fmt_sec(med_hold)
-        print(f"| `{sym}` | {cls} | {len(obi[sym])} | {beta_str} | {hl_str} | {sg_str} | {eta_str} | {med_slip_str} | {n_fills_sym} | {med_hold_str} |")
+        print(
+            f"| `{sym}` | {cls} | {len(obi[sym])} | {beta_str} | {hl_str} | {sg_str} | {eta_str} | {med_slip_str} | {n_fills_sym} | {med_hold_str} |"
+        )
     print()
 
     # ── class summary ──────────────────────────────────────────────────────
     print("## Class-level medians (valid fits only)")
     print()
-    print("| class | n_β | β median | half-life median | σ median | n_η | η median (bps/$) | med slip (bps) |")
+    print(
+        "| class | n_β | β median | half-life median | σ median | n_η | η median (bps/$) | med slip (bps) |"
+    )
     print("|---|---:|---:|---:|---:|---:|---:|---:|")
     for cls_name in ("native", "hip3"):
-        match = (cls_name == "hip3")
-        betas = [ou_fits[s]["beta"] for s in obi if is_hip3(s) == match and ou_fits[s].get("beta") is not None]
-        sigmas = [ou_fits[s]["sigma"] for s in obi if is_hip3(s) == match and ou_fits[s].get("sigma") is not None]
-        etas = [eta_fits[s]["eta_bps_per_dollar"] for s in eta_fits
-                if is_hip3(s) == match and eta_fits[s].get("eta_bps_per_dollar") is not None]
-        slips = [eta_fits[s]["median_slip_bps"] for s in eta_fits
-                 if is_hip3(s) == match and eta_fits[s].get("median_slip_bps") is not None]
+        match = cls_name == "hip3"
+        betas = [
+            ou_fits[s]["beta"]
+            for s in obi
+            if is_hip3(s) == match and ou_fits[s].get("beta") is not None
+        ]
+        sigmas = [
+            ou_fits[s]["sigma"]
+            for s in obi
+            if is_hip3(s) == match and ou_fits[s].get("sigma") is not None
+        ]
+        etas = [
+            eta_fits[s]["eta_bps_per_dollar"]
+            for s in eta_fits
+            if is_hip3(s) == match and eta_fits[s].get("eta_bps_per_dollar") is not None
+        ]
+        slips = [
+            eta_fits[s]["median_slip_bps"]
+            for s in eta_fits
+            if is_hip3(s) == match and eta_fits[s].get("median_slip_bps") is not None
+        ]
         if betas:
             beta_med = statistics.median(betas)
             sigma_med = statistics.median(sigmas)
             hl_med = math.log(2) / beta_med if beta_med > 0 else None
             eta_med_str = f"{statistics.median(etas):.6f}" if etas else "—"
             slip_med_str = f"{statistics.median(slips):+.2f}" if slips else "—"
-            print(f"| {cls_name} | {len(betas)} | {beta_med:.5f} | {fmt_sec(hl_med)} | {sigma_med:.3f} | {len(etas)} | {eta_med_str} | {slip_med_str} |")
+            print(
+                f"| {cls_name} | {len(betas)} | {beta_med:.5f} | {fmt_sec(hl_med)} | {sigma_med:.3f} | {len(etas)} | {eta_med_str} | {slip_med_str} |"
+            )
         else:
             print(f"| {cls_name} | 0 | — | — | — | 0 | — | — |")
     print()
@@ -645,21 +742,41 @@ def main() -> int:
     # ── footer ─────────────────────────────────────────────────────────────
     print("## Provenance / interpretation")
     print()
-    print("- β is the OU mean-reversion rate of the OBI process. half-life = ln(2)/β. Use this as the time-scale knob in the BL closed-form (paper: 1409.2618).")
-    print("- σ is the OU driving-noise vol; conditioned on β so it's directly comparable across symbols.")
-    print("- η is bps of slippage per $1 of notional traded. Adverse-side convention (positive = trader paid more than expected). Linear approximation; the empirical crypto-LOB law is concave (square-root), captured later by 2503.04323.")
+    print(
+        "- β is the OU mean-reversion rate of the OBI process. half-life = ln(2)/β. Use this as the time-scale knob in the BL closed-form (paper: 1409.2618)."
+    )
+    print(
+        "- σ is the OU driving-noise vol; conditioned on β so it's directly comparable across symbols."
+    )
+    print(
+        "- η is bps of slippage per $1 of notional traded. Adverse-side convention (positive = trader paid more than expected). Linear approximation; the empirical crypto-LOB law is concave (square-root), captured later by 2503.04323."
+    )
     if args.reference == "mid":
-        print(f"- ✅ Slippage reference is `sizing_runtime_shadow.mid` joined to each send by nearest-prior (symbol, side) within {SHADOW_LOOKBACK_S}s. This is the structural BL-η reference: positive = true temporary impact (spread crossing + book walk).")
+        print(
+            f"- ✅ Slippage reference is `sizing_runtime_shadow.mid` joined to each send by nearest-prior (symbol, side) within {SHADOW_LOOKBACK_S}s. This is the structural BL-η reference: positive = true temporary impact (spread crossing + book walk)."
+        )
     else:
-        print("- ⚠️ Slippage reference is `limit_px` (legacy). Our IOC ladder pre-walks the limit so even taker fills land inside it; η here is biased toward zero/negative. Re-run with `--reference mid` for the BL-correct calibration.")
+        print(
+            "- ⚠️ Slippage reference is `limit_px` (legacy). Our IOC ladder pre-walks the limit so even taker fills land inside it; η here is biased toward zero/negative. Re-run with `--reference mid` for the BL-correct calibration."
+        )
     if not args.taker_only:
-        print("- ⚠️  Without `--taker-only`, η is computed across BOTH maker and taker fills. Maker fills produce structurally negative η vs mid (you capture the spread, not pay it). For Bechler-Ludkovski use, combine `--reference mid --taker-only`.")
+        print(
+            "- ⚠️  Without `--taker-only`, η is computed across BOTH maker and taker fills. Maker fills produce structurally negative η vs mid (you capture the spread, not pay it). For Bechler-Ludkovski use, combine `--reference mid --taker-only`."
+        )
     else:
-        print("- ✅ η fit restricted to taker fills (`crossed=true`). Result is the structural temporary-impact coefficient for the BL Riccati formula's spread-crossing branch.")
-    print("- median hold (last column) is the empirical FIFO-paired entry→exit duration. Compare to half-life: well-aligned ⇒ OU model consistent with strategy turnover.")
-    print("- Status `ok` = fit accepted; `thin_sample` = below threshold; `non_stationary` / `negative_b` / `no_variance` = OU model rejected.")
+        print(
+            "- ✅ η fit restricted to taker fills (`crossed=true`). Result is the structural temporary-impact coefficient for the BL Riccati formula's spread-crossing branch."
+        )
+    print(
+        "- median hold (last column) is the empirical FIFO-paired entry→exit duration. Compare to half-life: well-aligned ⇒ OU model consistent with strategy turnover."
+    )
+    print(
+        "- Status `ok` = fit accepted; `thin_sample` = below threshold; `non_stationary` / `negative_b` / `no_variance` = OU model rejected."
+    )
     print()
-    print("**This run did NOT write to `config/risk_params.py`.** Operator must review these numbers and authorize separately before they touch the live engine.")
+    print(
+        "**This run did NOT write to `config/risk_params.py`.** Operator must review these numbers and authorize separately before they touch the live engine."
+    )
     print()
     print(f"_Generated: {now_iso}_  ·  _Source: scripts/calibrate_bl_params.py_")
     return 0
