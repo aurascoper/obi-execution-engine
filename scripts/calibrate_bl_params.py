@@ -56,11 +56,35 @@ MANUAL_PFX = "0xdead0001"
 # Fill→submission matching: nearest-prior window (seconds) when cloid absent.
 NEAREST_PRIOR_S = 10.0
 
+# Submission→shadow matching: nearest-prior shadow event window (seconds).
+# `sizing_runtime_shadow` fires once per signal evaluation (immediately
+# before `_risk_gate_ok`). The first `hl_order_submitted` follows within
+# ~1s, but Alo cancel-replace retries and IOC escalations can stretch over
+# 30-60s for the same logical order. All those retries should reuse the
+# original shadow.mid as the reference. 60s window covers the typical
+# Alo reprice ladder.
+SHADOW_LOOKBACK_S = 60.0
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
 def is_hip3(sym: str) -> bool:
     return ":" in (sym or "")
+
+
+def normalize_symbol(sym: str | None) -> str:
+    """Strip the /USD or /USDC quote suffix so events from different log
+    sources collate to the same key. `signal_tick` and `sizing_runtime_shadow`
+    log symbols as 'BTC/USD' / 'xyz:GOOGL/USD'; `hl_order_submitted` and
+    `hl_fill_received` log them bare as 'BTC' / 'xyz:GOOGL'. Bare is the
+    canonical engine convention; we conform everything to it."""
+    if not sym:
+        return ""
+    if sym.endswith("/USDC"):
+        return sym[:-5]
+    if sym.endswith("/USD"):
+        return sym[:-4]
+    return sym
 
 
 def parse_ts(ts_str: str) -> dt.datetime:
@@ -82,17 +106,19 @@ def percentile(xs: list[float], p: float) -> float | None:
 # ── data collection ────────────────────────────────────────────────────────
 
 def collect(jsonl_path: Path, start_ts: str) -> dict:
-    """Single-pass scan of hl_engine.jsonl. Returns four collections.
+    """Single-pass scan of hl_engine.jsonl. Returns five collections.
 
     obi[sym]            -> [(ts_seconds, obi_value)]
     sends[sym]          -> [{ts, side, qty, px, cloid}, ...]
     sends_by_cloid      -> {(sym, cloid): {ts, side, qty, px}}
-    fills (list)        -> [{sym, ts, side, qty, px, fee, closed_pnl, cloid}, ...]
+    fills (list)        -> [{sym, ts, side, qty, px, fee, closed_pnl, cloid, crossed}, ...]
+    shadows[sym]        -> [(ts_seconds, side, mid)]
     """
     obi: dict[str, list[tuple[float, float]]] = defaultdict(list)
     sends: dict[str, list[dict]] = defaultdict(list)
     sends_by_cloid: dict[tuple[str, str], dict] = {}
     fills: list[dict] = []
+    shadows: dict[str, list[tuple[float, str, float]]] = defaultdict(list)
 
     with jsonl_path.open() as f:
         for line in f:
@@ -104,7 +130,7 @@ def collect(jsonl_path: Path, start_ts: str) -> dict:
             if ts_str < start_ts:
                 continue
             ev = r.get("event", "")
-            sym = r.get("symbol") or r.get("coin")
+            sym = normalize_symbol(r.get("symbol") or r.get("coin"))
             if not sym:
                 continue
 
@@ -162,8 +188,67 @@ def collect(jsonl_path: Path, start_ts: str) -> dict:
                 except (TypeError, ValueError):
                     continue
 
+            elif ev == "sizing_runtime_shadow":
+                # Captures the contemporaneous mid at the moment the strategy
+                # decided to fire. Matched to subsequent hl_order_submitted by
+                # nearest-prior (symbol, side) within SHADOW_LOOKBACK_S.
+                try:
+                    mid = r.get("mid")
+                    if mid is None:
+                        continue
+                    mid_f = float(mid)
+                    if not math.isfinite(mid_f) or mid_f <= 0:
+                        continue
+                    side = r.get("side")
+                    if side not in ("buy", "sell"):
+                        continue
+                    shadows[sym].append((parse_ts(ts_str).timestamp(), side, mid_f))
+                except (TypeError, ValueError):
+                    continue
+
     return {"obi": dict(obi), "sends": dict(sends),
-            "sends_by_cloid": sends_by_cloid, "fills": fills}
+            "sends_by_cloid": sends_by_cloid, "fills": fills,
+            "shadows": dict(shadows)}
+
+
+def attach_mid_to_sends(
+    sends: dict[str, list[dict]],
+    shadows: dict[str, list[tuple[float, str, float]]],
+    window_s: float = SHADOW_LOOKBACK_S,
+) -> int:
+    """For each send, attach `mid_at_send` from the nearest-prior matching
+    shadow event on (symbol, side) within `window_s` seconds. Mutates `sends`
+    in place. Returns count of sends that received a mid attachment.
+
+    A send without a matching shadow keeps `mid_at_send = None`; the η fit
+    will skip those fills as `no_mid_reference`.
+    """
+    n_attached = 0
+    for sym, sym_sends in sends.items():
+        sym_shadows = sorted(shadows.get(sym, []), key=lambda x: x[0])
+        if not sym_shadows:
+            for s in sym_sends:
+                s["mid_at_send"] = None
+            continue
+        for s in sym_sends:
+            send_ts = s["ts"]
+            send_side = s["side"]
+            best_ts = -1.0
+            best_mid: float | None = None
+            for sh_ts, sh_side, sh_mid in sym_shadows:
+                if sh_ts > send_ts:
+                    break
+                if send_ts - sh_ts > window_s:
+                    continue
+                if sh_side != send_side:
+                    continue
+                if sh_ts > best_ts:
+                    best_ts = sh_ts
+                    best_mid = sh_mid
+            s["mid_at_send"] = best_mid
+            if best_mid is not None:
+                n_attached += 1
+    return n_attached
 
 
 # ── OU fit on OBI ──────────────────────────────────────────────────────────
@@ -236,14 +321,25 @@ def fit_eta(
     fills: list[dict],
     sends: dict[str, list[dict]],
     sends_by_cloid: dict[tuple[str, str], dict],
+    reference: str = "mid",
 ) -> dict:
     """Per-symbol median slippage and η = median_slip_bps / median_notional.
 
-    Adverse convention: positive slip = trader paid worse than send price.
-      buy:  slip_bps = (fill_px - sent_px) / sent_px × 10000
-      sell: slip_bps = (sent_px - fill_px) / sent_px × 10000
+    Reference price for slippage:
+      reference="mid"  → fill_px vs send.mid_at_send (BL-correct; structural).
+                         Drops fills whose send has no matching shadow event.
+      reference="limit"→ fill_px vs send.px  (legacy; pre-walked by IOC ladder).
+
+    Adverse convention: positive slip = trader paid worse than reference.
+      buy:  slip_bps = (fill_px - ref_px) / ref_px × 10000
+      sell: slip_bps = (ref_px - fill_px) / ref_px × 10000
+
+    Also returns a per-symbol counter of fills with no resolvable mid (only
+    populated when reference="mid").
     """
     per_sym: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    per_sym_no_mid: dict[str, int] = defaultdict(int)
+    per_sym_no_send: dict[str, int] = defaultdict(int)
 
     for fill in fills:
         sym = fill["sym"]
@@ -258,15 +354,25 @@ def fit_eta(
             if candidates:
                 sent = max(candidates, key=lambda s: s["ts"])
         if sent is None:
-            continue
-        sent_px = sent["px"]
-        if sent_px <= 0:
+            per_sym_no_send[sym] += 1
             continue
 
+        if reference == "mid":
+            ref_px = sent.get("mid_at_send")
+            if ref_px is None or not math.isfinite(ref_px) or ref_px <= 0:
+                per_sym_no_mid[sym] += 1
+                continue
+        elif reference == "limit":
+            ref_px = sent["px"]
+            if ref_px <= 0:
+                continue
+        else:
+            raise ValueError(f"unknown reference: {reference!r}")
+
         if fill["side"] == "buy":
-            slip_bps = (fill["px"] - sent_px) / sent_px * 10000.0
+            slip_bps = (fill["px"] - ref_px) / ref_px * 10000.0
         elif fill["side"] == "sell":
-            slip_bps = (sent_px - fill["px"]) / sent_px * 10000.0
+            slip_bps = (ref_px - fill["px"]) / ref_px * 10000.0
         else:
             continue
 
@@ -276,12 +382,21 @@ def fit_eta(
         per_sym[sym].append((slip_bps, notional))
 
     out: dict[str, dict] = {}
-    for sym, samples in per_sym.items():
+    all_syms = set(per_sym.keys()) | set(per_sym_no_mid.keys()) | set(per_sym_no_send.keys())
+    for sym in all_syms:
+        samples = per_sym.get(sym, [])
         if len(samples) < N_MIN_ETA:
-            out[sym] = {"status": "thin_sample", "n_pairs": len(samples),
-                        "median_slip_bps": None, "median_notional": None,
-                        "eta_bps_per_dollar": None,
-                        "p25_slip_bps": None, "p75_slip_bps": None}
+            out[sym] = {
+                "status": "thin_sample",
+                "n_pairs": len(samples),
+                "median_slip_bps": None,
+                "median_notional": None,
+                "eta_bps_per_dollar": None,
+                "p25_slip_bps": None,
+                "p75_slip_bps": None,
+                "n_no_mid": per_sym_no_mid.get(sym, 0),
+                "n_no_send": per_sym_no_send.get(sym, 0),
+            }
             continue
         slips = [s[0] for s in samples]
         notionals = [s[1] for s in samples]
@@ -296,6 +411,8 @@ def fit_eta(
             "eta_bps_per_dollar": eta,
             "p25_slip_bps": percentile(slips, 0.25),
             "p75_slip_bps": percentile(slips, 0.75),
+            "n_no_mid": per_sym_no_mid.get(sym, 0),
+            "n_no_send": per_sym_no_send.get(sym, 0),
         }
     return out
 
@@ -361,6 +478,17 @@ def main() -> int:
             "fits are unaffected by this flag (they come from signal_tick.obi)."
         ),
     )
+    ap.add_argument(
+        "--reference",
+        choices=("mid", "limit"),
+        default="mid",
+        help=(
+            "Reference price for slippage. 'mid' joins each fill to the "
+            "contemporaneous sizing_runtime_shadow.mid (BL-correct, captures "
+            "true temporary impact). 'limit' uses the submitted limit_px "
+            "(legacy; biased by our IOC pre-walk). Default 'mid'."
+        ),
+    )
     args = ap.parse_args()
 
     log_path = Path(args.log)
@@ -385,9 +513,14 @@ def main() -> int:
     sends = data["sends"]
     sends_by_cloid = data["sends_by_cloid"]
     all_fills = data["fills"]
+    shadows = data["shadows"]
+
+    # Attach mid_at_send to every send via nearest-prior shadow event match.
+    n_sends_total = sum(len(v) for v in sends.values())
+    n_sends_with_mid = attach_mid_to_sends(sends, shadows)
+    n_shadows_total = sum(len(v) for v in shadows.values())
 
     n_obi_total = sum(len(v) for v in obi.values())
-    n_sends_total = sum(len(v) for v in sends.values())
     n_fills_all = len(all_fills)
     n_fills_taker = sum(1 for f in all_fills if f.get("crossed"))
     n_fills_maker = n_fills_all - n_fills_taker
@@ -400,24 +533,37 @@ def main() -> int:
     n_fills_eta = len(fills_for_eta)
 
     ou_fits = {sym: fit_ou(series) for sym, series in obi.items()}
-    eta_fits = fit_eta(fills_for_eta, sends, sends_by_cloid)
+    eta_fits = fit_eta(fills_for_eta, sends, sends_by_cloid, reference=args.reference)
     holds = time_in_market(all_fills)
 
     # ── header ─────────────────────────────────────────────────────────────
     now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
-    title_suffix = " — TAKER-ONLY η" if args.taker_only else ""
+    suffix_parts = []
+    if args.reference == "mid":
+        suffix_parts.append("MID-REFERENCED η")
+    elif args.reference == "limit":
+        suffix_parts.append("LIMIT-REFERENCED η")
+    if args.taker_only:
+        suffix_parts.append("TAKER-ONLY")
+    title_suffix = (" — " + " · ".join(suffix_parts)) if suffix_parts else ""
     print(f"# Bechler-Ludkovski (β, σ, η) calibration{title_suffix}")
     print()
     print(f"**Window:** `{start_ts}` → `{now_iso}`")
     print(f"**Source:** `{log_path}` (read-only)")
     print(f"**Excluded:** manual-cloid fills (prefix `{MANUAL_PFX}`)")
+    if args.reference == "mid":
+        print(f"**η reference:** `sizing_runtime_shadow.mid` joined nearest-prior to send (window {SHADOW_LOOKBACK_S}s)")
+    else:
+        print("**η reference:** `hl_order_submitted.limit_px` (legacy — biased by IOC pre-walk)")
     if args.taker_only:
         print("**η filter:** taker fills only (`crossed=true`). β/σ unaffected.")
     print()
     print("| Counter | Value |")
     print("|---|---|")
     print(f"| `signal_tick` obi observations | {n_obi_total:,} |")
+    print(f"| `sizing_runtime_shadow` events | {n_shadows_total:,} |")
     print(f"| `hl_order_submitted` | {n_sends_total:,} |")
+    print(f"|   ↳ with matching shadow.mid | {n_sends_with_mid:,} ({100*n_sends_with_mid/max(n_sends_total,1):.0f}%) |")
     print(f"| `hl_fill_received` (manual excluded) | {n_fills_all:,} |")
     print(f"|   ↳ taker (`crossed=true`) | {n_fills_taker:,} |")
     print(f"|   ↳ maker (`crossed=false`) | {n_fills_maker:,} |")
@@ -502,8 +648,12 @@ def main() -> int:
     print("- β is the OU mean-reversion rate of the OBI process. half-life = ln(2)/β. Use this as the time-scale knob in the BL closed-form (paper: 1409.2618).")
     print("- σ is the OU driving-noise vol; conditioned on β so it's directly comparable across symbols.")
     print("- η is bps of slippage per $1 of notional traded. Adverse-side convention (positive = trader paid more than expected). Linear approximation; the empirical crypto-LOB law is concave (square-root), captured later by 2503.04323.")
+    if args.reference == "mid":
+        print(f"- ✅ Slippage reference is `sizing_runtime_shadow.mid` joined to each send by nearest-prior (symbol, side) within {SHADOW_LOOKBACK_S}s. This is the structural BL-η reference: positive = true temporary impact (spread crossing + book walk).")
+    else:
+        print("- ⚠️ Slippage reference is `limit_px` (legacy). Our IOC ladder pre-walks the limit so even taker fills land inside it; η here is biased toward zero/negative. Re-run with `--reference mid` for the BL-correct calibration.")
     if not args.taker_only:
-        print("- ⚠️  Without `--taker-only`, η is computed across BOTH maker and taker fills. Maker fills produce structurally negative η (you capture the spread, not pay it). For Bechler-Ludkovski use, re-run with `--taker-only` to isolate the true temporary-impact friction term.")
+        print("- ⚠️  Without `--taker-only`, η is computed across BOTH maker and taker fills. Maker fills produce structurally negative η vs mid (you capture the spread, not pay it). For Bechler-Ludkovski use, combine `--reference mid --taker-only`.")
     else:
         print("- ✅ η fit restricted to taker fills (`crossed=true`). Result is the structural temporary-impact coefficient for the BL Riccati formula's spread-crossing branch.")
     print("- median hold (last column) is the empirical FIFO-paired entry→exit duration. Compare to half-life: well-aligned ⇒ OU model consistent with strategy turnover.")
