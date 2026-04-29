@@ -53,6 +53,18 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from math_core.fill_model import (
+    FillRecord,
+    MicrostructureParams,
+    MicrostructureState,
+    QuoteState,
+    execute_ioc,
+    init_state,
+    post_quote,
+    resolve_markout,
+    step_environment,
+    step_quote_and_fills,
+)
 from math_core.quoter_policy import (
     ExecutionIntent,
     OrderType,
@@ -247,6 +259,212 @@ def run_scenario(
     }
 
 
+# ── Microstructure_v1 path ───────────────────────────────────────────────
+
+
+def _resolve_aged_markouts(
+    pending: list[FillRecord],
+    resolved: list[FillRecord],
+    state: MicrostructureState,
+    params: MicrostructureParams,
+) -> None:
+    still: list[FillRecord] = []
+    for f in pending:
+        if state.t - f.t >= params.markout_horizon_s:
+            resolve_markout(f, state.mid)
+            resolved.append(f)
+        else:
+            still.append(f)
+    pending[:] = still
+
+
+def run_scenario_microstructure(
+    label: str,
+    *,
+    scheduler_name: str,
+    scheduler_kwargs: dict,
+    initial_inventory: float,
+    horizon_s: float,
+    dt_s: float,
+    mid0: float,
+    seeds: list[int],
+    params: QuoterParams,
+    completion_tol_dollars: float,
+    ms_params: MicrostructureParams,
+) -> dict:
+    """Microstructure_v1 driver: queue position, partial fills, AR(1) OBI,
+    AR(1) spread, post-fill markout. Drives the quoter unchanged."""
+
+    per_seed_results: list[dict] = []
+    per_seed_markouts: list[dict] = []
+
+    for seed in seeds:
+        rng = random.Random(seed)
+        ms_state = init_state(mid0, ms_params)
+        q_t = initial_inventory
+        sign0 = 1.0 if initial_inventory >= 0 else -1.0
+
+        regime_counts = {Regime.PASSIVE: 0, Regime.TOUCH: 0, Regime.CATCHUP: 0}
+        maker_fills = 0
+        taker_fills = 0
+        partial_fill_count = 0
+        sign_crossings = 0
+        max_abs_e = 0.0
+        max_behind_e = 0.0
+        completion_step: Optional[int] = None
+        forced_flush = False
+        prev_q_sign = 1.0 if q_t > 0 else (-1.0 if q_t < 0 else 0.0)
+
+        quote = QuoteState()
+        pending_markouts: list[FillRecord] = []
+        all_fills: list[FillRecord] = []
+        n_steps = int(round(horizon_s / dt_s))
+
+        for i in range(n_steps + 1):
+            if i > 0:
+                step_environment(ms_state, ms_params, dt_s, rng)
+            t_clamped = min(ms_state.t, horizon_s)
+
+            q_star = get_target_inventory(
+                scheduler_name,
+                initial_inventory,
+                horizon_s,
+                t_clamped,
+                **scheduler_kwargs,
+            )
+            inp = QuoterInputs(
+                t=t_clamped,
+                T=horizon_s,
+                q_t=q_t,
+                q_star_t=q_star,
+                mid=ms_state.mid,
+                touch_spread_bps=ms_state.spread_bps,
+                y_toxicity=ms_state.y_obi,
+                initial_inventory=initial_inventory,
+            )
+            intent = build_intent(inp, params)
+            regime_counts[intent.regime] += 1
+            max_abs_e = max(max_abs_e, abs(intent.e_t))
+            max_behind_e = max(max_behind_e, max(0.0, intent.e_t))
+
+            if intent.side is Side.HOLD or intent.clip_size <= 0:
+                if completion_step is None and abs(q_t) <= completion_tol_dollars:
+                    completion_step = i
+                if i == n_steps and abs(q_t) > completion_tol_dollars:
+                    forced_flush = True
+                    q_t = 0.0
+                _resolve_aged_markouts(pending_markouts, all_fills, ms_state, ms_params)
+                continue
+
+            remaining = abs(q_t)
+            if intent.order_type is OrderType.IOC:
+                if quote.posted:
+                    quote = QuoteState()
+                ioc_fills = execute_ioc(intent, ms_state, ms_params)
+                for f in ioc_fills:
+                    f.size = min(f.size, remaining)
+                    remaining -= f.size
+                    if f.size <= 0:
+                        continue
+                    f.regime = intent.regime.value
+                    q_t -= sign0 * f.size
+                    taker_fills += 1
+                    pending_markouts.append(f)
+            else:
+                desired_delta = (
+                    intent.delta_a_bps if intent.side is Side.SELL else intent.delta_b_bps
+                )
+                if desired_delta is None:
+                    desired_delta = 0.0
+                if (
+                    not quote.posted
+                    or quote.side is not intent.side
+                    or abs(quote.delta_bps - desired_delta) > 0.5
+                ):
+                    quote = post_quote(intent, ms_state, ms_params)
+                quote.residual = min(quote.residual, remaining)
+                if quote.residual <= 0:
+                    quote = QuoteState()
+                else:
+                    quote, step_fills = step_quote_and_fills(
+                        quote, ms_state, ms_params, dt_s, rng
+                    )
+                    for f in step_fills:
+                        f.regime = intent.regime.value
+                        q_t -= sign0 * f.size
+                        maker_fills += 1
+                        pending_markouts.append(f)
+                        if f.size < intent.clip_size - 1e-6:
+                            partial_fill_count += 1
+
+            if abs(q_t) < 1e-6:
+                q_t = 0.0
+            cur_sign = 1.0 if q_t > 0 else (-1.0 if q_t < 0 else 0.0)
+            if prev_q_sign != 0.0 and cur_sign != 0.0 and cur_sign != prev_q_sign:
+                sign_crossings += 1
+            prev_q_sign = cur_sign if cur_sign != 0.0 else prev_q_sign
+
+            if completion_step is None and abs(q_t) <= completion_tol_dollars:
+                completion_step = i
+
+            _resolve_aged_markouts(pending_markouts, all_fills, ms_state, ms_params)
+
+        for f in pending_markouts:
+            resolve_markout(f, ms_state.mid)
+            all_fills.append(f)
+
+        maker_markouts = [
+            f.markout_bps
+            for f in all_fills
+            if f.is_maker and f.markout_bps is not None
+        ]
+        taker_markouts = [
+            f.markout_bps
+            for f in all_fills
+            if (not f.is_maker) and f.markout_bps is not None
+        ]
+        maker_markout_mean = (
+            sum(maker_markouts) / len(maker_markouts) if maker_markouts else None
+        )
+        taker_markout_mean = (
+            sum(taker_markouts) / len(taker_markouts) if taker_markouts else None
+        )
+
+        total_steps = sum(regime_counts.values())
+        per_seed_results.append({
+            "seed": seed,
+            "max_abs_e": max_abs_e,
+            "max_behind_e": max_behind_e,
+            "terminal_q": q_t,
+            "sign_crossings": sign_crossings,
+            "catchup_step_fraction": regime_counts[Regime.CATCHUP] / total_steps,
+            "passive_step_fraction": regime_counts[Regime.PASSIVE] / total_steps,
+            "touch_step_fraction": regime_counts[Regime.TOUCH] / total_steps,
+            "maker_fill_count": maker_fills,
+            "taker_fill_count": taker_fills,
+            "partial_fill_count": partial_fill_count,
+            "forced_terminal_flush": forced_flush,
+            "completion_time_s": (completion_step * dt_s) if completion_step is not None else None,
+            "maker_markout_bps_mean": maker_markout_mean,
+            "taker_markout_bps_mean": taker_markout_mean,
+        })
+
+    return {
+        "label": label,
+        "scenario": {
+            "obi_target": ms_params.obi_target,
+            "mid_drift_y_coupling_bps": ms_params.mid_drift_y_coupling_bps,
+            "obi_phi": ms_params.obi_phi,
+            "obi_vol": ms_params.obi_vol,
+            "aggressor_arrival_rate_per_s": ms_params.aggressor_arrival_rate_per_s,
+            "touch_depth_usd": ms_params.touch_depth_usd,
+            "markout_horizon_s": ms_params.markout_horizon_s,
+        },
+        "per_seed": per_seed_results,
+        "aggregate": _aggregate(per_seed_results),
+    }
+
+
 def _aggregate(per_seed: list[dict]) -> dict:
     keys_numeric = (
         "max_abs_e",
@@ -259,12 +477,37 @@ def _aggregate(per_seed: list[dict]) -> dict:
         "maker_fill_count",
         "taker_fill_count",
     )
-    out = {}
+    out: dict = {}
     for k in keys_numeric:
         vals = [r[k] for r in per_seed]
         out[f"{k}_mean"] = sum(vals) / len(vals)
         out[f"{k}_min"] = min(vals)
         out[f"{k}_max"] = max(vals)
+
+    if per_seed and "partial_fill_count" in per_seed[0]:
+        vals = [r["partial_fill_count"] for r in per_seed]
+        out["partial_fill_count_mean"] = sum(vals) / len(vals)
+        out["partial_fill_count_min"] = min(vals)
+        out["partial_fill_count_max"] = max(vals)
+
+    if per_seed and "maker_markout_bps_mean" in per_seed[0]:
+        maker_vals = [
+            r["maker_markout_bps_mean"]
+            for r in per_seed
+            if r["maker_markout_bps_mean"] is not None
+        ]
+        out["maker_markout_bps_mean_mean"] = (
+            sum(maker_vals) / len(maker_vals) if maker_vals else None
+        )
+        out["maker_markout_bps_seed_count"] = len(maker_vals)
+        taker_vals = [
+            r["taker_markout_bps_mean"]
+            for r in per_seed
+            if r["taker_markout_bps_mean"] is not None
+        ]
+        out["taker_markout_bps_mean_mean"] = (
+            sum(taker_vals) / len(taker_vals) if taker_vals else None
+        )
 
     completion_vals = [r["completion_time_s"] for r in per_seed if r["completion_time_s"] is not None]
     out["completion_time_s_mean"] = (
@@ -339,6 +582,81 @@ def evaluate_acceptance(
     }
 
 
+def evaluate_acceptance_v2(
+    results: dict,
+    initial_inventory: float,
+    completion_tol_dollars: float,
+    markout_floor_bps: float = -2.0,
+) -> dict:
+    """6+3 bar for microstructure_v1. Reuses the original 6, adds:
+      7. maker markout not catastrophically negative in neutral/favorable
+      8. toxic markout < favorable markout, AND quoter escalates more
+      9. partial-fill tracking remains bounded without forced flush
+    """
+    base = evaluate_acceptance(results, initial_inventory, completion_tol_dollars)
+    neutral = results["scenarios"]["neutral"]["aggregate"]
+    toxic = results["scenarios"]["toxic"]["aggregate"]
+    favorable = results["scenarios"]["favorable"]["aggregate"]
+
+    n_mark = neutral.get("maker_markout_bps_mean_mean")
+    f_mark = favorable.get("maker_markout_bps_mean_mean")
+    t_mark = toxic.get("maker_markout_bps_mean_mean")
+
+    crit_7 = (
+        n_mark is not None
+        and f_mark is not None
+        and n_mark >= markout_floor_bps
+        and f_mark >= markout_floor_bps
+    )
+
+    tox_escalation = (
+        toxic["touch_step_fraction_mean"] + toxic["catchup_step_fraction_mean"]
+    )
+    fav_escalation = (
+        favorable["touch_step_fraction_mean"] + favorable["catchup_step_fraction_mean"]
+    )
+    crit_8 = (
+        t_mark is not None
+        and f_mark is not None
+        and t_mark < f_mark
+        and tox_escalation > fav_escalation
+    )
+
+    bound = 0.50 * abs(initial_inventory)
+    crit_9 = (
+        neutral["max_behind_e_max"] <= bound
+        and favorable["max_behind_e_max"] <= bound
+        and neutral["forced_terminal_flush_count"] == 0
+        and favorable["forced_terminal_flush_count"] == 0
+        and neutral.get("partial_fill_count_mean", 0) > 0
+    )
+
+    out = dict(base)
+    out["crit_7_markout_not_catastrophic"] = crit_7
+    out["crit_8_toxic_worse_markout_and_more_escalation"] = crit_8
+    out["crit_9_partial_fill_tracking_bounded"] = crit_9
+    out["all_pass"] = all(
+        [
+            base["crit_1_tracking_bounded"],
+            base["crit_2_no_sign_crossing"],
+            base["crit_3_terminal_completion"],
+            base["crit_4_toxic_faster_than_favorable"],
+            base["crit_5_maker_share_in_non_catchup"],
+            base["crit_6_no_forced_flush_normal"],
+            crit_7,
+            crit_8,
+            crit_9,
+        ]
+    )
+    out["details"]["markout_floor_bps"] = markout_floor_bps
+    out["details"]["neutral_maker_markout_bps"] = n_mark
+    out["details"]["favorable_maker_markout_bps"] = f_mark
+    out["details"]["toxic_maker_markout_bps"] = t_mark
+    out["details"]["toxic_escalation_share"] = tox_escalation
+    out["details"]["favorable_escalation_share"] = fav_escalation
+    return out
+
+
 # ── Driver ────────────────────────────────────────────────────────────────
 
 
@@ -362,64 +680,117 @@ def _run_family(
     mid0: float,
     completion_tol_dollars: float,
     seeds: list[int],
+    fill_model: str = "simple",
 ) -> dict:
-    """Run all three OFI scenarios for one scheduler family. Returns the
-    family record (scenarios + acceptance + scheduler metadata)."""
+    """Run all three OFI scenarios for one scheduler family. Dispatches to
+    the simple Bernoulli fill model (Tasks 19/20) or microstructure_v1
+    (Task 21). Returns the family record."""
 
-    common = dict(
-        scheduler_name=scheduler_name,
-        scheduler_kwargs=scheduler_kwargs,
-        initial_inventory=initial_inventory,
-        horizon_s=horizon_s,
-        dt_s=dt_s,
-        mid0=mid0,
-        seeds=seeds,
-        params=params,
-        completion_tol_dollars=completion_tol_dollars,
-    )
+    if fill_model == "simple":
+        common = dict(
+            scheduler_name=scheduler_name,
+            scheduler_kwargs=scheduler_kwargs,
+            initial_inventory=initial_inventory,
+            horizon_s=horizon_s,
+            dt_s=dt_s,
+            mid0=mid0,
+            seeds=seeds,
+            params=params,
+            completion_tol_dollars=completion_tol_dollars,
+        )
+        scenarios = {
+            "neutral": run_scenario(
+                "neutral OFI, normal fills",
+                y_toxicity=0.0,
+                drift_bps_per_step=0.0,
+                vol_bps_per_step=0.5,
+                fill_A=1.0,
+                fill_k=0.5,
+                fill_alpha_y=0.0,
+                **common,
+            ),
+            "toxic": run_scenario(
+                "toxic OFI, weak passive fills",
+                y_toxicity=0.6,
+                drift_bps_per_step=-0.05,
+                vol_bps_per_step=0.5,
+                fill_A=1.0,
+                fill_k=0.5,
+                fill_alpha_y=2.0,
+                **common,
+            ),
+            "favorable": run_scenario(
+                "favorable OFI, strong passive fills",
+                y_toxicity=-0.4,
+                drift_bps_per_step=0.02,
+                vol_bps_per_step=0.5,
+                fill_A=1.0,
+                fill_k=0.5,
+                fill_alpha_y=0.0,
+                **common,
+            ),
+        }
+        record = {
+            "scheduler_family": scheduler_name,
+            "scheduler_kwargs": scheduler_kwargs,
+            "fill_model": "simple",
+            "scenarios": scenarios,
+        }
+        record["acceptance"] = evaluate_acceptance(
+            {"scenarios": scenarios}, initial_inventory, completion_tol_dollars
+        )
+        return record
 
-    scenarios = {
-        "neutral": run_scenario(
-            "neutral OFI, normal fills",
-            y_toxicity=0.0,
-            drift_bps_per_step=0.0,
-            vol_bps_per_step=0.5,
-            fill_A=1.0,
-            fill_k=0.5,
-            fill_alpha_y=0.0,
-            **common,
-        ),
-        "toxic": run_scenario(
-            "toxic OFI, weak passive fills",
-            y_toxicity=0.6,
-            drift_bps_per_step=-0.05,
-            vol_bps_per_step=0.5,
-            fill_A=1.0,
-            fill_k=0.5,
-            fill_alpha_y=2.0,
-            **common,
-        ),
-        "favorable": run_scenario(
-            "favorable OFI, strong passive fills",
-            y_toxicity=-0.4,
-            drift_bps_per_step=0.02,
-            vol_bps_per_step=0.5,
-            fill_A=1.0,
-            fill_k=0.5,
-            fill_alpha_y=0.0,
-            **common,
-        ),
-    }
+    if fill_model == "microstructure_v1":
+        ms_common = dict(
+            scheduler_name=scheduler_name,
+            scheduler_kwargs=scheduler_kwargs,
+            initial_inventory=initial_inventory,
+            horizon_s=horizon_s,
+            dt_s=dt_s,
+            mid0=mid0,
+            seeds=seeds,
+            params=params,
+            completion_tol_dollars=completion_tol_dollars,
+        )
+        scenarios = {
+            "neutral": run_scenario_microstructure(
+                "neutral OFI (μstruct v1)",
+                ms_params=MicrostructureParams(
+                    obi_target=0.0,
+                    mid_drift_y_coupling_bps=1.0,
+                ),
+                **ms_common,
+            ),
+            "toxic": run_scenario_microstructure(
+                "toxic OFI (μstruct v1)",
+                ms_params=MicrostructureParams(
+                    obi_target=0.6,
+                    mid_drift_y_coupling_bps=1.0,
+                ),
+                **ms_common,
+            ),
+            "favorable": run_scenario_microstructure(
+                "favorable OFI (μstruct v1)",
+                ms_params=MicrostructureParams(
+                    obi_target=-0.4,
+                    mid_drift_y_coupling_bps=1.0,
+                ),
+                **ms_common,
+            ),
+        }
+        record = {
+            "scheduler_family": scheduler_name,
+            "scheduler_kwargs": scheduler_kwargs,
+            "fill_model": "microstructure_v1",
+            "scenarios": scenarios,
+        }
+        record["acceptance"] = evaluate_acceptance_v2(
+            {"scenarios": scenarios}, initial_inventory, completion_tol_dollars
+        )
+        return record
 
-    record = {
-        "scheduler_family": scheduler_name,
-        "scheduler_kwargs": scheduler_kwargs,
-        "scenarios": scenarios,
-    }
-    record["acceptance"] = evaluate_acceptance(
-        {"scenarios": scenarios}, initial_inventory, completion_tol_dollars
-    )
-    return record
+    raise ValueError(f"unknown fill_model {fill_model!r}")
 
 
 def _print_family(name: str, record: dict) -> None:
@@ -456,16 +827,36 @@ def _print_family(name: str, record: dict) -> None:
             f"  sign_crossings_max={agg['sign_crossings_max']}  "
             f"forced_flushes={agg['forced_terminal_flush_count']}"
         )
+        if "partial_fill_count_mean" in agg:
+            print(
+                f"  partial_fills (mean/max): "
+                f"{agg['partial_fill_count_mean']:.1f} / "
+                f"{agg['partial_fill_count_max']}"
+            )
+        if "maker_markout_bps_mean_mean" in agg:
+            mm = agg["maker_markout_bps_mean_mean"]
+            tm = agg.get("taker_markout_bps_mean_mean")
+            mm_str = f"{mm:+.3f}" if mm is not None else "n/a"
+            tm_str = f"{tm:+.3f}" if tm is not None else "n/a"
+            print(f"  markout_bps (maker/taker): {mm_str} / {tm_str}")
     a = record["acceptance"]
     print("\n  ACCEPTANCE:")
-    for k in (
+    crit_keys = [
         "crit_1_tracking_bounded",
         "crit_2_no_sign_crossing",
         "crit_3_terminal_completion",
         "crit_4_toxic_faster_than_favorable",
         "crit_5_maker_share_in_non_catchup",
         "crit_6_no_forced_flush_normal",
+    ]
+    for k in (
+        "crit_7_markout_not_catastrophic",
+        "crit_8_toxic_worse_markout_and_more_escalation",
+        "crit_9_partial_fill_tracking_bounded",
     ):
+        if k in a:
+            crit_keys.append(k)
+    for k in crit_keys:
         mark = "PASS" if a[k] else "FAIL"
         print(f"    [{mark}] {k}")
     print(f"    ALL_PASS = {a['all_pass']}")
@@ -487,6 +878,12 @@ def main() -> int:
     ap.add_argument("--rho", type=float, default=2.0, help="exponential urgency")
     ap.add_argument("--kappa", type=float, default=2.0, help="sinh-ratio shape")
     ap.add_argument("--seeds", type=int, default=10)
+    ap.add_argument(
+        "--fill-model",
+        choices=("simple", "microstructure_v1"),
+        default="simple",
+        help="fill simulation model (Tasks 19/20 default = simple; Task 21 = microstructure_v1)",
+    )
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
@@ -512,6 +909,7 @@ def main() -> int:
         mid0=mid0,
         completion_tol_dollars=completion_tol_dollars,
         seeds=seeds,
+        fill_model=args.fill_model,
     )
 
     git_sha = _git_sha()
@@ -530,7 +928,12 @@ def main() -> int:
     }
 
     if args.all_families:
-        out_path = args.out or (ROOT / "autoresearch_gated/quoter_family_matrix.json")
+        if args.out is not None:
+            out_path = args.out
+        elif args.fill_model == "microstructure_v1":
+            out_path = ROOT / "autoresearch_gated/quoter_family_microstructure_matrix.json"
+        else:
+            out_path = ROOT / "autoresearch_gated/quoter_family_matrix.json"
         order = ["twap", "exponential", "sinh_ratio"]
         families: dict[str, dict] = {}
         first_failure: Optional[str] = None
@@ -562,7 +965,12 @@ def main() -> int:
 
         results = {
             "kind": "quoter_family_matrix",
-            "task": "task_20_family_sweep",
+            "task": (
+                "task_21_family_microstructure_v1"
+                if args.fill_model == "microstructure_v1"
+                else "task_20_family_sweep"
+            ),
+            "fill_model": args.fill_model,
             **base_meta,
             "family_kwargs": family_kwargs,
             "families": families,
@@ -577,16 +985,27 @@ def main() -> int:
         )
         return 0 if decision["all_families_passed"] else 1
 
-    # single-family path (Task 19 legacy default)
-    out_path = args.out or (ROOT / "autoresearch_gated/quoter_tracking_matrix.json")
+    # single-family path
+    if args.out is not None:
+        out_path = args.out
+    elif args.fill_model == "microstructure_v1":
+        out_path = ROOT / "autoresearch_gated/quoter_microstructure_matrix.json"
+    else:
+        out_path = ROOT / "autoresearch_gated/quoter_tracking_matrix.json"
     record = _run_family(
         scheduler_name=args.scheduler,
         scheduler_kwargs=family_kwargs[args.scheduler],
         **common,
     )
+    task_tag = (
+        f"task_21_microstructure_{args.scheduler}"
+        if args.fill_model == "microstructure_v1"
+        else f"task_19_smoke_{args.scheduler}"
+    )
     results = {
         "kind": "quoter_tracking_matrix",
-        "task": f"task_19_smoke_{args.scheduler}",
+        "task": task_tag,
+        "fill_model": args.fill_model,
         **base_meta,
         **record,
     }
