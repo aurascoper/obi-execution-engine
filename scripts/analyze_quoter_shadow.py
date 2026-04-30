@@ -137,6 +137,242 @@ def _lookup_future_mid(
     return None
 
 
+# ── Soak-window contamination labeller (operator-supplied checksum) ─────
+
+
+def compute_soak_label(
+    log_path: Path,
+    soak_start_iso: str,
+    soak_end_iso: Optional[str] = None,
+    api_fills_path: Optional[Path] = None,
+    per_trade_cap_usd: float = 75.0,
+    regime_pause_seconds: float = 10800.0,
+    toxicity_threshold: float = 0.30,
+) -> dict:
+    """Three-level (clean / diagnostic / invalid) classifier for whether
+    the soak window is promotable for Gate 3.
+
+    Computes four quantities:
+      m         = manual-opened PnL share / total realized PnL
+      e         = manual-opened exit count / total exit count
+      r         = time in regime pause / total soak time
+      n_toxic   = fresh engine-opened entries in toxic OBI bucket
+
+    Heuristics for "manual-opened" attribution (tag-only logs available):
+      - a symbol is manual-opened in the window if ANY single fill has
+        |notional| > 2 × per_trade_cap_usd (default 2 × $75 = $150),
+        OR if the fill stream shows fills on a symbol that has zero
+        engine-side entry_signal events in the window.
+
+    Acceptance thresholds (operator-supplied):
+      clean:      m < 0.10  AND e < 0.15  AND r < 0.30  AND n_toxic ≥ 30
+      diagnostic: any of  0.10 ≤ m < 0.35
+                          0.15 ≤ e < 0.40
+                          0.30 ≤ r < 0.60
+                          10 ≤ n_toxic < 30
+      invalid:    any of  m ≥ 0.35
+                          e ≥ 0.40
+                          r ≥ 0.60
+                          n_toxic < 10
+
+    Overrides:
+      - if m_earnings ≥ 0.25, force at least 'diagnostic'
+      - if m ≥ 0.50 OR e ≥ 0.50, force 'invalid'
+    """
+    soak_start = datetime.fromisoformat(soak_start_iso.replace("Z", "+00:00"))
+    soak_end = (
+        datetime.fromisoformat(soak_end_iso.replace("Z", "+00:00"))
+        if soak_end_iso
+        else datetime.now(timezone.utc)
+    )
+    soak_total_s = max(1.0, (soak_end - soak_start).total_seconds())
+
+    entry_signals_per_symbol: dict[str, int] = defaultdict(int)
+    exit_signals_per_symbol: dict[str, list[dict]] = defaultdict(list)
+    toxic_bucket_engine_entries = 0
+    regime_pause_trips: list[float] = []
+    quoter_failed = 0
+
+    with log_path.open() as f:
+        for line in f:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            ts = d.get("timestamp", "")
+            try:
+                t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if t < soak_start or t > soak_end:
+                continue
+            ev = d.get("event")
+            sym = d.get("symbol") or d.get("coin") or ""
+            if ev == "entry_signal":
+                entry_signals_per_symbol[sym] += 1
+                obi = d.get("obi")
+                if obi is not None:
+                    try:
+                        obi_f = float(obi)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(obi_f) >= toxicity_threshold:
+                        toxic_bucket_engine_entries += 1
+            elif ev == "exit_signal":
+                exit_signals_per_symbol[sym].append(d)
+            elif ev == "risk_gate_regime_pause":
+                regime_pause_trips.append(t.timestamp())
+            elif ev == "quoter_shadow_failed":
+                quoter_failed += 1
+
+    paused_intervals: list[tuple[float, float]] = []
+    pause_until = 0.0
+    for trip_t in sorted(regime_pause_trips):
+        new_until = trip_t + regime_pause_seconds
+        if trip_t >= pause_until:
+            if pause_until > 0:
+                paused_intervals.append((paused_intervals[-1][0] if paused_intervals else trip_t, pause_until))
+            paused_intervals.append((trip_t, new_until))
+        else:
+            paused_intervals[-1] = (paused_intervals[-1][0], new_until)
+        pause_until = new_until
+    soak_end_ts = soak_end.timestamp()
+    soak_start_ts = soak_start.timestamp()
+    pause_seconds = 0.0
+    for s_t, e_t in paused_intervals:
+        s_clip = max(s_t, soak_start_ts)
+        e_clip = min(e_t, soak_end_ts)
+        if e_clip > s_clip:
+            pause_seconds += e_clip - s_clip
+
+    fills_by_coin: dict[str, list[dict]] = defaultdict(list)
+    if api_fills_path and api_fills_path.exists():
+        try:
+            payload = json.loads(api_fills_path.read_text())
+            fills = payload if isinstance(payload, list) else payload.get("fills", [])
+            for fill in fills:
+                ts_ms = fill.get("time")
+                if ts_ms is None:
+                    continue
+                try:
+                    t = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
+                except Exception:
+                    continue
+                if t < soak_start or t > soak_end:
+                    continue
+                coin = fill.get("coin")
+                if coin:
+                    fills_by_coin[coin].append(fill)
+        except Exception:
+            pass
+
+    manual_coins: set[str] = set()
+    for coin, fills in fills_by_coin.items():
+        for f in fills:
+            try:
+                sz = abs(float(f.get("sz", 0)))
+                px = abs(float(f.get("px", 0)))
+                if sz * px > 2 * per_trade_cap_usd:
+                    manual_coins.add(coin)
+                    break
+            except Exception:
+                continue
+
+    for coin in fills_by_coin:
+        eng_sym_candidates = (coin, coin + "/USD", coin + "/USDC")
+        if not any(c in entry_signals_per_symbol for c in eng_sym_candidates):
+            manual_coins.add(coin)
+
+    earnings_known = {"xyz:GOOGL", "xyz:META", "xyz:AMZN", "xyz:MSFT", "xyz:LLY", "xyz:AAPL", "xyz:SNDK"}
+    earnings_coins = manual_coins & earnings_known
+
+    total_pnl = 0.0
+    manual_pnl = 0.0
+    earnings_pnl = 0.0
+    for coin, fills in fills_by_coin.items():
+        coin_pnl = sum(float(f.get("closedPnl", 0)) for f in fills)
+        total_pnl += coin_pnl
+        if coin in manual_coins:
+            manual_pnl += coin_pnl
+        if coin in earnings_coins:
+            earnings_pnl += coin_pnl
+
+    total_exits = sum(len(v) for v in exit_signals_per_symbol.values())
+    manual_exits = sum(
+        len(v) for sym, v in exit_signals_per_symbol.items()
+        if sym.replace("/USD", "").replace("/USDC", "") in manual_coins
+    )
+
+    m = (manual_pnl / total_pnl) if abs(total_pnl) > 1e-9 else 0.0
+    m_earnings = (earnings_pnl / total_pnl) if abs(total_pnl) > 1e-9 else 0.0
+    e = (manual_exits / total_exits) if total_exits > 0 else 0.0
+    r = pause_seconds / soak_total_s
+    n_toxic = toxic_bucket_engine_entries
+
+    if abs(m) >= 0.50 or e >= 0.50:
+        label = "invalid"
+        reason = "override: |m|≥0.50 or e≥0.50"
+    elif (
+        abs(m) >= 0.35
+        or e >= 0.40
+        or r >= 0.60
+        or n_toxic < 10
+    ):
+        label = "invalid"
+        reason = "any-of: |m|≥0.35 or e≥0.40 or r≥0.60 or n_toxic<10"
+    elif (
+        abs(m) >= 0.10
+        or e >= 0.15
+        or r >= 0.30
+        or n_toxic < 30
+    ):
+        label = "diagnostic"
+        reason = "any-of: 0.10≤|m|<0.35 or 0.15≤e<0.40 or 0.30≤r<0.60 or 10≤n_toxic<30"
+    else:
+        label = "clean"
+        reason = "all thresholds satisfied"
+
+    if abs(m_earnings) >= 0.25 and label == "clean":
+        label = "diagnostic"
+        reason += " | earnings override: |m_earnings|≥0.25 forces ≥diagnostic"
+
+    return {
+        "label": label,
+        "reason": reason,
+        "metrics": {
+            "m": m,
+            "m_earnings": m_earnings,
+            "e": e,
+            "r": r,
+            "n_toxic": n_toxic,
+            "quoter_shadow_failed": quoter_failed,
+        },
+        "raw": {
+            "manual_pnl": manual_pnl,
+            "earnings_pnl": earnings_pnl,
+            "total_pnl": total_pnl,
+            "manual_exits": manual_exits,
+            "total_exits": total_exits,
+            "regime_pause_seconds": pause_seconds,
+            "soak_total_seconds": soak_total_s,
+            "manual_coins": sorted(manual_coins),
+            "earnings_coins": sorted(earnings_coins),
+        },
+        "thresholds": {
+            "clean": "|m|<0.10 AND e<0.15 AND r<0.30 AND n_toxic≥30",
+            "diagnostic": "any of 0.10≤|m|<0.35, 0.15≤e<0.40, 0.30≤r<0.60, 10≤n_toxic<30",
+            "invalid": "any of |m|≥0.35, e≥0.40, r≥0.60, n_toxic<10",
+            "earnings_override": "|m_earnings|≥0.25 forces ≥diagnostic",
+            "hard_override": "|m|≥0.50 or e≥0.50 forces invalid",
+        },
+        "soak_window": {
+            "start": soak_start.isoformat(),
+            "end": soak_end.isoformat(),
+            "duration_s": soak_total_s,
+        },
+    }
+
+
 def evaluate_gate_3(report: dict) -> dict:
     """Apply the four-criterion Gate 3 decision rule from the operator's
     Task 25 spec:
@@ -353,6 +589,13 @@ def main() -> int:
         default=ROOT / "autoresearch_gated/quoter_shadow_distributions.json",
     )
     ap.add_argument("--markout-horizon-s", type=float, default=60.0)
+    ap.add_argument("--soak-start", type=str, default=None,
+                    help="ISO8601 soak window start (default: first hl_engine_start in log)")
+    ap.add_argument("--soak-end", type=str, default=None,
+                    help="ISO8601 soak window end (default: now)")
+    ap.add_argument("--api-fills", type=Path, default=None,
+                    help="optional JSON file containing userFillsByTime payload for PnL attribution")
+    ap.add_argument("--per-trade-cap-usd", type=float, default=75.0)
     args = ap.parse_args()
 
     print(f"Reading {args.log}...")
@@ -373,6 +616,32 @@ def main() -> int:
         shadow_events, fills, mid_by_sym, markout_horizon_s=args.markout_horizon_s
     )
     report["acceptance"] = evaluate_gate_3(report)
+
+    soak_start = args.soak_start
+    if soak_start is None:
+        latest_start = None
+        with args.log.open() as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("event") == "hl_engine_start":
+                    latest_start = d.get("timestamp")
+        soak_start = latest_start
+    if soak_start is None and shadow_events:
+        soak_start = shadow_events[0].get("timestamp")
+    if soak_start:
+        try:
+            report["soak_label"] = compute_soak_label(
+                args.log,
+                soak_start_iso=soak_start,
+                soak_end_iso=args.soak_end,
+                api_fills_path=args.api_fills,
+                per_trade_cap_usd=args.per_trade_cap_usd,
+            )
+        except Exception as exc:
+            report["soak_label"] = {"label": "error", "error": repr(exc)}
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2))
@@ -427,6 +696,39 @@ def main() -> int:
         print(f"  [{mark:>12}] {k}")
     print(f"  ALL_PASS = {a['all_pass']}")
     print(f"  details: {json.dumps(a['details'], indent=4)}")
+
+    sl = report.get("soak_label")
+    if sl and "metrics" in sl:
+        m_metrics = sl["metrics"]
+        m_raw = sl["raw"]
+        print("\n" + "=" * 80)
+        print(f"SOAK CONTAMINATION LABEL = {sl['label'].upper()}")
+        print("=" * 80)
+        print(f"  reason: {sl['reason']}")
+        print(f"  window: {sl['soak_window']['start']}  →  {sl['soak_window']['end']}")
+        print(f"          duration = {sl['soak_window']['duration_s']/3600.0:.2f} h")
+        print()
+        print(f"  m (manual PnL share):       {m_metrics['m']:+.3f}   "
+              f"manual=${m_raw['manual_pnl']:+.2f} / total=${m_raw['total_pnl']:+.2f}")
+        print(f"  m_earnings (earnings PnL):  {m_metrics['m_earnings']:+.3f}   "
+              f"earnings=${m_raw['earnings_pnl']:+.2f}")
+        print(f"  e (manual exit share):      {m_metrics['e']:.3f}   "
+              f"manual_exits={m_raw['manual_exits']} / total_exits={m_raw['total_exits']}")
+        print(f"  r (regime pause share):     {m_metrics['r']:.3f}   "
+              f"paused={m_raw['regime_pause_seconds']/3600.0:.2f}h / "
+              f"soak={m_raw['soak_total_seconds']/3600.0:.2f}h")
+        print(f"  n_toxic (engine entries):   {m_metrics['n_toxic']}")
+        print(f"  quoter_shadow_failed:       {m_metrics['quoter_shadow_failed']}")
+        print()
+        print(f"  manual coins detected: {m_raw['manual_coins']}")
+        print(f"  earnings coins:        {m_raw['earnings_coins']}")
+        print()
+        if sl["label"] == "clean":
+            print("  → Gate 3 PROMOTABLE if acceptance ALL_PASS")
+        elif sl["label"] == "diagnostic":
+            print("  → Gate 3 NOT PROMOTABLE; useful for sanity checks only")
+        else:
+            print("  → DO NOT USE THIS RUN to judge the quoter")
     return 0
 
 
