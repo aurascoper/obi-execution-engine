@@ -78,6 +78,25 @@ export NOTIONAL_PER_TRADE_OVERRIDE=12
 export MAX_NEW_ENTRIES_PER_SESSION=20
 export HL_SESSION_LOSS_GUARD_USD=50
 
+# ── 4a. Optional USDC-only universe restriction (BOOKA_USDC_ONLY=1) ─────────
+# Per HL docs (verified 2026-05-04 via scripts/probe_book_a_funding.py):
+# unified-account mode unifies USDC across spot + native HL perps + xyz
+# HIP-3 perps. The other HIP-3 builder DEXes (km/flx/vntl/...) require
+# USDH or other collateral assets that Book A does not hold. Attempting
+# orders on those DEXes generates correct venue rejections that can peg
+# MAX_NEW_ENTRIES_PER_SESSION before any USDC-collateralized signal fires
+# (this is exactly what bricked the 2026-05-04 first-launch soak).
+#
+# When BOOKA_USDC_ONLY=1, this block restricts the engine universe to the
+# USDC-collateralized lane only: native HL coins + xyz HIP-3 perps. Run as:
+#   BOOKA_USDC_ONLY=1 ./launch_hl_engine_book_a.sh
+if [[ "${BOOKA_USDC_ONLY:-0}" == "1" ]]; then
+    export HIP3_DEXS="xyz"
+    HIP3_UNIVERSE_USDC_ONLY=$(echo "$HIP3_UNIVERSE" | tr ',' '\n' | grep '^xyz:' | paste -sd ',' -)
+    export HIP3_UNIVERSE="$HIP3_UNIVERSE_USDC_ONLY"
+    echo "  BOOKA_USDC_ONLY=1: restricted to xyz HIP-3 only ($(echo "$HIP3_UNIVERSE" | tr ',' '\n' | wc -l | tr -d ' ') HIP-3 symbols + native HL_UNIVERSE preserved)"
+fi
+
 # ── 5. Sanity print before launch (operator can ctrl-C if anything wrong) ──
 echo
 echo "=================== Book A engine launch ==================="
