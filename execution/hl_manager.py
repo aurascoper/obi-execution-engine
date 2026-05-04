@@ -28,6 +28,7 @@ in the unified risk budget.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -98,9 +99,27 @@ class HyperliquidOrderManager:
             exchange_kwargs["perp_dexs"] = full_dexs
             info_kwargs["perp_dexs"] = full_dexs
 
+        # Optional subaccount/vault routing: when HL_VAULT_ADDRESS is set in
+        # env, the SDK includes vaultAddress in every signed exchange action
+        # so orders/cancels route to the named subaccount or vault. Used for
+        # the Book A engine cutover (signer = master/agent on master, account
+        # acted upon = subaccount). Backwards compatible — when unset, the
+        # Exchange constructor receives no vault_address and behaves as
+        # before (single-account trading on the master).
+        vault_addr = os.environ.get("HL_VAULT_ADDRESS", "").strip()
+        if vault_addr:
+            exchange_kwargs["vault_address"] = vault_addr
+
         self._exchange = Exchange(wallet, mainnet_url, **exchange_kwargs)
         self._info = Info(mainnet_url, **info_kwargs)
         self._builder_dexs = [d for d in (perp_dexs or []) if d]
+
+        if vault_addr:
+            log.info(
+                "hl_manager_vault_routing",
+                vault_address=vault_addr,
+                queries_target=cfg.hl_wallet_address,
+            )
 
         log.info(
             "hl_manager_initialized",
@@ -274,6 +293,18 @@ class HyperliquidOrderManager:
             tag=self.strategy_tag,
             mode=self._mode.value,
         )
+        # Phase 7a: unified latency event used by the RL maker policy's state
+        # encoder. Carries wall-clock only; `api_latency_ms` is reserved for
+        # a future header-based refinement (HL SDK does not surface it today).
+        log.info(
+            "order_rpc_latency",
+            rpc="place_order",
+            symbol=symbol,
+            wall_ms=round(lat_ms, 3),
+            api_latency_ms=None,
+            ok=resp is not None,
+            tag=self.strategy_tag,
+        )
         return resp
 
     # ── Order cancellation ───────────────────────────────────────────────────
@@ -292,21 +323,43 @@ class HyperliquidOrderManager:
                 tag=self.strategy_tag,
             )
             return {"status": "shadow_cancelled", "symbol": symbol, "oid": oid}
+        t0 = time.perf_counter_ns()
         try:
             resp = await asyncio.to_thread(self._exchange.cancel, symbol, int(oid))
         except Exception as exc:
+            lat_ms = (time.perf_counter_ns() - t0) / 1e6
             log.warning(
                 "hl_cancel_rejected",
                 symbol=symbol,
                 oid=oid,
                 error=str(exc),
             )
+            log.info(
+                "order_rpc_latency",
+                rpc="cancel_order",
+                symbol=symbol,
+                wall_ms=round(lat_ms, 3),
+                api_latency_ms=None,
+                ok=False,
+                tag=self.strategy_tag,
+            )
             return None
+        lat_ms = (time.perf_counter_ns() - t0) / 1e6
         log.info(
             "hl_order_cancelled",
             symbol=symbol,
             oid=oid,
+            latency_ms=round(lat_ms, 3),
             resp_status=(resp or {}).get("status"),
+            tag=self.strategy_tag,
+        )
+        log.info(
+            "order_rpc_latency",
+            rpc="cancel_order",
+            symbol=symbol,
+            wall_ms=round(lat_ms, 3),
+            api_latency_ms=None,
+            ok=resp is not None,
             tag=self.strategy_tag,
         )
         return resp
@@ -330,23 +383,45 @@ class HyperliquidOrderManager:
         except Exception as exc:
             log.error("hl_cancel_bad_cloid", cloid=cloid, error=str(exc))
             return None
+        t0 = time.perf_counter_ns()
         try:
             resp = await asyncio.to_thread(
                 self._exchange.cancel_by_cloid, symbol, cloid_obj
             )
         except Exception as exc:
+            lat_ms = (time.perf_counter_ns() - t0) / 1e6
             log.warning(
                 "hl_cancel_by_cloid_rejected",
                 symbol=symbol,
                 cloid=cloid,
                 error=str(exc),
             )
+            log.info(
+                "order_rpc_latency",
+                rpc="cancel_by_cloid",
+                symbol=symbol,
+                wall_ms=round(lat_ms, 3),
+                api_latency_ms=None,
+                ok=False,
+                tag=self.strategy_tag,
+            )
             return None
+        lat_ms = (time.perf_counter_ns() - t0) / 1e6
         log.info(
             "hl_order_cancelled_by_cloid",
             symbol=symbol,
             cloid=cloid,
+            latency_ms=round(lat_ms, 3),
             resp_status=(resp or {}).get("status"),
+            tag=self.strategy_tag,
+        )
+        log.info(
+            "order_rpc_latency",
+            rpc="cancel_by_cloid",
+            symbol=symbol,
+            wall_ms=round(lat_ms, 3),
+            api_latency_ms=None,
+            ok=resp is not None,
             tag=self.strategy_tag,
         )
         return resp
