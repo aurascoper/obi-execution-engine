@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "kind": "fill_markout_by_stability_distributions",
+  "git_sha": "c1a298f25462396eb1f9a57b5d8a188bcecf6a28",
+  "timestamp_utc": "2026-05-03T23:03:11.447013+00:00",
+  "log_path": "logs/hl_engine.jsonl",
+  "n_fills_total": 0,
+  "note": "no fill_observation events found"
+}

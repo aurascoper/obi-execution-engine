@@ -1797,6 +1797,11 @@ class HLEngine:
                 symbol=sym,
                 qty=sig["qty"],
                 side=side,
+                fill_px=sig.get("limit_px"),
+                fill_ts=time.time(),
+                submit_ts=None,
+                venue_role="shadow",
+                is_shadow=True,
             )
             return {"status": "shadow_filled", "coin": coin}
 
@@ -1941,6 +1946,11 @@ class HLEngine:
                             symbol=sym,
                             qty=filled_sz,
                             side=side,
+                            fill_px=fill_px,
+                            fill_ts=time.time(),
+                            submit_ts=None,
+                            venue_role="taker",
+                            is_shadow=False,
                         )
         except Exception:
             pass
@@ -2036,6 +2046,11 @@ class HLEngine:
                 symbol=sym,
                 qty=cumulative,
                 side=pending["side"],
+                fill_px=fill_px,
+                fill_ts=time.time(),
+                submit_ts=float(pending.get("submit_ts")) if pending.get("submit_ts") is not None else None,
+                venue_role="taker" if msg.get("crossed") else "maker",
+                is_shadow=False,
             )
             del self._pending_resting[sym]
         else:

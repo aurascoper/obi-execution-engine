@@ -284,6 +284,7 @@ class _SymbolState:
         "prev_ask_sizes",  # ndarray of prior snapshot ask-size levels (MLOFI delta)
         "best_ask",  # latest best ask (taker aggressive limit)
         "best_bid",  # latest best bid (maker passive limit)
+        "stability_ring",  # _StabilityRing micro-history for fill_observation telemetry
         "positions",  # dict[str, float]  tag → open qty
         "entry_prices",  # dict[str, float]  tag → entry price
         "entry_ts",  # dict[str, int]    tag → epoch-sec at entry (for time-stop)
@@ -309,6 +310,9 @@ class _SymbolState:
         self.prev_ask_sizes: np.ndarray | None = None
         self.best_ask = float("nan")
         self.best_bid = float("nan")
+        # Lazy-init: created on first update_orderbook tick to avoid the import
+        # cost / cyclical risk at SymbolState construction time.
+        self.stability_ring = None
         self.positions: dict[str, float] = {}
         self.entry_prices: dict[str, float] = {}
         self.entry_ts: dict[str, int] = {}
@@ -740,6 +744,29 @@ class SignalEngine:
         if bids:
             st.best_bid = float(bids[0][0])
 
+        # Phase B fill_observation telemetry: push top-N book microstate
+        # into the per-symbol stability ring. Reuses vb/va already computed
+        # above; no extra aggregation. Failure is silent — telemetry must
+        # never block the order path.
+        try:
+            if st.stability_ring is None:
+                from strategy.fill_observation import _StabilityRing
+                st.stability_ring = _StabilityRing()
+            spread = (
+                st.best_ask - st.best_bid
+                if math.isfinite(st.best_ask) and math.isfinite(st.best_bid)
+                else 0.0
+            )
+            st.stability_ring.push(
+                ts_s=time.time(),
+                obi=float(rho),
+                depth_top_bid_sum=vb,
+                depth_top_ask_sum=va,
+                spread=float(spread),
+            )
+        except Exception:
+            pass
+
     # ── Fill handler (called by OrderManager TradingStream) ──────────────────
     def on_fill(
         self,
@@ -747,6 +774,12 @@ class SignalEngine:
         symbol: str,
         qty: float,
         side: str,
+        *,
+        fill_px: float | None = None,
+        fill_ts: float | None = None,
+        submit_ts: float | None = None,
+        venue_role: str | None = None,
+        is_shadow: bool = False,
     ) -> None:
         """
         Called by OrderManager when a fill arrives on the TradingStream.
@@ -770,6 +803,57 @@ class SignalEngine:
 
         fill_tag = self.strategy_tag
         side_l = side.lower()
+
+        # Phase B fill_observation telemetry: emit a sibling event with book
+        # microstate + stability bucket alongside the existing fill_recorded
+        # log. Convergence-point emission guarantees the structural invariant
+        # count(fill_observation) == count(fill_recorded). Failure is silent.
+        def _emit_observation(role: str, signed_qty: float) -> None:
+            try:
+                from strategy.fill_observation import build_fill_observation_payload
+                bb = (
+                    float(st.best_bid)
+                    if math.isfinite(st.best_bid)
+                    else None
+                )
+                ba = (
+                    float(st.best_ask)
+                    if math.isfinite(st.best_ask)
+                    else None
+                )
+                vb = (
+                    float(st.prev_bid_sizes.sum())
+                    if st.prev_bid_sizes is not None
+                    else None
+                )
+                va = (
+                    float(st.prev_ask_sizes.sum())
+                    if st.prev_ask_sizes is not None
+                    else None
+                )
+                payload = build_fill_observation_payload(
+                    cloid=client_order_id,
+                    symbol=symbol,
+                    side=side_l,
+                    qty=signed_qty,
+                    role=role,
+                    fill_px=fill_px,
+                    fill_ts=fill_ts,
+                    submit_ts=submit_ts,
+                    venue_role=venue_role,
+                    is_shadow=is_shadow,
+                    best_bid=bb,
+                    best_ask=ba,
+                    depth_top_bid_sum=vb,
+                    depth_top_ask_sum=va,
+                    obi=float(st.obi),
+                    ring=st.stability_ring,
+                    now_s=time.time(),
+                )
+                log.info("fill_observation", tag=fill_tag, **payload)
+            except Exception:
+                pass
+
         # pending_exits[tag]=True means evaluate() emitted a close; any fill
         # that arrives while the flag is set is the cover/close, regardless of
         # side (SELL covers long, BUY covers short).
@@ -786,6 +870,7 @@ class SignalEngine:
                 side=side_l,
                 role="exit",
             )
+            _emit_observation(role="exit", signed_qty=0.0)
             return
 
         # Entry fill — sign the recorded qty by side.
@@ -802,6 +887,7 @@ class SignalEngine:
                 side=side_l,
                 role="entry",
             )
+            _emit_observation(role="entry", signed_qty=qty)
         elif self._allow_short:
             st.positions[fill_tag] = -qty
             log.info(
@@ -812,6 +898,7 @@ class SignalEngine:
                 side=side_l,
                 role="entry",
             )
+            _emit_observation(role="entry", signed_qty=-qty)
         else:
             # Long-only engine received a SELL fill we didn't author as an
             # exit. Treat as a force-close (old behaviour) and flag it.

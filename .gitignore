@@ -45,3 +45,9 @@ ENV/
 
 # ── Claude Code local state (not for commit) ──────────────────────────────────
 .claude/
+
+# ── ML artifacts (Phase 6+) ───────────────────────────────────────────────────
+# Trained hedge-net weights and bar cache are re-producible from scripts.
+data/cache/
+models/weights/
+*.pt
